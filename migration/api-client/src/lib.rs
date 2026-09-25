@@ -11,6 +11,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Serialize)]
 struct InitMigrationRequest<'a> {
     sub: &'a str,
+    proof: &'a str,
+    challenge_id: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,12 +64,23 @@ impl MigrationApiClient {
         })
     }
 
-    /// Starts a migration for `sub`. Not retried here: each call creates a new migration record.
-    pub async fn init_migration(&self, sub: &str) -> Result<InitMigrationResponse, Error> {
+    /// Starts a migration for `sub` with a standard-base64 ownership `proof`
+    /// and the `challenge_id` the proof was built for.
+    /// Not retried here: each call creates a new migration record.
+    pub async fn init_migration(
+        &self,
+        sub: &str,
+        proof: &str,
+        challenge_id: &str,
+    ) -> Result<InitMigrationResponse, Error> {
         let response = self
             .http
             .post(self.init_migration_url.clone())
-            .json(&InitMigrationRequest { sub })
+            .json(&InitMigrationRequest {
+                sub,
+                proof,
+                challenge_id,
+            })
             .send()
             .await
             .map_err(Error::Transport)?;
@@ -121,8 +134,10 @@ mod tests {
     async fn init_migration_returns_the_decoded_response() {
         let (url, server) = serve(Router::new().route(
             "/v1/init-migration",
-            post(|body: String| async move {
-                assert_eq!(body, r#"{"sub":"test-sub"}"#);
+            post(|Json(body): Json<serde_json::Value>| async move {
+                assert_eq!(body["sub"], "test-sub");
+                assert_eq!(body["proof"], "cHJvb2Y=");
+                assert_eq!(body["challenge_id"], "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31");
                 Json(serde_json::json!({
                     "enclave_id": "enc-1",
                     "attestation": "",
@@ -134,7 +149,11 @@ mod tests {
 
         let response = MigrationApiClient::new(&url)
             .unwrap()
-            .init_migration("test-sub")
+            .init_migration(
+                "test-sub",
+                "cHJvb2Y=",
+                "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
+            )
             .await
             .unwrap();
 
@@ -153,7 +172,11 @@ mod tests {
 
         let error = MigrationApiClient::new(&url)
             .unwrap()
-            .init_migration("test-sub")
+            .init_migration(
+                "test-sub",
+                "cHJvb2Y=",
+                "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
+            )
             .await
             .unwrap_err();
 

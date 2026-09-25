@@ -9,22 +9,27 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
-
 /// Bounds the subject we accept; real subjects are short opaque identifiers.
 const MAX_SUB_LEN: usize = 255;
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let probes = Router::new()
         .route("/healtz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/init-migration", post(init_migration))
-        .with_state(state)
+        .with_state(state.clone());
+
+    Router::new().merge(probes).with_state(state)
 }
 
 #[derive(Deserialize)]
 struct InitMigrationRequest {
     /// Subject of the user being migrated.
     sub: String,
+    /// Standard base64 ownership proof.
+    proof: String,
+    /// Challenge ID.
+    challenge_id: String,
 }
 
 #[derive(Serialize)]
@@ -66,10 +71,27 @@ async fn ready(State(state): State<AppState>) -> StatusCode {
 async fn init_migration(
     State(state): State<AppState>,
     Json(request): Json<InitMigrationRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, (StatusCode, &'static str)> {
     let sub = request.sub.trim();
     if sub.is_empty() || sub.len() > MAX_SUB_LEN || sub.chars().any(char::is_control) {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err((StatusCode::BAD_REQUEST, "invalid_sub"));
+    }
+
+    let verification = proof::VerificationRequest {
+        challenge_id: request.challenge_id,
+        challenge_type: state.verifier.config.challenge_type.clone(),
+        credential_sub: sub.to_string(),
+        proof: request.proof,
+    };
+    if let Err(error) = state.verifier.verify(verification).await {
+        if !matches!(error, proof::ProofVerificationError::VerificationError) {
+            tracing::error!(error = %error, credential_sub = %sub, "failed to verify the proof");
+        }
+        let status = match error {
+            proof::ProofVerificationError::VerificationError => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        return Err((status, error.as_str()));
     }
 
     let migration_id = Uuid::new_v4();
@@ -81,12 +103,12 @@ async fn init_migration(
         .await
         .map_err(|error| {
             tracing::error!(error = %format!("{error:#}"), %migration_id, "failed to record the migration");
-            StatusCode::SERVICE_UNAVAILABLE
+            (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
         })?;
 
     let presigned_url = state.s3.presign_put(&object_key).await.map_err(|error| {
         tracing::error!(error = %format!("{error:#}"), %migration_id, "failed to presign the PCP upload URL");
-        StatusCode::INTERNAL_SERVER_ERROR
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal")
     })?;
     let attestation = state.attestor.attest();
 

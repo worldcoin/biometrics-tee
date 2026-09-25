@@ -30,6 +30,14 @@ enum Command {
         #[arg(long, env = "SUB")]
         sub: String,
 
+        /// Standard base64 ownership proof.
+        #[arg(long, env = "PROOF")]
+        proof: String,
+
+        /// Challenge id the ownership proof was built for.
+        #[arg(long, env = "CHALLENGE_ID")]
+        challenge_id: String,
+
         /// Uploads this file to the presigned URL to check the whole round trip.
         #[arg(long)]
         upload: Option<std::path::PathBuf>,
@@ -58,9 +66,14 @@ async fn main() -> ExitCode {
 
 async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String> {
     match command {
-        Command::InitMigration { sub, upload } => {
+        Command::InitMigration {
+            sub,
+            proof,
+            challenge_id,
+            upload,
+        } => {
             let response = client
-                .init_migration(&sub)
+                .init_migration(&sub, &proof, &challenge_id)
                 .await
                 .map_err(|error| format!("init-migration failed: {error}"))?;
             println!(
