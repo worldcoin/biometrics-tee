@@ -11,7 +11,7 @@ Set `ENCLAVE_ID` to the enclave the migration runs in. The enclave cannot attest
 
 `GET /healtz` checks the API process. `GET /readyz` describes the configured DynamoDB table, reads the SQS queue attributes and heads the PCP bucket, returning 503 if any request fails or times out.
 
-`POST /v1/init-migration` takes `{"sub": "..."}`, records the migration in DynamoDB and returns the enclave id, its attestation and a presigned S3 URL to `PUT` the PCP to.
+`POST /v1/init-migration` takes `{"sub": "...", "proof": "...", "challenge_id": "..."}`, records the migration in DynamoDB and returns the enclave id, its attestation and a presigned S3 URL to `PUT` the PCP to. `proof` is the standard-base64 ownership proof, and `challenge_id` is the challenge that proof was built for.
 
 ### Testing `/v1/init-migration` locally
 
@@ -30,7 +30,7 @@ migration/api/scripts/run-local.sh
 Then call the endpoint through the CLI:
 
 ```sh
-cargo run -p migration-cli -- init-migration --sub local-test-sub
+cargo run -p migration-cli -- init-migration --sub local-test-sub --proof cHJvb2Y= --challenge-id 0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31
 ```
 
-It prints the response as JSON. Pass `--upload <FILE>` to also `PUT` that file to the presigned URL, which exercises the whole round trip. `--api-url` (or `API_URL`) points the CLI at another host; it defaults to `http://127.0.0.1:8080`.
+It prints the response as JSON. Pass `--upload <FILE>` to also `PUT` that file to the presigned URL, which exercises the whole round trip. `--proof` and `--challenge-id` can also be set with `PROOF` and `CHALLENGE_ID`. `--api-url` (or `API_URL`) points the CLI at another host; it defaults to `http://127.0.0.1:8080`.
