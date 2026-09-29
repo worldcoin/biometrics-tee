@@ -44,7 +44,7 @@ pub struct Config {
     pub proof_challenge_type: String,
     #[arg(long, env = "PROOF_JWT_KMS_KEY_ID")]
     pub proof_jwt_kms_key_id: String,
-    #[arg(long, env = "PROOF_JWT_SUBJECT", default_value = "zkp_v4_shadow")]
+    #[arg(long, env = "PROOF_JWT_SUBJECT", default_value = "tee-migration")]
     pub proof_jwt_subject: String,
 }
 
