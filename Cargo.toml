@@ -7,6 +7,10 @@ members = [
     "dev/host",
     "migration/enclave",
     "migration/host",
+    "migration/api",
+    "migration/api-client",
+    "migration/cli",
+    "migration/proof",
 ]
 resolver = "3"
 
@@ -22,21 +26,32 @@ publish = false
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
+aws-config = "1"
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 axum = "0.8"
 bytes = { version = "1", features = ["serde"] }
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 di-dev-api-types = { path = "dev/api-types" }
 di-dev-enclave-types = { path = "dev/enclave-types" }
 flate2 = "1.1"
 http-body-util = "0.1"
+mime = "0.3"
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+migration-api-client = { path = "migration/api-client" }
 pontifex = { version = "2.0.0", default-features = false }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls", "webpki-roots"] }
+proof = { path = "migration/proof" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = "1.0"
 telemetry-batteries = { version = "0.4.1", default-features = false }
 thiserror = "2"
-tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

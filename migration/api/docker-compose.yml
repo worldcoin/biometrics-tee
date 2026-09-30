@@ -1,0 +1,29 @@
+services:
+  localstack:
+    image: localstack/localstack:3
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3,sqs,dynamodb,kms
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          awslocal s3api head-bucket --bucket di-migration-pcp
+          && awslocal dynamodb describe-table --table-name di-migration
+          && awslocal sqs get-queue-url --queue-name di-migration
+          && awslocal kms describe-key --key-id alias/di-migration-proof
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  proof-verification:
+    image: nginx:1.27-alpine
+    ports:
+      - "8081:80"
+    volumes:
+      - ./scripts/proof-verification.conf:/etc/nginx/conf.d/default.conf:ro

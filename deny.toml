@@ -30,6 +30,8 @@ exceptions = [
     { allow = ["CC0-1.0"], name = "tracing-opentelemetry-instrumentation-sdk", version = "0.38.3" },
     # telemetry-batteries reaches option-ext through dirs; MPL's copyleft is file-scoped.
     { allow = ["MPL-2.0"], name = "option-ext", version = "0.2.0" },
+    # The AWS SDK reaches foldhash through hashbrown; Zlib is permissive and OSI approved.
+    { allow = ["Zlib"], name = "foldhash", version = "0.2.0" },
 ]
 
 [sources]
