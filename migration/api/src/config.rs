@@ -32,6 +32,20 @@ pub struct Config {
     pub enclave_id: String,
     #[arg(long, env = "STUB_ATTESTATION", default_value_t = false, action = clap::ArgAction::Set)]
     pub stub_attestation: bool,
+    #[arg(long, env = "PROOF_VERIFICATION_HOST")]
+    pub proof_verification_host: String,
+    #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 2)]
+    pub proof_verify_timeout_secs: u64,
+    #[arg(long, env = "PROOF_MAX_CONNS", default_value_t = 4)]
+    pub proof_max_conns: usize,
+    #[arg(long, env = "PROOF_MAX_PROOF_BODY_BYTES", default_value_t = 1 << 20)]
+    pub proof_max_proof_body_bytes: u64,
+    #[arg(long, env = "PROOF_CHALLENGE_TYPE", default_value = "teedi_migration")]
+    pub proof_challenge_type: String,
+    #[arg(long, env = "PROOF_JWT_KMS_KEY_ID")]
+    pub proof_jwt_kms_key_id: String,
+    #[arg(long, env = "PROOF_JWT_SUBJECT", default_value = "tee-migration")]
+    pub proof_jwt_subject: String,
 }
 
 fn parse_presigned_url_ttl(raw: &str) -> Result<Duration, std::num::ParseIntError> {
@@ -63,6 +77,12 @@ pub enum ConfigError {
          attestation outside production"
     )]
     AttestationUnavailable,
+    #[error("PROOF_VERIFICATION_HOST is required")]
+    MissingProofVerificationHost,
+    #[error("PROOF_VERIFICATION_HOST must be an HTTP(S) URL")]
+    InvalidProofVerificationHost,
+    #[error("PROOF_JWT_KMS_KEY_ID is required")]
+    MissingProofJwtKmsKeyId,
 }
 
 impl Config {
@@ -110,6 +130,22 @@ impl Config {
 
         if !config.stub_attestation {
             return Err(ConfigError::AttestationUnavailable);
+        }
+
+        let host = config.proof_verification_host.trim();
+        if host.is_empty() {
+            return Err(ConfigError::MissingProofVerificationHost);
+        }
+        let host_uri: axum::http::Uri = host
+            .parse()
+            .map_err(|_| ConfigError::InvalidProofVerificationHost)?;
+        if !matches!(host_uri.scheme_str(), Some("http" | "https"))
+            || host_uri.authority().is_none()
+        {
+            return Err(ConfigError::InvalidProofVerificationHost);
+        }
+        if config.proof_jwt_kms_key_id.trim().is_empty() {
+            return Err(ConfigError::MissingProofJwtKmsKeyId);
         }
 
         Ok(config)
