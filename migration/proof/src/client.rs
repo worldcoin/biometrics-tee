@@ -10,11 +10,12 @@ pub const VERIFY_PATH: &str = "/api/v4/verify";
 pub const DEFAULT_CHALLENGE_TYPE: &str = "teedi_migration";
 
 /// Three-state so a rejected proof stays distinguishable from an unreachable service.
+/// [`Self::Error`] carries a [`FailureClass`] so triage does not need the logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     Accepted,
     Rejected,
-    Error,
+    Error(FailureClass),
 }
 
 impl Verdict {
@@ -22,7 +23,14 @@ impl Verdict {
         match self {
             Self::Accepted => "accepted",
             Self::Rejected => "rejected",
-            Self::Error => "error",
+            Self::Error(_) => "error",
+        }
+    }
+
+    pub const fn failure(self) -> Option<FailureClass> {
+        match self {
+            Self::Error(failure) => Some(failure),
+            Self::Accepted | Self::Rejected => None,
         }
     }
 }
@@ -30,7 +38,6 @@ impl Verdict {
 /// Explains a [`Verdict::Error`] so triage does not need the logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureClass {
-    None,
     Timeout,
     Canceled,
     Connection,
@@ -43,7 +50,6 @@ pub enum FailureClass {
 impl FailureClass {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::None => "none",
             Self::Timeout => "timeout",
             Self::Canceled => "canceled",
             Self::Connection => "connection",
@@ -58,7 +64,6 @@ impl FailureClass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyResult {
     pub verdict: Verdict,
-    pub failure: FailureClass,
     pub status_code: u16,
 }
 
@@ -139,8 +144,7 @@ impl Client {
             Err(error) => {
                 return (
                     VerifyResult {
-                        verdict: Verdict::Error,
-                        failure: FailureClass::Auth,
+                        verdict: Verdict::Error(FailureClass::Auth),
                         status_code: 0,
                     },
                     Err(Error::Auth(error)),
@@ -153,8 +157,7 @@ impl Client {
             Err(error) => {
                 return (
                     VerifyResult {
-                        verdict: Verdict::Error,
-                        failure: classify_transport(&error),
+                        verdict: Verdict::Error(classify_transport(&error)),
                         status_code: 0,
                     },
                     Err(Error::Transport(error)),
@@ -170,7 +173,6 @@ impl Client {
             StatusCode::OK => (
                 VerifyResult {
                     verdict: Verdict::Accepted,
-                    failure: FailureClass::None,
                     status_code: status.as_u16(),
                 },
                 Ok(()),
@@ -178,7 +180,6 @@ impl Client {
             StatusCode::UNAUTHORIZED => (
                 VerifyResult {
                     verdict: Verdict::Rejected,
-                    failure: FailureClass::None,
                     status_code: status.as_u16(),
                 },
                 Ok(()),
@@ -191,8 +192,7 @@ impl Client {
                 };
                 (
                     VerifyResult {
-                        verdict: Verdict::Error,
-                        failure,
+                        verdict: Verdict::Error(failure),
                         status_code: status.as_u16(),
                     },
                     Err(Error::UnexpectedStatus { status }),
@@ -319,36 +319,27 @@ mod tests {
 
     #[tokio::test]
     async fn verify_classifies_responses() {
-        for (status, verdict, failure, want_err) in [
-            (StatusCode::OK, Verdict::Accepted, FailureClass::None, false),
-            (
-                StatusCode::UNAUTHORIZED,
-                Verdict::Rejected,
-                FailureClass::None,
-                false,
-            ),
+        for (status, verdict, want_err) in [
+            (StatusCode::OK, Verdict::Accepted, false),
+            (StatusCode::UNAUTHORIZED, Verdict::Rejected, false),
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Verdict::Error,
-                FailureClass::UpstreamServer,
+                Verdict::Error(FailureClass::UpstreamServer),
                 true,
             ),
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Verdict::Error,
-                FailureClass::UpstreamServer,
+                Verdict::Error(FailureClass::UpstreamServer),
                 true,
             ),
             (
                 StatusCode::BAD_REQUEST,
-                Verdict::Error,
-                FailureClass::UpstreamClient,
+                Verdict::Error(FailureClass::UpstreamClient),
                 true,
             ),
             (
                 StatusCode::TOO_MANY_REQUESTS,
-                Verdict::Error,
-                FailureClass::UpstreamClient,
+                Verdict::Error(FailureClass::UpstreamClient),
                 true,
             ),
         ] {
@@ -393,7 +384,6 @@ mod tests {
                 result,
                 VerifyResult {
                     verdict,
-                    failure,
                     status_code: status.as_u16(),
                 }
             );
@@ -452,8 +442,7 @@ mod tests {
         let (result, error) = client(&url, Duration::from_millis(50))
             .verify(test_request())
             .await;
-        assert_eq!(result.verdict, Verdict::Error);
-        assert_eq!(result.failure, FailureClass::Timeout);
+        assert_eq!(result.verdict, Verdict::Error(FailureClass::Timeout));
         assert!(error.is_err(), "{error:?}");
         server.abort();
     }
@@ -470,8 +459,7 @@ mod tests {
         )
         .unwrap();
         let (result, error) = client.verify(test_request()).await;
-        assert_eq!(result.verdict, Verdict::Error);
-        assert_eq!(result.failure, FailureClass::Connection);
+        assert_eq!(result.verdict, Verdict::Error(FailureClass::Connection));
         assert!(error.is_err(), "{error:?}");
     }
 
@@ -537,8 +525,7 @@ mod tests {
         .verify(test_request())
         .await;
 
-        assert_eq!(result.verdict, Verdict::Error);
-        assert_eq!(result.failure, FailureClass::Auth);
+        assert_eq!(result.verdict, Verdict::Error(FailureClass::Auth));
         assert!(matches!(error, Err(Error::Auth(_))), "{error:?}");
         assert_eq!(
             calls.load(Ordering::SeqCst),

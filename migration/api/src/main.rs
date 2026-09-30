@@ -183,7 +183,6 @@ mod tests {
             Arc::new(MockVerifier {
                 result: proof::VerifyResult {
                     verdict: proof::Verdict::Accepted,
-                    failure: proof::FailureClass::None,
                     status_code: 200,
                 },
                 seen: Mutex::new(Vec::new()),
@@ -296,7 +295,6 @@ mod tests {
         const PROOF: &str = "0xa100ff00deadbeef";
         let mocked = proof::VerifyResult {
             verdict: proof::Verdict::Accepted,
-            failure: proof::FailureClass::None,
             status_code: 200,
         };
         let verifier = Arc::new(MockVerifier {
@@ -462,8 +460,7 @@ mod tests {
         ) -> (proof::VerifyResult, Result<(), proof::Error>) {
             (
                 proof::VerifyResult {
-                    verdict: proof::Verdict::Error,
-                    failure: proof::FailureClass::Timeout,
+                    verdict: proof::Verdict::Error(proof::FailureClass::Timeout),
                     status_code: 0,
                 },
                 Err(proof::Error::InvalidHost {

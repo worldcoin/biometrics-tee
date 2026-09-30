@@ -49,8 +49,12 @@ impl Verifier {
         match result.verdict {
             Verdict::Accepted => Ok(()),
             Verdict::Rejected => Err(ProofVerificationError::VerificationRejected),
-            Verdict::Error => {
-                tracing::error!(error = %format!("{error:#?}"), request = %request.credential_sub, "proof verification failed");
+            Verdict::Error(failure) => {
+                tracing::error!(
+                    failure = failure.as_str(),
+                    request = %request.credential_sub,
+                    "proof verification failed"
+                );
                 Err(ProofVerificationError::VerificationError)
             }
         }
@@ -131,15 +135,14 @@ mod tests {
     impl ProofVerificationClient for StubClient {
         async fn verify(&self, request: VerificationRequest) -> (VerifyResult, Result<(), Error>) {
             self.seen.lock().unwrap().push(request);
-            let (failure, status_code) = match self.verdict {
-                Verdict::Accepted => (FailureClass::None, 200),
-                Verdict::Rejected => (FailureClass::None, 401),
-                Verdict::Error => (FailureClass::UpstreamServer, 503),
+            let status_code = match self.verdict {
+                Verdict::Accepted => 200,
+                Verdict::Rejected => 401,
+                Verdict::Error(_) => 503,
             };
             (
                 VerifyResult {
                     verdict: self.verdict,
-                    failure,
                     status_code,
                 },
                 Ok(()),
@@ -265,7 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn verification_service_error_is_reported() {
-        let client = StubClient::new(Verdict::Error);
+        let client = StubClient::new(Verdict::Error(FailureClass::UpstreamServer));
         let (status, body) = post_json(
             router(Arc::clone(&client), Config::default()),
             json_body(Some(CHALLENGE), Some(SUB), Some(PROOF)),
@@ -283,8 +286,7 @@ mod tests {
         async fn verify(&self, _request: VerificationRequest) -> (VerifyResult, Result<(), Error>) {
             (
                 VerifyResult {
-                    verdict: Verdict::Error,
-                    failure: FailureClass::Timeout,
+                    verdict: Verdict::Error(FailureClass::Timeout),
                     status_code: 0,
                 },
                 Err(Error::InvalidHost {
