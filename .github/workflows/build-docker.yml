@@ -1,7 +1,7 @@
 # Builds and publishes the host images to GHCR (attested).
 #
-# Enclave OCI images and EIFs are built reproducibly by flake.nix. This workflow only builds
-# and publishes host images.
+# Enclave OCI images and EIFs are built reproducibly by flake.nix. This workflow builds
+# and publishes host and API images.
 name: Build and Push Docker Image
 
 on:
@@ -40,7 +40,7 @@ on:
         required: false
         type: string
       workload:
-        description: "Build only this workload's host image. Empty builds all."
+        description: "Build only this workload's image. Empty builds all."
         required: false
         type: string
       push:
@@ -50,7 +50,7 @@ on:
         type: boolean
     outputs:
       digest:
-        description: "Digest of the selected workload's host image, when exactly one was built."
+        description: "Digest of the selected workload's image, when exactly one was built."
         value: ${{ jobs.docker-build.outputs.digest }}
       image:
         description: "Fully-qualified name of that image, so callers need no second copy of the mapping."
@@ -76,12 +76,13 @@ jobs:
           set -euo pipefail
           all='[
             {"name":"di-migration-host","dockerfile":"migration/host/Dockerfile","image":"di-migration-host","workload":"migration"},
-            {"name":"di-dev-host","dockerfile":"dev/host/Dockerfile","image":"di-dev-host","workload":"dev"}
+            {"name":"di-dev-host","dockerfile":"dev/host/Dockerfile","image":"di-dev-host","workload":"dev"},
+            {"name":"di-migration-api","dockerfile":"migration/api/Dockerfile","image":"di-migration-api","workload":"api"}
           ]'
           if [[ -n "${WORKLOAD:-}" ]]; then
             include=$(jq -c --arg w "$WORKLOAD" 'map(select(.workload == $w))' <<<"$all")
             if [[ "$(jq 'length' <<<"$include")" == "0" ]]; then
-              echo "::error::No host image for workload '$WORKLOAD'." >&2
+              echo "::error::No image for workload '$WORKLOAD'." >&2
               exit 1
             fi
           else
