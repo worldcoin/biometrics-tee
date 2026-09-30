@@ -13,7 +13,7 @@ mod verifier;
 pub use auth::{AuthError, AuthProvider, JwtAuthProvider};
 pub use client::{
     Client, Config, DEFAULT_CHALLENGE_TYPE, Error, FailureClass, ProofVerificationClient,
-    VERIFY_PATH, Verdict, VerificationRequest, VerifyResult,
+    VERIFY_PATH, Verdict, VerificationRequest,
 };
 pub use header::{MAX_CREDENTIAL_SUB_BYTES, ProofVerificationError};
 pub use verifier::{Config as VerifierConfig, Verifier};

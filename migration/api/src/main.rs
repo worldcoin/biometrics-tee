@@ -181,10 +181,7 @@ mod tests {
         Arc::new(proof::Verifier::new(
             proof::VerifierConfig::default(),
             Arc::new(MockVerifier {
-                result: proof::VerifyResult {
-                    verdict: proof::Verdict::Accepted,
-                    status_code: 200,
-                },
+                result: proof::Verdict::Accepted,
                 seen: Mutex::new(Vec::new()),
             }),
         ))
@@ -293,12 +290,9 @@ mod tests {
     async fn init_migration_verifies_the_ownership_proof() {
         const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
         const PROOF: &str = "0xa100ff00deadbeef";
-        let mocked = proof::VerifyResult {
-            verdict: proof::Verdict::Accepted,
-            status_code: 200,
-        };
+        let mocked = proof::Verdict::Accepted;
         let verifier = Arc::new(MockVerifier {
-            result: mocked.clone(),
+            result: mocked,
             seen: Mutex::new(Vec::new()),
         });
 
@@ -454,36 +448,21 @@ mod tests {
 
     #[async_trait]
     impl proof::ProofVerificationClient for FailingVerifier {
-        async fn verify(
-            &self,
-            _request: proof::VerificationRequest,
-        ) -> (proof::VerifyResult, Result<(), proof::Error>) {
-            (
-                proof::VerifyResult {
-                    verdict: proof::Verdict::Error(proof::FailureClass::Timeout),
-                    status_code: 0,
-                },
-                Err(proof::Error::InvalidHost {
-                    host: "http://down".to_owned(),
-                }),
-            )
+        async fn verify(&self, _request: proof::VerificationRequest) -> proof::Verdict {
+            proof::Verdict::Error(proof::FailureClass::Timeout)
         }
     }
 
     struct MockVerifier {
-        result: proof::VerifyResult,
-        seen: Mutex<Vec<(proof::VerificationRequest, proof::VerifyResult)>>,
+        result: proof::Verdict,
+        seen: Mutex<Vec<(proof::VerificationRequest, proof::Verdict)>>,
     }
 
     #[async_trait]
     impl proof::ProofVerificationClient for MockVerifier {
-        async fn verify(
-            &self,
-            request: proof::VerificationRequest,
-        ) -> (proof::VerifyResult, Result<(), proof::Error>) {
-            let result = self.result.clone();
-            self.seen.lock().unwrap().push((request, result.clone()));
-            (result, Ok(()))
+        async fn verify(&self, request: proof::VerificationRequest) -> proof::Verdict {
+            self.seen.lock().unwrap().push((request, self.result));
+            self.result
         }
     }
 }

@@ -41,12 +41,7 @@ impl Verifier {
         request: VerificationRequest,
     ) -> Result<(), ProofVerificationError> {
         self.validate_proof_fields(&request)?;
-        let (result, error) = self.client.verify(request.clone()).await;
-        if let Err(error) = error {
-            tracing::error!(error = %format!("{error:#}"), request = %request.credential_sub, "proof verification failed");
-            return Err(ProofVerificationError::VerificationError);
-        }
-        match result.verdict {
+        match self.client.verify(request.clone()).await {
             Verdict::Accepted => Ok(()),
             Verdict::Rejected => Err(ProofVerificationError::VerificationRejected),
             Verdict::Error(failure) => {
@@ -107,7 +102,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::{Error, FailureClass, VerifyResult};
+    use crate::FailureClass;
 
     const CHALLENGE: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
     const SUB: &str = "0xab12cd34";
@@ -133,20 +128,9 @@ mod tests {
 
     #[async_trait]
     impl ProofVerificationClient for StubClient {
-        async fn verify(&self, request: VerificationRequest) -> (VerifyResult, Result<(), Error>) {
+        async fn verify(&self, request: VerificationRequest) -> Verdict {
             self.seen.lock().unwrap().push(request);
-            let status_code = match self.verdict {
-                Verdict::Accepted => 200,
-                Verdict::Rejected => 401,
-                Verdict::Error(_) => 503,
-            };
-            (
-                VerifyResult {
-                    verdict: self.verdict,
-                    status_code,
-                },
-                Ok(()),
-            )
+            self.verdict
         }
     }
 
@@ -283,16 +267,8 @@ mod tests {
 
     #[async_trait]
     impl ProofVerificationClient for FailingClient {
-        async fn verify(&self, _request: VerificationRequest) -> (VerifyResult, Result<(), Error>) {
-            (
-                VerifyResult {
-                    verdict: Verdict::Error(FailureClass::Timeout),
-                    status_code: 0,
-                },
-                Err(Error::InvalidHost {
-                    host: "http://down".to_owned(),
-                }),
-            )
+        async fn verify(&self, _request: VerificationRequest) -> Verdict {
+            Verdict::Error(FailureClass::Timeout)
         }
     }
 

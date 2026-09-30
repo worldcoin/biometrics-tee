@@ -61,32 +61,19 @@ impl FailureClass {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifyResult {
-    pub verdict: Verdict,
-    pub status_code: u16,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed to build the HTTP client: {0}")]
     Build(#[source] reqwest::Error),
     #[error("{host} is not a valid proof verification service host")]
     InvalidHost { host: String },
-    #[error("failed to get auth token: {0}")]
-    Auth(#[source] Box<dyn std::error::Error + Send + Sync>),
-    #[error("request to the proof verification service failed: {0}")]
-    Transport(#[source] reqwest::Error),
-    #[error("world-id-proof-verification-service returned {status}")]
-    UnexpectedStatus { status: StatusCode },
 }
 
 /// Implemented by [`Client`]; tests may substitute a stub.
 #[async_trait]
 pub trait ProofVerificationClient: Send + Sync {
-    /// Classifies the upstream response. The [`VerifyResult`] is always populated
-    /// so metrics can tag verdict and failure even when the `Result` is `Err`.
-    async fn verify(&self, request: VerificationRequest) -> (VerifyResult, Result<(), Error>);
+    /// Classifies the upstream response for metrics (verdict / failure class).
+    async fn verify(&self, request: VerificationRequest) -> Verdict;
 }
 
 /// The verification service uses `challenge_type` plus `challenge_id` to recover
@@ -133,35 +120,29 @@ impl Client {
         })
     }
 
-    /// Classifies the upstream response. The [`VerifyResult`] is always populated
-    /// so metrics can tag verdict and failure even when the `Result` is `Err`.
-    pub async fn verify(&self, request: VerificationRequest) -> (VerifyResult, Result<(), Error>) {
+    /// Classifies the upstream response for metrics (verdict / failure class).
+    pub async fn verify(&self, request: VerificationRequest) -> Verdict {
         let mut http_request = self.http.post(self.verify_url.clone()).json(&request);
         match self.auth_provider.token().await {
             Ok(token) => {
                 http_request = http_request.bearer_auth(token);
             }
             Err(error) => {
-                return (
-                    VerifyResult {
-                        verdict: Verdict::Error(FailureClass::Auth),
-                        status_code: 0,
-                    },
-                    Err(Error::Auth(error)),
-                );
+                tracing::error!(error = %format!("{error:#}"), "failed to get auth token");
+                return Verdict::Error(FailureClass::Auth);
             }
         }
 
         let response = match http_request.send().await {
             Ok(response) => response,
             Err(error) => {
-                return (
-                    VerifyResult {
-                        verdict: Verdict::Error(classify_transport(&error)),
-                        status_code: 0,
-                    },
-                    Err(Error::Transport(error)),
+                let failure = classify_transport(&error);
+                tracing::error!(
+                    error = %format!("{error:#}"),
+                    failure = failure.as_str(),
+                    "request to the proof verification service failed"
                 );
+                return Verdict::Error(failure);
             }
         };
 
@@ -170,33 +151,20 @@ impl Client {
         let _ = response.bytes().await;
 
         match status {
-            StatusCode::OK => (
-                VerifyResult {
-                    verdict: Verdict::Accepted,
-                    status_code: status.as_u16(),
-                },
-                Ok(()),
-            ),
-            StatusCode::UNAUTHORIZED => (
-                VerifyResult {
-                    verdict: Verdict::Rejected,
-                    status_code: status.as_u16(),
-                },
-                Ok(()),
-            ),
+            StatusCode::OK => Verdict::Accepted,
+            StatusCode::UNAUTHORIZED => Verdict::Rejected,
             status => {
                 let failure = if status.as_u16() < 500 {
                     FailureClass::UpstreamClient
                 } else {
                     FailureClass::UpstreamServer
                 };
-                (
-                    VerifyResult {
-                        verdict: Verdict::Error(failure),
-                        status_code: status.as_u16(),
-                    },
-                    Err(Error::UnexpectedStatus { status }),
-                )
+                tracing::error!(
+                    %status,
+                    failure = failure.as_str(),
+                    "world-id-proof-verification-service returned an unexpected status"
+                );
+                Verdict::Error(failure)
             }
         }
     }
@@ -204,7 +172,7 @@ impl Client {
 
 #[async_trait]
 impl ProofVerificationClient for Client {
-    async fn verify(&self, request: VerificationRequest) -> (VerifyResult, Result<(), Error>) {
+    async fn verify(&self, request: VerificationRequest) -> Verdict {
         Self::verify(self, request).await
     }
 }
@@ -255,8 +223,8 @@ mod tests {
     };
 
     use super::{
-        Client, Config, DEFAULT_CHALLENGE_TYPE, Error, FailureClass, VERIFY_PATH, Verdict,
-        VerificationRequest, VerifyResult,
+        Client, Config, DEFAULT_CHALLENGE_TYPE, FailureClass, VERIFY_PATH, Verdict,
+        VerificationRequest,
     };
     use crate::auth::AuthProvider;
 
@@ -319,28 +287,24 @@ mod tests {
 
     #[tokio::test]
     async fn verify_classifies_responses() {
-        for (status, verdict, want_err) in [
-            (StatusCode::OK, Verdict::Accepted, false),
-            (StatusCode::UNAUTHORIZED, Verdict::Rejected, false),
+        for (status, verdict) in [
+            (StatusCode::OK, Verdict::Accepted),
+            (StatusCode::UNAUTHORIZED, Verdict::Rejected),
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Verdict::Error(FailureClass::UpstreamServer),
-                true,
             ),
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Verdict::Error(FailureClass::UpstreamServer),
-                true,
             ),
             (
                 StatusCode::BAD_REQUEST,
                 Verdict::Error(FailureClass::UpstreamClient),
-                true,
             ),
             (
                 StatusCode::TOO_MANY_REQUESTS,
                 Verdict::Error(FailureClass::UpstreamClient),
-                true,
             ),
         ] {
             let calls = Arc::new(AtomicUsize::new(0));
@@ -376,18 +340,11 @@ mod tests {
             };
 
             let request = test_request();
-            let (result, error) = client(&url, Duration::from_secs(2))
+            let result = client(&url, Duration::from_secs(2))
                 .verify(request.clone())
                 .await;
 
-            assert_eq!(
-                result,
-                VerifyResult {
-                    verdict,
-                    status_code: status.as_u16(),
-                }
-            );
-            assert_eq!(error.is_err(), want_err, "{error:?}");
+            assert_eq!(result, verdict);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             assert_eq!(*seen_path.lock().unwrap(), VERIFY_PATH);
             assert!(
@@ -418,11 +375,10 @@ mod tests {
             .await
         };
 
-        client(&url, Duration::from_secs(1))
+        let result = client(&url, Duration::from_secs(1))
             .verify(test_request())
-            .await
-            .1
-            .unwrap();
+            .await;
+        assert_eq!(result, Verdict::Accepted);
 
         let raw = raw.lock().unwrap();
         assert!(raw.get("nonce").is_none(), "{raw}");
@@ -439,11 +395,10 @@ mod tests {
         }))
         .await;
 
-        let (result, error) = client(&url, Duration::from_millis(50))
+        let result = client(&url, Duration::from_millis(50))
             .verify(test_request())
             .await;
-        assert_eq!(result.verdict, Verdict::Error(FailureClass::Timeout));
-        assert!(error.is_err(), "{error:?}");
+        assert_eq!(result, Verdict::Error(FailureClass::Timeout));
         server.abort();
     }
 
@@ -458,9 +413,8 @@ mod tests {
             stub_auth(Ok("test-token".to_owned())),
         )
         .unwrap();
-        let (result, error) = client.verify(test_request()).await;
-        assert_eq!(result.verdict, Verdict::Error(FailureClass::Connection));
-        assert!(error.is_err(), "{error:?}");
+        let result = client.verify(test_request()).await;
+        assert_eq!(result, Verdict::Error(FailureClass::Connection));
     }
 
     #[tokio::test]
@@ -480,7 +434,7 @@ mod tests {
             .await
         };
 
-        Client::new(
+        let result = Client::new(
             Config {
                 host: url.to_string(),
                 timeout: Duration::from_secs(1),
@@ -490,9 +444,8 @@ mod tests {
         )
         .unwrap()
         .verify(test_request())
-        .await
-        .1
-        .unwrap();
+        .await;
+        assert_eq!(result, Verdict::Accepted);
 
         assert_eq!(seen.lock().unwrap().as_deref(), Some("Bearer test-token"));
         server.abort();
@@ -513,7 +466,7 @@ mod tests {
             .await
         };
 
-        let (result, error) = Client::new(
+        let result = Client::new(
             Config {
                 host: url.to_string(),
                 timeout: Duration::from_secs(1),
@@ -525,8 +478,7 @@ mod tests {
         .verify(test_request())
         .await;
 
-        assert_eq!(result.verdict, Verdict::Error(FailureClass::Auth));
-        assert!(matches!(error, Err(Error::Auth(_))), "{error:?}");
+        assert_eq!(result, Verdict::Error(FailureClass::Auth));
         assert_eq!(
             calls.load(Ordering::SeqCst),
             0,
@@ -550,7 +502,7 @@ mod tests {
             .await
         };
 
-        Client::new(
+        let result = Client::new(
             Config {
                 host: format!("{url}/"),
                 timeout: Duration::from_secs(1),
@@ -560,9 +512,8 @@ mod tests {
         )
         .unwrap()
         .verify(test_request())
-        .await
-        .1
-        .unwrap();
+        .await;
+        assert_eq!(result, Verdict::Accepted);
 
         assert_eq!(*seen_path.lock().unwrap(), VERIFY_PATH);
         server.abort();
