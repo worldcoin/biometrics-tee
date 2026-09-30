@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use di_dev_api_types::{MAX_PCP_BYTES, MIGRATION_CONTENT_TYPE};
+use di_dev_api_types::{MAX_PCP_BYTES, MIGRATION_CONTENT_TYPE, codes};
 use di_dev_enclave_types::MigrateRequest;
 
 use crate::{AppState, compression, error::ApiError};
@@ -23,7 +23,7 @@ pub async fn submit(
     {
         return Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported_media_type",
+            codes::UNSUPPORTED_MEDIA_TYPE,
             "Expected application/octet-stream",
             false,
         ));
@@ -33,14 +33,14 @@ pub async fn submit(
         if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
             ApiError::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "request_too_large",
+                codes::REQUEST_TOO_LARGE,
                 "The compressed PCP exceeded the body limit",
                 false,
             )
         } else {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
+                codes::INVALID_REQUEST,
                 "Could not read the request body",
                 false,
             )
@@ -51,7 +51,7 @@ pub async fn submit(
     if body.is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "invalid_request",
+            codes::INVALID_REQUEST,
             "The request carried no PCP",
             false,
         ));
@@ -65,7 +65,7 @@ pub async fn submit(
     let Ok(_permit) = migration.try_acquire() else {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
-            "migration_in_progress",
+            codes::MIGRATION_IN_PROGRESS,
             "A migration is already running; retry once it finishes",
             true,
         ));

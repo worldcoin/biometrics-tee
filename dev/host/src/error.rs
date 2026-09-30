@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use di_dev_api_types::{ErrorBody, ErrorEnvelope};
+use di_dev_api_types::{ErrorBody, ErrorEnvelope, codes};
 use di_dev_enclave_types as enclave_types;
 
 use crate::{compression, enclave};
@@ -71,20 +71,20 @@ impl ApiError {
         match error {
             compression::Error::NotGzip => Self::new(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "unsupported_compression",
+                codes::UNSUPPORTED_COMPRESSION,
                 "The PCP must be gzip compressed",
                 false,
             ),
             compression::Error::TooLarge { limit } => Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "pcp_too_large",
+                codes::PCP_TOO_LARGE,
                 "The PCP expanded past the size limit",
                 false,
             )
             .with_detail(format!("limit {limit} bytes")),
             compression::Error::Corrupt(detail) => Self::new(
                 StatusCode::BAD_REQUEST,
-                "invalid_pcp",
+                codes::INVALID_PCP,
                 "The compressed PCP could not be read",
                 false,
             )
@@ -98,13 +98,13 @@ impl ApiError {
         match error {
             enclave::Error::Timeout => Self::new(
                 StatusCode::GATEWAY_TIMEOUT,
-                "enclave_timeout",
+                codes::ENCLAVE_TIMEOUT,
                 "The enclave did not finish the migration in time",
                 true,
             ),
             enclave::Error::Transport(detail) => Self::new(
                 StatusCode::BAD_GATEWAY,
-                "enclave_unreachable",
+                codes::ENCLAVE_UNREACHABLE,
                 "The enclave was unreachable",
                 true,
             )
@@ -118,7 +118,7 @@ impl ApiError {
             // The host rejects empty bodies first, so this means mismatched deploys.
             enclave_types::Error::EmptyPcp => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
+                codes::INTERNAL_ERROR,
                 "Internal server error",
                 false,
             )
@@ -127,7 +127,7 @@ impl ApiError {
             )),
             enclave_types::Error::Internal => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
+                codes::INTERNAL_ERROR,
                 "Internal server error",
                 true,
             )
@@ -171,6 +171,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
+    use di_dev_api_types::codes;
     use di_dev_enclave_types as enclave_types;
 
     use super::ApiError;
@@ -183,17 +184,17 @@ mod tests {
             (
                 compression::Error::NotGzip,
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "unsupported_compression",
+                codes::UNSUPPORTED_COMPRESSION,
             ),
             (
                 compression::Error::TooLarge { limit: 64 },
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "pcp_too_large",
+                codes::PCP_TOO_LARGE,
             ),
             (
                 compression::Error::Corrupt("truncated".to_owned()),
                 StatusCode::BAD_REQUEST,
-                "invalid_pcp",
+                codes::INVALID_PCP,
             ),
         ];
 
@@ -214,17 +215,17 @@ mod tests {
             (
                 enclave::Error::Timeout,
                 StatusCode::GATEWAY_TIMEOUT,
-                "enclave_timeout",
+                codes::ENCLAVE_TIMEOUT,
             ),
             (
                 enclave::Error::Transport("boom".to_owned()),
                 StatusCode::BAD_GATEWAY,
-                "enclave_unreachable",
+                codes::ENCLAVE_UNREACHABLE,
             ),
             (
                 enclave::Error::Operation(enclave_types::Error::Internal),
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
+                codes::INTERNAL_ERROR,
             ),
         ];
 

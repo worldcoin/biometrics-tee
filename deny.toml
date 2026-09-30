@@ -19,6 +19,7 @@ allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # Reached via webpki-roots, the Mozilla CA bundle rustls uses in the CLI.
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",

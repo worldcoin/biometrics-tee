@@ -8,6 +8,8 @@
     dead_code
 )]
 
+pub mod codes;
+
 mod error;
 mod migrations;
 
