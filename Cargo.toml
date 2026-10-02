@@ -6,6 +6,7 @@ members = [
     "dev/enclave-types",
     "dev/host",
     "migration/enclave",
+    "migration/enclave-types",
     "migration/host",
     "migration/api",
     "migration/api-client",
@@ -37,6 +38,7 @@ bytes = { version = "1", features = ["serde"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 di-dev-api-types = { path = "dev/api-types" }
 di-dev-enclave-types = { path = "dev/enclave-types" }
+di-migration-enclave-types = { path = "migration/enclave-types" }
 flate2 = "1.1"
 http-body-util = "0.1"
 mime = "0.3"
