@@ -2,6 +2,8 @@ mod attestation;
 mod config;
 mod db;
 mod error;
+mod fleet;
+mod host_client;
 mod routes;
 
 use std::time::Duration;
@@ -14,7 +16,12 @@ use tokio::net::TcpListener;
 
 use di_migration_storage::PcpBucket;
 
-use crate::{attestation::Attestor, db::Db};
+use crate::{
+    attestation::Attestor,
+    db::Db,
+    fleet::{DnsResolver, Fleet},
+    host_client::HostClient,
+};
 
 fn verifier(
     config: &config::Config,
@@ -51,6 +58,7 @@ struct AppState {
     presigned_url_ttl: Duration,
     attestor: Attestor,
     verifier: Arc<proof::Verifier>,
+    fleet: Arc<Fleet>,
 }
 
 #[tokio::main]
@@ -83,6 +91,15 @@ async fn main() -> anyhow::Result<()> {
     }
     let attestor = Attestor::stub(config.enclave_id);
 
+    let poll_interval = Duration::from_secs(config.capacity_poll_interval_secs);
+    let fleet = Arc::new(Fleet::new(
+        Arc::new(DnsResolver::new(config.host_service, config.host_port)),
+        HostClient::new().context("failed to build the host client")?,
+        // Three missed polls in a row and the fleet's load counts as unknown.
+        poll_interval * 3,
+    ));
+    tokio::spawn(Arc::clone(&fleet).run(poll_interval));
+
     let listener = TcpListener::bind(config.http_addr)
         .await
         .with_context(|| format!("failed to bind HTTP server to {}", config.http_addr))?;
@@ -95,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
             presigned_url_ttl: config.presigned_url_ttl,
             attestor,
             verifier: Arc::new(verifier),
+            fleet,
         })
         .layer(TraceLayer::new_for_axum()),
     )
@@ -154,7 +172,9 @@ mod tests {
 
     use di_migration_storage::PcpBucket;
 
-    use crate::{AppState, attestation::Attestor, db::Db, routes};
+    use crate::{
+        AppState, attestation::Attestor, db::Db, fleet::Fleet, host_client::HostClient, routes,
+    };
 
     fn unavailable_db() -> Db {
         let config = aws_sdk_dynamodb::Config::builder()
@@ -207,7 +227,60 @@ mod tests {
             presigned_url_ttl: Duration::from_secs(900),
             attestor: Attestor::stub("i-0123456789abcdef-enc0".to_owned()),
             verifier: accepting_verifier(),
+            fleet: Arc::new(Fleet::new(
+                Arc::new(NoHosts),
+                HostClient::new().unwrap(),
+                Duration::from_secs(15),
+            )),
         }
+    }
+
+    struct NoHosts;
+
+    #[async_trait]
+    impl crate::fleet::Resolver for NoHosts {
+        async fn resolve(&self) -> Result<Vec<std::net::SocketAddr>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The scheduler pauses on an error, so an unknown fleet must not read as zero capacity.
+    #[tokio::test]
+    async fn capacity_is_unavailable_until_the_fleet_is_polled() {
+        let response = routes::router(unavailable_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/capacity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_code(response).await, "capacity_unknown");
+    }
+
+    #[tokio::test]
+    async fn capacity_reports_the_polled_fleet() {
+        let state = unavailable_state();
+        state.fleet.refresh().await;
+
+        let response = routes::router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/capacity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body, serde_json::json!({"queued": 0, "capacity": 0}));
     }
 
     #[tokio::test]

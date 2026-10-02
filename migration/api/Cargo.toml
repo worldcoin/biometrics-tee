@@ -13,9 +13,12 @@ clap = { workspace = true, features = ["derive", "env"] }
 aws-sdk-dynamodb.workspace = true
 aws-sdk-kms.workspace = true
 aws-sdk-s3.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
+fastrand.workspace = true
 proof.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 telemetry-batteries = { workspace = true, features = ["axum"] }
 thiserror.workspace = true
@@ -25,7 +28,6 @@ di-migration-primitives.workspace = true
 di-migration-storage.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 http-body-util.workspace = true
 migration-api-client.workspace = true
 serde_json.workspace = true

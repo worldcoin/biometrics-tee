@@ -44,6 +44,15 @@ pub struct Config {
     pub proof_jwt_kms_key_id: String,
     #[arg(long, env = "PROOF_JWT_SUBJECT", default_value = "tee-migration")]
     pub proof_jwt_subject: String,
+    /// The hosts' headless Service; it resolves to every ready host pod.
+    #[arg(long, env = "HOST_SERVICE")]
+    pub host_service: String,
+    /// The port hosts serve their internal API on.
+    #[arg(long, env = "HOST_PORT", default_value_t = 8000)]
+    pub host_port: u16,
+    /// How often the fleet's load is polled.
+    #[arg(long, env = "CAPACITY_POLL_INTERVAL_SECS", default_value_t = 5)]
+    pub capacity_poll_interval_secs: u64,
 }
 
 fn parse_presigned_url_ttl(raw: &str) -> Result<Duration, std::num::ParseIntError> {
@@ -77,6 +86,10 @@ pub enum ConfigError {
     InvalidProofVerificationHost,
     #[error("PROOF_JWT_KMS_KEY_ID is required")]
     MissingProofJwtKmsKeyId,
+    #[error("HOST_SERVICE is required")]
+    MissingHostService,
+    #[error("CAPACITY_POLL_INTERVAL_SECS must be at least 1")]
+    InvalidCapacityPollInterval,
 }
 
 impl Config {
@@ -126,6 +139,12 @@ impl Config {
         }
         if config.proof_jwt_kms_key_id.trim().is_empty() {
             return Err(ConfigError::MissingProofJwtKmsKeyId);
+        }
+        if config.host_service.trim().is_empty() {
+            return Err(ConfigError::MissingHostService);
+        }
+        if config.capacity_poll_interval_secs == 0 {
+            return Err(ConfigError::InvalidCapacityPollInterval);
         }
 
         Ok(config)

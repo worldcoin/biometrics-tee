@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use di_migration_primitives::JobId;
+use di_migration_primitives::{JobId, host_api::Capacity};
 use di_migration_storage::schema::pcp_key;
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/init-migration", post(init_migration))
+        .route("/internal/capacity", get(capacity))
         .with_state(state.clone());
 
     Router::new().merge(probes).with_state(state)
@@ -39,6 +40,16 @@ struct InitMigrationResponse {
     attestation: String,
     /// Presigned S3 URL the client uploads the PCP to with `PUT`.
     presigned_url: String,
+}
+
+/// The fleet's summed load for the notification scheduler, which pauses prompting on an error.
+/// Cluster-internal: not routed publicly.
+async fn capacity(State(state): State<AppState>) -> Result<Json<Capacity>, ApiError> {
+    state
+        .fleet
+        .totals()
+        .map(Json)
+        .ok_or_else(ApiError::capacity_unknown)
 }
 
 async fn health() -> StatusCode {
