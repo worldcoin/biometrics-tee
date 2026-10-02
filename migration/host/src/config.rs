@@ -40,6 +40,10 @@ pub struct Config {
     /// Waiting plus running jobs the host holds; also the capacity the API admits against.
     #[arg(long, env = "QUEUE_CAPACITY", default_value = "16")]
     pub queue_capacity: NonZeroUsize,
+    /// After SIGTERM, how long the host keeps finishing held jobs; keep it below the pod's
+    /// `terminationGracePeriodSeconds`.
+    #[arg(long, env = "DRAIN_TIMEOUT_SECS", default_value = "900")]
+    pub drain_timeout_secs: NonZeroU64,
     /// A migration running past this fails as `timeout`; keep it below the job deadline.
     #[arg(long, env = "ENCLAVE_MIGRATE_TIMEOUT_SECS", default_value = "300")]
     pub enclave_migrate_timeout_secs: NonZeroU64,
@@ -50,6 +54,12 @@ impl Config {
     #[must_use]
     pub const fn enclave_migrate_timeout(&self) -> Duration {
         Duration::from_secs(self.enclave_migrate_timeout_secs.get())
+    }
+
+    /// The drain deadline.
+    #[must_use]
+    pub const fn drain_timeout(&self) -> Duration {
+        Duration::from_secs(self.drain_timeout_secs.get())
     }
 }
 
@@ -92,6 +102,7 @@ mod tests {
         assert_eq!(config.max_pcp_bytes.get(), 32 * 1024 * 1024);
         assert_eq!(config.enclave_migrate_timeout().as_secs(), 300);
         assert_eq!(config.queue_capacity.get(), 16);
+        assert_eq!(config.drain_timeout().as_secs(), 900);
     }
 
     #[test]

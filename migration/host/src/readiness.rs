@@ -1,6 +1,12 @@
 //! Readiness, cached so frequent probes do not each cost a vsock round trip and two AWS calls.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use tokio::{sync::Mutex, time::Instant};
 
@@ -19,6 +25,7 @@ pub struct Readiness {
     blob_store: Arc<dyn BlobStore>,
     job_store: Arc<dyn JobStore>,
     last: Mutex<Option<(Instant, bool)>>,
+    draining: AtomicBool,
 }
 
 impl Readiness {
@@ -34,11 +41,21 @@ impl Readiness {
             blob_store,
             job_store,
             last: Mutex::new(None),
+            draining: AtomicBool::new(false),
         }
+    }
+
+    /// Takes the host out of the Service for good; it keeps finishing the jobs it holds.
+    pub fn start_draining(&self) {
+        self.draining.store(true, Ordering::SeqCst);
     }
 
     /// Whether the host may take traffic. Concurrent callers share one check.
     pub async fn is_ready(&self) -> bool {
+        if self.draining.load(Ordering::SeqCst) {
+            return false;
+        }
+
         let mut last = self.last.lock().await;
         if let Some((checked_at, ready)) = *last
             && checked_at.elapsed() < READINESS_TTL
@@ -103,6 +120,17 @@ mod tests {
         assert!(readiness.is_ready().await);
 
         assert_eq!(enclave.health_calls(), 2);
+    }
+
+    /// A draining host leaves the Service even though its dependencies are healthy.
+    #[tokio::test]
+    async fn a_draining_host_is_not_ready() {
+        let readiness = healthy(Arc::new(CountingEnclave::default()));
+        assert!(readiness.is_ready().await);
+
+        readiness.start_draining();
+
+        assert!(!readiness.is_ready().await);
     }
 
     /// Without S3 or `DynamoDB` every job would fail, so the host must leave the Service.
