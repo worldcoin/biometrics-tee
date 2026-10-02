@@ -20,6 +20,19 @@ let
       strictDeps = true;
       cargoExtraArgs = "--locked --bin ${pname}";
 
+      # Crane prepares dependencies for the whole workspace, including di-sandbox's Linux-only
+      # Minijail. Give it Nix's Minijail: the Cargo fallback expects the full upstream
+      # repository around the vendored crate and fails with no makefile.
+      nativeBuildInputs = [
+        pkgs.clang
+        pkgs.pkg-config
+      ];
+      buildInputs = [
+        pkgs.minijail
+        pkgs.libcap
+      ];
+      LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
       # LLVM's LICM scalar promotion orders work by pointer value, so rustc (1.97 and 1.98
       # both) emits different code for the same input under different address-space layouts —
       # the same commit measured different PCRs on different machines. Nix disables ASLR in
