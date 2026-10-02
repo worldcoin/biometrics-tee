@@ -17,6 +17,7 @@ use di_migration_storage::StorageError;
 use crate::{
     AppState,
     enclave::{EnclaveClient, Error},
+    queue::Job,
     store::{BlobStore, JobStore, StoreError},
 };
 
@@ -180,4 +181,17 @@ pub fn state_with(client: Arc<dyn EnclaveClient>) -> AppState {
         Arc::new(HealthyStore),
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)),
     )
+}
+
+/// Job number `n`, with the object key the API would send.
+pub fn job(n: u64) -> Job {
+    let job_id: JobId = format!("00000000-0000-4000-8000-{n:012}")
+        .parse()
+        .expect("should be a UUID");
+    Job {
+        object_key: di_migration_storage::schema::pcp_key(&job_id),
+        job_id,
+        sub: "sub".to_owned(),
+        device_public_key: "device-key".to_owned(),
+    }
 }
