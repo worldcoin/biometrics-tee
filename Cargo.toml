@@ -61,6 +61,7 @@ telemetry-batteries = { version = "0.4.1", default-features = false }
 tempfile = "3.27"
 thiserror = "2"
 tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-vsock = "0.7.2"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
