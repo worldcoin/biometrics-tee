@@ -6,29 +6,36 @@ use anyhow::Context;
 use telemetry_batteries::tracing::middleware::TraceLayer;
 use tokio::net::TcpListener;
 
-use crate::{AppState, routes};
+use crate::{AppState, routes, worker::Worker};
 
-/// Starts the API server.
+/// Starts the API server and the worker. If the worker ever stops, the process exits, so a
+/// host never keeps accepting jobs nothing runs.
 ///
 /// # Errors
 ///
-/// Returns an error when the listener cannot bind or the server exits.
-pub async fn start(port: NonZeroU16, state: AppState) -> anyhow::Result<()> {
+/// Returns an error when the listener cannot bind, the server exits, or the worker stops.
+pub async fn start(port: NonZeroU16, state: AppState, worker: Worker) -> anyhow::Result<()> {
     let address = SocketAddr::from(([0, 0, 0, 0], port.get()));
     let listener = TcpListener::bind(address)
         .await
         .with_context(|| format!("failed to bind API to {address}"))?;
 
-    axum::serve(
+    let server = axum::serve(
         listener,
         routes::handler()
             .with_state(state)
             .layer(TraceLayer::new_for_axum())
             .into_make_service(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("API server failed")
+    .with_graceful_shutdown(shutdown_signal());
+
+    tokio::select! {
+        result = server => result.context("API server failed"),
+        joined = tokio::spawn(worker.run()) => {
+            tracing::error!(?joined, "job worker stopped");
+            anyhow::bail!("job worker stopped")
+        }
+    }
 }
 
 /// Resolves on the first shutdown signal; SIGTERM too, since that is what drains a pod.

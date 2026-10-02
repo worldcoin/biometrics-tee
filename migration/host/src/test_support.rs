@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr},
+    num::NonZeroUsize,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -19,6 +20,8 @@ use tokio::sync::Notify;
 use crate::{
     AppState,
     enclave::{EnclaveClient, Error},
+    queue::JobQueue,
+    readiness::Readiness,
     store::{BlobStore, JobStore, StoreError},
 };
 
@@ -329,12 +332,23 @@ impl JobStore for FailingStore {
     }
 }
 
-/// Builds state around `client` with healthy storage and a fixed host IP.
+/// Builds state around `client` with healthy storage, a 16-job queue and a fixed host IP.
 pub fn state_with(client: Arc<dyn EnclaveClient>) -> AppState {
+    state_with_capacity(client, 16)
+}
+
+/// As [`state_with`], with a queue capped at `capacity`.
+pub fn state_with_capacity(client: Arc<dyn EnclaveClient>, capacity: usize) -> AppState {
     AppState::new(
-        client,
-        Arc::new(HealthyStore),
-        Arc::new(HealthyStore),
+        Arc::clone(&client),
+        Arc::new(Readiness::new(
+            client,
+            Arc::new(HealthyStore),
+            Arc::new(HealthyStore),
+        )),
+        Arc::new(JobQueue::new(
+            NonZeroUsize::new(capacity).expect("capacity should be non-zero"),
+        )),
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)),
     )
 }
