@@ -1,29 +1,38 @@
-//! Readiness, cached so frequent probes do not each cost a vsock round trip and an S3 call.
+//! Readiness, cached so frequent probes do not each cost a vsock round trip and two AWS calls.
 
 use std::{sync::Arc, time::Duration};
 
 use tokio::{sync::Mutex, time::Instant};
 
-use crate::{enclave::EnclaveClient, store::BlobStore};
+use crate::{
+    enclave::EnclaveClient,
+    store::{BlobStore, JobStore},
+};
 
 /// How long a readiness result is reused; short against the probe period, long against bursts.
 const READINESS_TTL: Duration = Duration::from_secs(2);
 
-/// The host's readiness: its enclave and bucket both answer. Without either every job would
-/// fail, so the host leaves the Service rather than taking them.
+/// The host's readiness: its enclave, bucket and table all answer. Without any of them every
+/// job would fail, so the host leaves the Service rather than taking them.
 pub struct Readiness {
     enclave_client: Arc<dyn EnclaveClient>,
     blob_store: Arc<dyn BlobStore>,
+    job_store: Arc<dyn JobStore>,
     last: Mutex<Option<(Instant, bool)>>,
 }
 
 impl Readiness {
     /// Creates an empty cache; the first check reaches every dependency.
     #[must_use]
-    pub fn new(enclave_client: Arc<dyn EnclaveClient>, blob_store: Arc<dyn BlobStore>) -> Self {
+    pub fn new(
+        enclave_client: Arc<dyn EnclaveClient>,
+        blob_store: Arc<dyn BlobStore>,
+        job_store: Arc<dyn JobStore>,
+    ) -> Self {
         Self {
             enclave_client,
             blob_store,
+            job_store,
             last: Mutex::new(None),
         }
     }
@@ -43,8 +52,11 @@ impl Readiness {
     }
 
     async fn check(&self) -> bool {
-        let (enclave, blobs) =
-            tokio::join!(self.enclave_client.health(), self.blob_store.check_ready());
+        let (enclave, blobs, jobs) = tokio::join!(
+            self.enclave_client.health(),
+            self.blob_store.check_ready(),
+            self.job_store.check_ready(),
+        );
 
         if let Err(error) = &enclave {
             tracing::warn!(?error, dependency = "enclave", "readiness check failed");
@@ -52,7 +64,10 @@ impl Readiness {
         if let Err(error) = &blobs {
             tracing::warn!(%error, dependency = "s3", "readiness check failed");
         }
-        enclave.is_ok() && blobs.is_ok()
+        if let Err(error) = &jobs {
+            tracing::warn!(%error, dependency = "dynamodb", "readiness check failed");
+        }
+        enclave.is_ok() && blobs.is_ok() && jobs.is_ok()
     }
 }
 
@@ -64,7 +79,7 @@ mod tests {
     use crate::test_support::{CountingEnclave, FailingStore, HealthyStore, StubEnclave};
 
     fn healthy(enclave: Arc<CountingEnclave>) -> Readiness {
-        Readiness::new(enclave, Arc::new(HealthyStore))
+        Readiness::new(enclave, Arc::new(HealthyStore), Arc::new(HealthyStore))
     }
 
     #[tokio::test(start_paused = true)]
@@ -90,11 +105,19 @@ mod tests {
         assert_eq!(enclave.health_calls(), 2);
     }
 
-    /// Without S3 every job would fail, so the host must leave the Service.
+    /// Without S3 or `DynamoDB` every job would fail, so the host must leave the Service.
     #[tokio::test]
-    async fn an_unreachable_bucket_makes_the_host_unready() {
-        let readiness = Readiness::new(Arc::new(StubEnclave::default()), Arc::new(FailingStore));
+    async fn an_unreachable_bucket_or_table_makes_the_host_unready() {
+        let enclave = Arc::new(StubEnclave::default());
 
-        assert!(!readiness.is_ready().await);
+        let no_bucket = Readiness::new(
+            enclave.clone(),
+            Arc::new(FailingStore),
+            Arc::new(HealthyStore),
+        );
+        let no_table = Readiness::new(enclave, Arc::new(HealthyStore), Arc::new(FailingStore));
+
+        assert!(!no_bucket.is_ready().await);
+        assert!(!no_table.is_ready().await);
     }
 }

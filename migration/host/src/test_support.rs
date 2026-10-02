@@ -11,12 +11,12 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use di_migration_enclave_types::KeyAttestation;
-use di_migration_storage::StorageError;
+use di_migration_storage::{Reason, StorageError};
 
 use crate::{
     AppState,
     enclave::{EnclaveClient, Error},
-    store::{BlobStore, StoreError},
+    store::{BlobStore, JobStore, StoreError},
 };
 
 /// Answers every call with a fixed key and document.
@@ -102,14 +102,29 @@ impl BlobStore for HealthyStore {
     }
 }
 
+#[async_trait]
+impl JobStore for HealthyStore {
+    async fn check_ready(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn mark_migrated(&self, _: &str, _: &str) -> Result<(), StoreError> {
+        unimplemented!("not exercised by these tests")
+    }
+
+    async fn mark_failed(&self, _: &str, _: Reason) -> Result<(), StoreError> {
+        unimplemented!("not exercised by these tests")
+    }
+}
+
 /// Fails every readiness check.
 pub struct FailingStore;
 
 fn unreachable() -> StoreError {
-    StoreError::Bucket(StorageError::Failed {
+    StorageError::Failed {
         operation: "test",
         detail: "unreachable".to_owned(),
-    })
+    }
 }
 
 #[async_trait]
@@ -127,10 +142,26 @@ impl BlobStore for FailingStore {
     }
 }
 
+#[async_trait]
+impl JobStore for FailingStore {
+    async fn check_ready(&self) -> Result<(), StoreError> {
+        Err(unreachable())
+    }
+
+    async fn mark_migrated(&self, _: &str, _: &str) -> Result<(), StoreError> {
+        Err(unreachable())
+    }
+
+    async fn mark_failed(&self, _: &str, _: Reason) -> Result<(), StoreError> {
+        Err(unreachable())
+    }
+}
+
 /// Builds state around `client` with healthy storage and a fixed host IP.
 pub fn state_with(client: Arc<dyn EnclaveClient>) -> AppState {
     AppState::new(
         client,
+        Arc::new(HealthyStore),
         Arc::new(HealthyStore),
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)),
     )

@@ -8,7 +8,6 @@ members = [
     "migration/enclave",
     "migration/enclave-types",
     "migration/host",
-    "migration/jobs",
     "migration/storage",
     "migration/api",
     "migration/api-client",
@@ -41,7 +40,6 @@ clap = { version = "4.6", features = ["derive", "env"] }
 di-dev-api-types = { path = "dev/api-types" }
 di-dev-enclave-types = { path = "dev/enclave-types" }
 di-migration-enclave-types = { path = "migration/enclave-types" }
-di-migration-jobs = { path = "migration/jobs" }
 di-migration-storage = { path = "migration/storage" }
 flate2 = "1.1"
 http-body-util = "0.1"

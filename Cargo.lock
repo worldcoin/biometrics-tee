@@ -1324,6 +1324,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "aws-config",
+ "aws-sdk-dynamodb",
  "aws-sdk-s3",
  "axum",
  "base64 0.22.1",
@@ -1343,18 +1344,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "di-migration-jobs"
-version = "0.1.0"
-
-[[package]]
 name = "di-migration-storage"
 version = "0.1.0"
 dependencies = [
  "aws-config",
+ "aws-sdk-dynamodb",
  "aws-sdk-s3",
  "axum",
  "bytes",
- "di-migration-jobs",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
 ]

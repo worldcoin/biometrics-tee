@@ -25,14 +25,14 @@ impl S3BlobStore {
 #[async_trait]
 impl BlobStore for S3BlobStore {
     async fn check_ready(&self) -> Result<(), StoreError> {
-        Ok(self.bucket.check_ready().await?)
+        self.bucket.check_ready().await
     }
 
     async fn get_pcp(&self, object_key: &str) -> Result<Bytes, StoreError> {
-        Ok(self.bucket.get_pcp(object_key, self.max_pcp_bytes).await?)
+        self.bucket.get_pcp(object_key, self.max_pcp_bytes).await
     }
 
     async fn put_result(&self, job_id: &str, blob: Vec<u8>) -> Result<String, StoreError> {
-        Ok(self.bucket.put_result(job_id, blob).await?)
+        self.bucket.put_result(job_id, blob).await
     }
 }

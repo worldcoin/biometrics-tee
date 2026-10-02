@@ -1,13 +1,4 @@
-//! The migration job row and object layout shared by the Migration API and the host, so both
-//! read and write the same `DynamoDB` attributes and S3 keys.
-
-#![deny(
-    clippy::all,
-    clippy::pedantic,
-    clippy::nursery,
-    missing_docs,
-    dead_code
-)]
+//! The job row and object layout shared by the Migration API and the host.
 
 /// `DynamoDB` attribute names of a job row.
 pub mod attributes {
