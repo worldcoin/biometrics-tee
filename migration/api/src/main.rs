@@ -100,25 +100,49 @@ async fn main() -> anyhow::Result<()> {
     ));
     tokio::spawn(Arc::clone(&fleet).run(poll_interval));
 
+    let state = AppState {
+        db,
+        bucket,
+        presigned_url_ttl: config.presigned_url_ttl,
+        attestor,
+        verifier: Arc::new(verifier),
+        fleet,
+    };
     let listener = TcpListener::bind(config.http_addr)
         .await
         .with_context(|| format!("failed to bind HTTP server to {}", config.http_addr))?;
+    let internal_listener = TcpListener::bind(config.internal_http_addr)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to bind internal HTTP server to {}",
+                config.internal_http_addr
+            )
+        })?;
 
-    axum::serve(
+    // One signal stops both servers; each lets its in-flight requests finish.
+    let (stop, _) = tokio::sync::watch::channel(());
+    let stopped = |mut receiver: tokio::sync::watch::Receiver<()>| async move {
+        let _ = receiver.changed().await;
+    };
+    let public = axum::serve(
         listener,
-        routes::router(AppState {
-            db,
-            bucket,
-            presigned_url_ttl: config.presigned_url_ttl,
-            attestor,
-            verifier: Arc::new(verifier),
-            fleet,
-        })
-        .layer(TraceLayer::new_for_axum()),
+        routes::router(state.clone()).layer(TraceLayer::new_for_axum()),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("HTTP server failed")
+    .with_graceful_shutdown(stopped(stop.subscribe()));
+    let internal = axum::serve(
+        internal_listener,
+        routes::internal_router(state).layer(TraceLayer::new_for_axum()),
+    )
+    .with_graceful_shutdown(stopped(stop.subscribe()));
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = stop.send(());
+    });
+
+    let (public, internal) = tokio::join!(public, internal);
+    public.context("HTTP server failed")?;
+    internal.context("internal HTTP server failed")
 }
 
 /// Resolves on the first shutdown signal; SIGTERM too, since that is what drains a pod.
@@ -244,10 +268,26 @@ mod tests {
         }
     }
 
+    /// Internal routes must not be reachable through the public listener.
+    #[tokio::test]
+    async fn the_public_router_does_not_serve_internal_routes() {
+        let response = routes::router(unavailable_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/capacity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
     /// The scheduler pauses on an error, so an unknown fleet must not read as zero capacity.
     #[tokio::test]
     async fn capacity_is_unavailable_until_the_fleet_is_polled() {
-        let response = routes::router(unavailable_state())
+        let response = routes::internal_router(unavailable_state())
             .oneshot(
                 Request::builder()
                     .uri("/internal/capacity")
@@ -266,7 +306,7 @@ mod tests {
         let state = unavailable_state();
         state.fleet.refresh().await;
 
-        let response = routes::router(state)
+        let response = routes::internal_router(state)
             .oneshot(
                 Request::builder()
                     .uri("/internal/capacity")

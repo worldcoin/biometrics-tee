@@ -12,6 +12,9 @@ const DEFAULT_PRESIGNED_URL_TTL_SECS: &str = "900";
 pub struct Config {
     #[arg(long, env = "HTTP_ADDR", default_value = "0.0.0.0:8080")]
     pub http_addr: SocketAddr,
+    /// Listener for cluster-internal routes; must never be exposed through the gateway.
+    #[arg(long, env = "INTERNAL_HTTP_ADDR", default_value = "0.0.0.0:8081")]
+    pub internal_http_addr: SocketAddr,
     #[arg(long, env = "DYNAMODB_TABLE_NAME")]
     pub dynamodb_table_name: String,
     #[arg(long, env = "PCP_BUCKET")]

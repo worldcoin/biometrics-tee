@@ -12,15 +12,21 @@ use crate::{AppState, error::ApiError};
 /// Bounds the subject we accept; real subjects are short opaque identifiers.
 const MAX_SUB_LEN: usize = 255;
 
+/// The public API the app calls, exposed through the gateway.
 pub fn router(state: AppState) -> Router {
-    let probes = Router::new()
+    Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/init-migration", post(init_migration))
-        .route("/internal/capacity", get(capacity))
-        .with_state(state.clone());
+        .with_state(state)
+}
 
-    Router::new().merge(probes).with_state(state)
+/// Cluster-internal routes on their own listener, which is never routed publicly; the public
+/// router has no path to them, whatever the gateway forwards.
+pub fn internal_router(state: AppState) -> Router {
+    Router::new()
+        .route("/internal/capacity", get(capacity))
+        .with_state(state)
 }
 
 #[derive(Deserialize)]
@@ -43,7 +49,6 @@ struct InitMigrationResponse {
 }
 
 /// The fleet's summed load for the notification scheduler, which pauses prompting on an error.
-/// Cluster-internal: not routed publicly.
 async fn capacity(State(state): State<AppState>) -> Result<Json<Capacity>, ApiError> {
     state
         .fleet
