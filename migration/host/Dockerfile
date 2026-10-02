@@ -12,7 +12,8 @@ RUN cargo build --release --locked \
       --package di-migration-host \
  && mv target/x86_64-unknown-linux-musl/release/di-migration-host /app/host-bin
 
-FROM scratch AS runtime
+# The common-app chart's preStop hook requires /bin/sh and sleep.
+FROM busybox:1.37.0-musl AS runtime
 WORKDIR /app
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/

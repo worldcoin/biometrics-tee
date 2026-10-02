@@ -11,5 +11,20 @@ name = "di-migration-host"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+clap.workspace = true
+di-migration-enclave-types.workspace = true
+pontifex = { workspace = true, features = ["channel", "client"] }
+serde.workspace = true
+telemetry-batteries = { workspace = true, features = ["axum"] }
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tower.workspace = true
