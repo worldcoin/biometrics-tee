@@ -1,9 +1,8 @@
 mod attestation;
 mod config;
 mod db;
+mod error;
 mod routes;
-mod s3;
-mod sqs;
 
 use std::time::Duration;
 
@@ -13,7 +12,9 @@ use std::sync::Arc;
 use telemetry_batteries::tracing::middleware::TraceLayer;
 use tokio::net::TcpListener;
 
-use crate::{attestation::Attestor, db::Db, s3::S3, sqs::Sqs};
+use di_migration_storage::PcpBucket;
+
+use crate::{attestation::Attestor, db::Db};
 
 fn verifier(
     config: &config::Config,
@@ -33,7 +34,6 @@ fn verifier(
         },
         std::sync::Arc::new(auth_provider) as std::sync::Arc<dyn proof::AuthProvider>,
     )?;
-    tracing::info!(host = %config.proof_verification_host, "proof verification is enabled");
     Ok(proof::Verifier::new(
         proof::VerifierConfig {
             max_proof_body_bytes: config.proof_max_proof_body_bytes,
@@ -46,8 +46,9 @@ fn verifier(
 #[derive(Clone)]
 struct AppState {
     db: Db,
-    sqs: Sqs,
-    s3: S3,
+    bucket: PcpBucket,
+    /// How long presigned upload URLs stay valid.
+    presigned_url_ttl: Duration,
     attestor: Attestor,
     verifier: Arc<proof::Verifier>,
 }
@@ -72,15 +73,10 @@ async fn main() -> anyhow::Result<()> {
         aws_sdk_dynamodb::Client::new(&aws_config),
         config.dynamodb_table_name,
     );
-    let sqs = Sqs::new(aws_sdk_sqs::Client::new(&aws_config), config.sqs_queue_url);
     let s3_config = aws_sdk_s3::config::Builder::from(&aws_config)
         .force_path_style(config.s3_force_path_style)
         .build();
-    let s3 = S3::new(
-        aws_sdk_s3::Client::from_conf(s3_config),
-        config.pcp_bucket,
-        config.presigned_url_ttl,
-    );
+    let bucket = PcpBucket::new(aws_sdk_s3::Client::from_conf(s3_config), config.pcp_bucket);
 
     if config.stub_attestation {
         tracing::warn!("serving a stub attestation; this build must not handle production traffic");
@@ -91,20 +87,52 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind HTTP server to {}", config.http_addr))?;
 
-    tracing::info!(address = %listener.local_addr()?, "HTTP server listening");
     axum::serve(
         listener,
         routes::router(AppState {
             db,
-            sqs,
-            s3,
+            bucket,
+            presigned_url_ttl: config.presigned_url_ttl,
             attestor,
             verifier: Arc::new(verifier),
         })
         .layer(TraceLayer::new_for_axum()),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .context("HTTP server failed")
+}
+
+/// Resolves on the first shutdown signal; SIGTERM too, since that is what drains a pod.
+/// In-flight requests then finish before the server exits.
+async fn shutdown_signal() {
+    let interrupt = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "failed to install Ctrl-C handler");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = interrupt => tracing::warn!("received Ctrl-C, shutting down"),
+        () = terminate => tracing::warn!("received SIGTERM, shutting down"),
+    }
 }
 
 #[cfg(test)]
@@ -124,7 +152,9 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::{AppState, attestation::Attestor, db::Db, routes, s3::S3, sqs::Sqs};
+    use di_migration_storage::PcpBucket;
+
+    use crate::{AppState, attestation::Attestor, db::Db, routes};
 
     fn unavailable_db() -> Db {
         let config = aws_sdk_dynamodb::Config::builder()
@@ -142,24 +172,8 @@ mod tests {
         )
     }
 
-    fn unavailable_sqs() -> Sqs {
-        let config = aws_sdk_sqs::Config::builder()
-            .region(aws_sdk_sqs::config::Region::new("us-east-1"))
-            .behavior_version(aws_config::BehaviorVersion::latest())
-            .credentials_provider(aws_sdk_sqs::config::Credentials::new(
-                "test", "test", None, None, "test",
-            ))
-            .endpoint_url("http://127.0.0.1:9")
-            .retry_config(aws_sdk_sqs::config::retry::RetryConfig::disabled())
-            .build();
-        Sqs::new(
-            aws_sdk_sqs::Client::from_conf(config),
-            "http://127.0.0.1:9/000000000000/test-queue".to_owned(),
-        )
-    }
-
     /// Presigning is offline, so this client signs URLs even though the endpoint is unreachable.
-    fn unavailable_s3() -> S3 {
+    fn unavailable_bucket() -> PcpBucket {
         let config = aws_sdk_s3::Config::builder()
             .region(aws_sdk_s3::config::Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
@@ -170,10 +184,9 @@ mod tests {
             .force_path_style(true)
             .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
             .build();
-        S3::new(
+        PcpBucket::new(
             aws_sdk_s3::Client::from_conf(config),
             "test-bucket".to_owned(),
-            Duration::from_secs(900),
         )
     }
 
@@ -190,8 +203,8 @@ mod tests {
     fn unavailable_state() -> AppState {
         AppState {
             db: unavailable_db(),
-            sqs: unavailable_sqs(),
-            s3: unavailable_s3(),
+            bucket: unavailable_bucket(),
+            presigned_url_ttl: Duration::from_secs(900),
             attestor: Attestor::stub("i-0123456789abcdef-enc0".to_owned()),
             verifier: accepting_verifier(),
         }
@@ -200,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn probes_when_dependencies_are_unavailable() {
         for (path, expected) in [
-            ("/healtz", StatusCode::OK),
+            ("/healthz", StatusCode::OK),
             ("/readyz", StatusCode::SERVICE_UNAVAILABLE),
         ] {
             let response = routes::router(unavailable_state())
@@ -247,8 +260,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "invalid_sub");
+        assert_eq!(error_code(response).await, "invalid_sub");
     }
 
     #[tokio::test]
@@ -263,8 +275,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "proof_missing");
+        assert_eq!(error_code(response).await, "proof_missing");
     }
 
     #[tokio::test]
@@ -281,9 +292,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "verification_error");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_code(response).await, "verification_error");
     }
 
     #[tokio::test]
@@ -337,7 +347,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readiness_fails_when_only_sqs_is_unavailable() {
+    async fn readiness_fails_when_only_the_bucket_is_unavailable() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -386,6 +396,34 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_rejected_proof_is_forbidden() {
+        let state = AppState {
+            verifier: Arc::new(proof::Verifier::new(
+                proof::VerifierConfig::default(),
+                Arc::new(MockVerifier {
+                    result: proof::Verdict::Rejected,
+                    seen: Mutex::new(Vec::new()),
+                }),
+            )),
+            ..unavailable_state()
+        };
+        let response = routes::router(state)
+            .oneshot(init_migration_request("test-sub"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(error_code(response).await, "verification_failed");
+    }
+
+    async fn error_code(response: axum::response::Response) -> String {
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        body["error"]["code"].as_str().unwrap().to_owned()
     }
 
     fn init_migration_request(sub: &str) -> Request<Body> {

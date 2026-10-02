@@ -2,19 +2,19 @@ use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
-    response::IntoResponse,
     routing::{get, post},
 };
+use di_migration_primitives::JobId;
+use di_migration_storage::schema::pcp_key;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::AppState;
+use crate::{AppState, error::ApiError};
 /// Bounds the subject we accept; real subjects are short opaque identifiers.
 const MAX_SUB_LEN: usize = 255;
 
 pub fn router(state: AppState) -> Router {
     let probes = Router::new()
-        .route("/healtz", get(health))
+        .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/init-migration", post(init_migration))
         .with_state(state.clone());
@@ -46,22 +46,16 @@ async fn health() -> StatusCode {
 }
 
 async fn ready(State(state): State<AppState>) -> StatusCode {
-    let (db_result, sqs_result, s3_result) = tokio::join!(
-        state.db.check_ready(),
-        state.sqs.check_ready(),
-        state.s3.check_ready()
-    );
+    let (db_result, bucket_result) =
+        tokio::join!(state.db.check_ready(), state.bucket.check_ready());
 
     if let Err(error) = &db_result {
         tracing::warn!(error = %format!("{error:#}"), dependency = "dynamodb", "readiness check failed");
     }
-    if let Err(error) = &sqs_result {
-        tracing::warn!(error = %format!("{error:#}"), dependency = "sqs", "readiness check failed");
+    if let Err(error) = &bucket_result {
+        tracing::warn!(%error, dependency = "s3", "readiness check failed");
     }
-    if let Err(error) = &s3_result {
-        tracing::warn!(error = %format!("{error:#}"), dependency = "s3", "readiness check failed");
-    }
-    if db_result.is_ok() && sqs_result.is_ok() && s3_result.is_ok() {
+    if db_result.is_ok() && bucket_result.is_ok() {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -71,10 +65,10 @@ async fn ready(State(state): State<AppState>) -> StatusCode {
 async fn init_migration(
     State(state): State<AppState>,
     Json(request): Json<InitMigrationRequest>,
-) -> Result<impl IntoResponse, (StatusCode, &'static str)> {
+) -> Result<Json<InitMigrationResponse>, ApiError> {
     let sub = request.sub.trim();
     if sub.is_empty() || sub.len() > MAX_SUB_LEN || sub.chars().any(char::is_control) {
-        return Err((StatusCode::BAD_REQUEST, "invalid_sub"));
+        return Err(ApiError::invalid_sub());
     }
 
     let verification = proof::VerificationRequest {
@@ -83,33 +77,24 @@ async fn init_migration(
         credential_sub: sub.to_string(),
         proof: request.proof,
     };
-    if let Err(error) = state.verifier.verify(verification).await {
-        if !matches!(error, proof::ProofVerificationError::VerificationError) {
-            tracing::error!(error = %error, credential_sub = %sub, "failed to verify the proof");
-        }
-        let status = match error {
-            proof::ProofVerificationError::VerificationError => StatusCode::INTERNAL_SERVER_ERROR,
-            _ => StatusCode::BAD_REQUEST,
-        };
-        return Err((status, error.as_str()));
-    }
+    state
+        .verifier
+        .verify(verification)
+        .await
+        .map_err(|error| ApiError::proof(&error))?;
 
-    let migration_id = Uuid::new_v4();
-    let object_key = format!("pcp/{migration_id}");
-
+    let job_id = JobId::new();
     state
         .db
-        .put_migration(&migration_id.to_string(), sub, &object_key)
+        .put_migration(job_id.as_str(), sub, &pcp_key(&job_id))
         .await
-        .map_err(|error| {
-            tracing::error!(error = %format!("{error:#}"), %migration_id, "failed to record the migration");
-            (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
-        })?;
+        .map_err(|error| ApiError::storage("dynamodb", format!("{error:#}")))?;
 
-    let presigned_url = state.s3.presign_put(&object_key).await.map_err(|error| {
-        tracing::error!(error = %format!("{error:#}"), %migration_id, "failed to presign the PCP upload URL");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal")
-    })?;
+    let presigned_url = state
+        .bucket
+        .presign_upload(&job_id, state.presigned_url_ttl)
+        .await
+        .map_err(|error| ApiError::storage("s3", error.to_string()))?;
     let attestation = state.attestor.attest();
 
     Ok(Json(InitMigrationResponse {

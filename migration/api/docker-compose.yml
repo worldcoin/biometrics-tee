@@ -4,7 +4,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      SERVICES: s3,sqs,dynamodb,kms
+      SERVICES: s3,dynamodb,kms
       AWS_DEFAULT_REGION: us-east-1
     volumes:
       - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
@@ -14,7 +14,6 @@ services:
         - >-
           awslocal s3api head-bucket --bucket di-migration-pcp
           && awslocal dynamodb describe-table --table-name di-migration
-          && awslocal sqs get-queue-url --queue-name di-migration
           && awslocal kms describe-key --key-id alias/di-migration-proof
       interval: 5s
       timeout: 5s

@@ -326,31 +326,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aws-sdk-sqs"
-version = "1.112.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2222f7970a8ff4382bc8864f3d5950fa5f866790d32df2bf43ef379d43eb735"
-dependencies = [
- "arc-swap",
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-observability",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http",
- "regex-lite",
- "tracing",
-]
-
-[[package]]
 name = "aws-sdk-sso"
 version = "1.112.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2371,10 +2346,11 @@ dependencies = [
  "aws-sdk-dynamodb",
  "aws-sdk-kms",
  "aws-sdk-s3",
- "aws-sdk-sqs",
  "axum",
  "base64 0.22.1",
  "clap",
+ "di-migration-primitives",
+ "di-migration-storage",
  "http-body-util",
  "migration-api-client",
  "proof",
@@ -2385,7 +2361,6 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
- "uuid",
 ]
 
 [[package]]
