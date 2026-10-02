@@ -1,0 +1,16 @@
+# Vendored from worldcoin/biometric-engines@fc8bf8e6ff63d71a2a1905adb9d9cc6be8ad9d26 (private repository).
+# Replace with the published crate once a release carries the iris operation.
+[package]
+name = "biometric-engines-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+prost = "0.14.3"
+serde.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+prost-build = "0.14.3"

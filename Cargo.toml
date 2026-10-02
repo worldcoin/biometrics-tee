@@ -15,6 +15,7 @@ members = [
     "migration/cli",
     "migration/proof",
     "sandbox",
+    "vendor/biometric-engines-protocol",
 ]
 resolver = "3"
 
@@ -31,6 +32,7 @@ publish = false
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
+biometric-engines-protocol = { path = "vendor/biometric-engines-protocol" }
 aws-config = "1"
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }

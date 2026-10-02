@@ -1,0 +1,5 @@
+# Upstream biometric-engines rustfmt settings (stable subset), so the copy stays verbatim.
+edition = "2024"
+newline_style = "Unix"
+use_field_init_shorthand = true
+style_edition = "2024"
