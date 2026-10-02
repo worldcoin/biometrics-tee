@@ -53,8 +53,19 @@ jobs:
       # di-sandbox builds Minijail from source.
       - name: Install Minijail build dependencies
         run: sudo apt-get update && sudo apt-get install -y libcap-dev clang pkg-config
+      # The sandbox's process tests need root, so they run separately below.
       - name: tests
-        run: cargo test --locked --workspace --all-features --verbose
+        run: cargo test --locked --workspace --all-features --exclude di-sandbox --verbose
+      - name: Sandbox tests
+        run: cargo test --locked -p di-sandbox
+      - name: Minijail process tests
+        run: |
+          RUSTFLAGS="-C target-feature=+crt-static" cargo test --locked \
+            --target x86_64-unknown-linux-gnu -p di-sandbox --all-features --no-run \
+            --message-format=json > target/worker-test-artifacts.json
+          test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "process") | .executable // empty' target/worker-test-artifacts.json)
+          test -n "$test_binary"
+          sudo timeout --kill-after=5s 60s "$test_binary"
 
   localstack:
     name: LocalStack tests
