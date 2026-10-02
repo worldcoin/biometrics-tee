@@ -1,0 +1,19 @@
+[package]
+name = "di-migration-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aws-sdk-s3.workspace = true
+bytes.workspace = true
+di-migration-jobs.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+aws-config.workspace = true
+axum.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

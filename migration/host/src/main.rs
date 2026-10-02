@@ -1,7 +1,15 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use anyhow::Context;
+use aws_config::BehaviorVersion;
 use clap::Parser;
-use di_migration_host::{AppState, config::Config, enclave::PontifexEnclaveClient};
+use di_migration_host::{
+    AppState, config::Config, enclave::PontifexEnclaveClient, store::S3BlobStore,
+};
+use di_migration_storage::PcpBucket;
+
+/// Credential and region discovery must not stall startup indefinitely.
+const AWS_CONFIG_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -10,11 +18,34 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("failed to initialize telemetry: {error:?}"))?;
 
     let config = Config::parse();
+
+    // The SDK's standard retry mode applies: bounded attempts with exponential backoff and jitter.
+    let aws_config = tokio::time::timeout(
+        AWS_CONFIG_TIMEOUT,
+        aws_config::load_defaults(BehaviorVersion::latest()),
+    )
+    .await
+    .context("timed out loading AWS configuration")?;
+    anyhow::ensure!(
+        aws_config.region().is_some(),
+        "AWS region is not configured"
+    );
+
+    let s3_config = aws_sdk_s3::config::Builder::from(&aws_config)
+        .force_path_style(config.s3_force_path_style)
+        .build();
+    let blob_store = Arc::new(S3BlobStore::new(
+        PcpBucket::new(aws_sdk_s3::Client::from_conf(s3_config), config.pcp_bucket),
+        config.max_pcp_bytes.get(),
+    ));
     let enclave_client = Arc::new(PontifexEnclaveClient::new(
         config.enclave_cid,
         config.enclave_port,
     ));
 
-    di_migration_host::server::start(config.port, AppState::new(enclave_client, config.host_ip))
-        .await
+    di_migration_host::server::start(
+        config.port,
+        AppState::new(enclave_client, blob_store, config.host_ip),
+    )
+    .await
 }

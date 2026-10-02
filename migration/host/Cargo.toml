@@ -12,14 +12,19 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
+bytes.workspace = true
 clap.workspace = true
 di-migration-enclave-types.workspace = true
+di-migration-storage.workspace = true
 pontifex = { workspace = true, features = ["channel", "client"] }
 serde.workspace = true
 telemetry-batteries = { workspace = true, features = ["axum"] }
+thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 
