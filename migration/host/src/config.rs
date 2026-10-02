@@ -33,6 +33,9 @@ pub struct Config {
     /// Largest sealed PCP the host buffers; larger objects fail the job without being read.
     #[arg(long, env = "MAX_PCP_BYTES", default_value = "33554432")]
     pub max_pcp_bytes: NonZeroUsize,
+    /// Table holding the job rows.
+    #[arg(long, env = "DYNAMODB_TABLE_NAME")]
+    pub dynamodb_table_name: String,
 }
 
 #[cfg(test)]
@@ -41,13 +44,15 @@ mod tests {
 
     use super::Config;
 
-    const REQUIRED: [&str; 6] = [
+    const REQUIRED: [&str; 8] = [
         "--enclave-cid",
         "16",
         "--host-ip",
         "10.0.0.7",
         "--pcp-bucket",
         "pcp-bucket",
+        "--dynamodb-table-name",
+        "jobs",
     ];
 
     fn parse(args: &[&str]) -> Result<Config, clap::Error> {
@@ -67,6 +72,7 @@ mod tests {
         assert_eq!(config.port.get(), 8000);
         assert_eq!(config.host_ip.to_string(), "10.0.0.7");
         assert_eq!(config.pcp_bucket, "pcp-bucket");
+        assert_eq!(config.dynamodb_table_name, "jobs");
         assert!(!config.s3_force_path_style);
         assert_eq!(config.max_pcp_bytes.get(), 32 * 1024 * 1024);
     }

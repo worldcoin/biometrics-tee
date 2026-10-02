@@ -1,6 +1,10 @@
 use std::{net::IpAddr, sync::Arc};
 
-use crate::{enclave::EnclaveClient, readiness::Readiness, store::BlobStore};
+use crate::{
+    enclave::EnclaveClient,
+    readiness::Readiness,
+    store::{BlobStore, JobStore},
+};
 
 /// Dependencies shared by API request handlers.
 #[derive(Clone)]
@@ -16,10 +20,15 @@ impl AppState {
     pub fn new(
         enclave_client: Arc<dyn EnclaveClient>,
         blob_store: Arc<dyn BlobStore>,
+        job_store: Arc<dyn JobStore>,
         host_ip: IpAddr,
     ) -> Self {
         Self {
-            readiness: Arc::new(Readiness::new(Arc::clone(&enclave_client), blob_store)),
+            readiness: Arc::new(Readiness::new(
+                Arc::clone(&enclave_client),
+                blob_store,
+                job_store,
+            )),
             enclave_client,
             host_ip,
         }

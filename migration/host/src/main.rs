@@ -4,9 +4,12 @@ use anyhow::Context;
 use aws_config::BehaviorVersion;
 use clap::Parser;
 use di_migration_host::{
-    AppState, config::Config, enclave::PontifexEnclaveClient, store::S3BlobStore,
+    AppState,
+    config::Config,
+    enclave::PontifexEnclaveClient,
+    store::{DynamoJobStore, S3BlobStore},
 };
-use di_migration_storage::PcpBucket;
+use di_migration_storage::{JobTable, PcpBucket};
 
 /// Credential and region discovery must not stall startup indefinitely.
 const AWS_CONFIG_TIMEOUT: Duration = Duration::from_secs(5);
@@ -38,6 +41,10 @@ async fn main() -> anyhow::Result<()> {
         PcpBucket::new(aws_sdk_s3::Client::from_conf(s3_config), config.pcp_bucket),
         config.max_pcp_bytes.get(),
     ));
+    let job_store = Arc::new(DynamoJobStore::new(JobTable::new(
+        aws_sdk_dynamodb::Client::new(&aws_config),
+        config.dynamodb_table_name,
+    )));
     let enclave_client = Arc::new(PontifexEnclaveClient::new(
         config.enclave_cid,
         config.enclave_port,
@@ -45,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
 
     di_migration_host::server::start(
         config.port,
-        AppState::new(enclave_client, blob_store, config.host_ip),
+        AppState::new(enclave_client, blob_store, job_store, config.host_ip),
     )
     .await
 }
