@@ -11,7 +11,8 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use di_migration_enclave_types::KeyAttestation;
-use di_migration_storage::{Reason, StorageError};
+use di_migration_primitives::{JobId, Reason};
+use di_migration_storage::StorageError;
 
 use crate::{
     AppState,
@@ -97,7 +98,7 @@ impl BlobStore for HealthyStore {
         unimplemented!("not exercised by these tests")
     }
 
-    async fn put_result(&self, _: &str, _: Vec<u8>) -> Result<String, StoreError> {
+    async fn put_result(&self, _: &JobId, _: Vec<u8>) -> Result<String, StoreError> {
         unimplemented!("not exercised by these tests")
     }
 }
@@ -108,11 +109,11 @@ impl JobStore for HealthyStore {
         Ok(())
     }
 
-    async fn mark_migrated(&self, _: &str, _: &str) -> Result<(), StoreError> {
+    async fn mark_migrated(&self, _: &JobId, _: &str) -> Result<(), StoreError> {
         unimplemented!("not exercised by these tests")
     }
 
-    async fn mark_failed(&self, _: &str, _: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(&self, _: &JobId, _: Reason) -> Result<(), StoreError> {
         unimplemented!("not exercised by these tests")
     }
 }
@@ -137,7 +138,7 @@ impl BlobStore for FailingStore {
         Err(unreachable())
     }
 
-    async fn put_result(&self, _: &str, _: Vec<u8>) -> Result<String, StoreError> {
+    async fn put_result(&self, _: &JobId, _: Vec<u8>) -> Result<String, StoreError> {
         Err(unreachable())
     }
 }
@@ -148,11 +149,11 @@ impl JobStore for FailingStore {
         Err(unreachable())
     }
 
-    async fn mark_migrated(&self, _: &str, _: &str) -> Result<(), StoreError> {
+    async fn mark_migrated(&self, _: &JobId, _: &str) -> Result<(), StoreError> {
         Err(unreachable())
     }
 
-    async fn mark_failed(&self, _: &str, _: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(&self, _: &JobId, _: Reason) -> Result<(), StoreError> {
         Err(unreachable())
     }
 }

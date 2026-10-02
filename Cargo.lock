@@ -1331,6 +1331,7 @@ dependencies = [
  "bytes",
  "clap",
  "di-migration-enclave-types",
+ "di-migration-primitives",
  "di-migration-storage",
  "http-body-util",
  "pontifex",
@@ -1344,6 +1345,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "di-migration-primitives"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "di-migration-storage"
 version = "0.1.0"
 dependencies = [
@@ -1352,6 +1363,7 @@ dependencies = [
  "aws-sdk-s3",
  "axum",
  "bytes",
+ "di-migration-primitives",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",

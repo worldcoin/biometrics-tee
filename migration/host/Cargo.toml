@@ -21,6 +21,7 @@ base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
 di-migration-enclave-types.workspace = true
+di-migration-primitives.workspace = true
 di-migration-storage.workspace = true
 pontifex = { workspace = true, features = ["channel", "client"] }
 serde.workspace = true

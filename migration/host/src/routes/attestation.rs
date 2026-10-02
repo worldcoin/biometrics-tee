@@ -1,21 +1,8 @@
-use std::net::IpAddr;
-
 use axum::{Json, extract::State};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde::Serialize;
+use di_migration_primitives::host_api::AttestationResponse;
 
 use crate::{AppState, enclave, error::ApiError};
-
-/// What the API needs at init: who the enclave is, how to verify it, and where to send the job.
-#[derive(Debug, Serialize)]
-pub struct AttestationResponse {
-    enclave_id: String,
-    /// COSE attestation document, standard padded base64.
-    attestation: String,
-    /// Full X-Wing public key, standard padded base64.
-    enclave_public_key: String,
-    host_ip: IpAddr,
-}
 
 /// Relays this boot's key attestation; the app verifies it, not the host.
 pub async fn handler(State(state): State<AppState>) -> Result<Json<AttestationResponse>, ApiError> {
@@ -82,7 +69,10 @@ mod tests {
         let (status, body) = attest(state_with(Arc::new(enclave))).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["enclave_id"], enclave::enclave_id(&public_key));
+        assert_eq!(
+            body["enclave_id"],
+            enclave::enclave_id(&public_key).as_str()
+        );
         assert_eq!(body["enclave_public_key"], STANDARD.encode(&public_key));
         assert_eq!(body["attestation"], STANDARD.encode(b"document"));
         assert_eq!(body["host_ip"], "10.0.0.7");

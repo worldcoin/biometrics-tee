@@ -9,8 +9,9 @@ use tokio::time::timeout;
 use crate::{
     StorageError,
     error::failed,
-    layout::{pcp_key, result_key},
+    schema::{pcp_key, result_key},
 };
+use di_migration_primitives::JobId;
 
 /// Readiness must not hang behind a slow S3.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -61,7 +62,7 @@ impl PcpBucket {
     /// `ttl` is not a valid presigning expiry.
     pub async fn presign_upload(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         ttl: Duration,
     ) -> Result<String, StorageError> {
         const OPERATION: &str = "S3 presign PutObject";
@@ -86,7 +87,7 @@ impl PcpBucket {
     /// `ttl` is not a valid presigning expiry.
     pub async fn presign_download(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         ttl: Duration,
     ) -> Result<String, StorageError> {
         const OPERATION: &str = "S3 presign GetObject";
@@ -157,7 +158,7 @@ impl PcpBucket {
     /// # Errors
     ///
     /// `PutObject` timed out or failed for any reason other than an existing result.
-    pub async fn put_result(&self, job_id: &str, blob: Vec<u8>) -> Result<String, StorageError> {
+    pub async fn put_result(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StorageError> {
         const OPERATION: &str = "S3 PutObject";
         let key = result_key(job_id);
         let result = timeout(
@@ -201,7 +202,15 @@ mod tests {
         routing::{get, put},
     };
 
+    use di_migration_primitives::JobId;
+
     use super::{PcpBucket, StorageError};
+
+    const ID: &str = "3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a";
+
+    fn id() -> JobId {
+        ID.parse().expect("uuid")
+    }
 
     /// Serves `router` on a loopback port and returns its base URL.
     async fn serve(router: Router) -> String {
@@ -236,20 +245,20 @@ mod tests {
         let ttl = Duration::from_secs(300);
 
         let upload = bucket
-            .presign_upload("job", ttl)
+            .presign_upload(&id(), ttl)
             .await
             .expect("should sign");
         let download = bucket
-            .presign_download("job", ttl)
+            .presign_download(&id(), ttl)
             .await
             .expect("should sign");
 
         assert!(
-            upload.starts_with("http://127.0.0.1:9/pcp-bucket/pcp/job?"),
+            upload.starts_with(&format!("http://127.0.0.1:9/pcp-bucket/pcp/{ID}?")),
             "{upload}"
         );
         assert!(
-            download.starts_with("http://127.0.0.1:9/pcp-bucket/result/job?"),
+            download.starts_with(&format!("http://127.0.0.1:9/pcp-bucket/result/{ID}?")),
             "{download}"
         );
         assert!(upload.contains("X-Amz-Signature="), "{upload}");
@@ -313,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn an_existing_result_is_kept() {
         let address = serve(Router::new().route(
-            "/pcp-bucket/result/job",
+            &format!("/pcp-bucket/result/{ID}"),
             put(|| async {
                 (
                     StatusCode::PRECONDITION_FAILED,
@@ -325,11 +334,11 @@ mod tests {
         .await;
 
         let key = bucket(&address)
-            .put_result("job", b"migrated".to_vec())
+            .put_result(&id(), b"migrated".to_vec())
             .await
             .expect("should keep the first result");
 
-        assert_eq!(key, "result/job");
+        assert_eq!(key, format!("result/{ID}"));
     }
 
     #[tokio::test]

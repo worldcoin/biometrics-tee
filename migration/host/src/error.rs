@@ -6,19 +6,9 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use di_migration_primitives::host_api::{ErrorBody, ErrorEnvelope, codes};
 
 use crate::enclave;
-
-/// Machine-readable error codes returned to the API.
-pub mod codes {
-    /// The enclave did not answer in time.
-    pub const ENCLAVE_TIMEOUT: &str = "enclave_timeout";
-    /// The enclave could not be reached.
-    pub const ENCLAVE_UNREACHABLE: &str = "enclave_unreachable";
-    /// An unexpected failure; detail stays in the log.
-    pub const INTERNAL_ERROR: &str = "internal_error";
-}
 
 /// An API failure, with the status and body to return for it.
 #[derive(Debug)]
@@ -31,20 +21,6 @@ pub struct ApiError {
     dependency: Option<&'static str>,
     /// Log-only context; never serialized, since it may name internals.
     detail: Option<String>,
-}
-
-/// The JSON body of every error response.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ErrorEnvelope {
-    allow_retry: bool,
-    error: ErrorBody,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    code: &'static str,
-    message: &'static str,
 }
 
 impl ApiError {
@@ -137,8 +113,8 @@ impl IntoResponse for ApiError {
         let body = ErrorEnvelope {
             allow_retry: self.allow_retry,
             error: ErrorBody {
-                code: self.code,
-                message: self.message,
+                code: self.code.to_owned(),
+                message: self.message.to_owned(),
             },
         };
         (self.status, Json(body)).into_response()
@@ -150,7 +126,9 @@ mod tests {
     use axum::http::StatusCode;
     use di_migration_enclave_types as enclave_types;
 
-    use super::{ApiError, codes};
+    use di_migration_primitives::host_api::codes;
+
+    use super::ApiError;
     use crate::enclave;
 
     /// Pins the enclave matrix; nothing else fails if one arm is changed alone.

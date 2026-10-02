@@ -10,8 +10,9 @@ use tokio::time::timeout;
 
 use crate::{
     StorageError,
-    layout::{Reason, Status, attributes, row_id},
+    schema::{attributes, row_id},
 };
+use di_migration_primitives::{JobId, Reason, Status};
 
 /// Readiness must not hang behind a slow `DynamoDB`.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -37,7 +38,7 @@ impl JobTable {
     /// was already resolved, e.g. timed out, so it is left alone.
     async fn finish(
         &self,
-        job_id: &str,
+        job_id: &JobId,
         status: Status,
         extra: (&'static str, String),
     ) -> Result<(), StorageError> {
@@ -114,7 +115,11 @@ impl JobTable {
     /// # Errors
     ///
     /// [`StorageError::NotMigrating`] when the row was resolved elsewhere, or the update failed.
-    pub async fn mark_migrated(&self, job_id: &str, result_key: &str) -> Result<(), StorageError> {
+    pub async fn mark_migrated(
+        &self,
+        job_id: &JobId,
+        result_key: &str,
+    ) -> Result<(), StorageError> {
         self.finish(
             job_id,
             Status::Migrated,
@@ -128,7 +133,7 @@ impl JobTable {
     /// # Errors
     ///
     /// [`StorageError::NotMigrating`] when the row was resolved elsewhere, or the update failed.
-    pub async fn mark_failed(&self, job_id: &str, reason: Reason) -> Result<(), StorageError> {
+    pub async fn mark_failed(&self, job_id: &JobId, reason: Reason) -> Result<(), StorageError> {
         self.finish(
             job_id,
             Status::Failed,
@@ -143,7 +148,15 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::JobTable;
-    use crate::{Reason, StorageError};
+    use di_migration_primitives::{JobId, Reason};
+
+    use crate::StorageError;
+
+    const ID: &str = "3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a";
+
+    fn id() -> JobId {
+        ID.parse().expect("uuid")
+    }
     use axum::{
         Router,
         http::{StatusCode, header},
@@ -208,12 +221,12 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_migrated("abc", "result/abc")
+            .mark_migrated(&id(), "result/abc")
             .await
             .expect("should update");
 
         let request = seen.lock().expect("lock should hold")[0].clone();
-        assert_eq!(request["Key"]["id"]["S"], "job#abc");
+        assert_eq!(request["Key"]["id"]["S"], format!("job#{ID}"));
         assert_eq!(request["ConditionExpression"], "#status = :migrating");
         assert_eq!(
             request["ExpressionAttributeValues"][":status"]["S"],
@@ -231,7 +244,7 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_failed("abc", Reason::EnclaveError)
+            .mark_failed(&id(), Reason::EnclaveError)
             .await
             .expect("should update");
 
@@ -257,7 +270,7 @@ mod tests {
         .await;
 
         let error = store
-            .mark_migrated("abc", "result/abc")
+            .mark_migrated(&id(), "result/abc")
             .await
             .expect_err("should skip");
 
