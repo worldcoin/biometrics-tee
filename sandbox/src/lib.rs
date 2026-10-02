@@ -8,9 +8,13 @@
 
 mod bundle;
 mod config;
+pub mod host;
 
 pub use bundle::{
     Error, MAX_BUNDLE_BYTES, MAX_MANIFEST_BYTES, Manifest, VerifiedRuntime, WORKER_PATH, package,
     receive,
 };
 pub use config::BootstrapConfig;
+
+/// vsock port on which the enclave accepts the worker bundle, once, from the parent.
+pub const BOOTSTRAP_PORT: u32 = 1001;

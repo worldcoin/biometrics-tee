@@ -209,3 +209,33 @@ fn wrong_architecture_and_unknown_fields_are_rejected() {
     value["disable_seccomp"] = true.into();
     assert!(serde_json::from_value::<Manifest>(value).is_err());
 }
+
+/// Offline packaging validates actual local bytes and never silently follows artifact symlinks.
+#[tokio::test]
+async fn packaging_matches_the_receiver_and_rejects_changed_files() {
+    let fixture = Fixture::new();
+    let source = tempfile::tempdir().unwrap();
+    let executable = source.path().join("worker");
+    fs::write(&executable, &fixture.binary).unwrap();
+    let bundle = di_sandbox::host::Bundle::prepare(&fixture.manifest.release_id, &executable)
+        .await
+        .unwrap();
+    let manifest: Manifest = serde_json::from_slice(&bundle.manifest().unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(manifest).unwrap(),
+        serde_json::to_value(&fixture.manifest).unwrap()
+    );
+    let manifest = serde_json::to_vec(&fixture.manifest).unwrap();
+    let mut bytes = Vec::new();
+    package(&mut bytes, &manifest, &executable).unwrap();
+    assert_eq!(bytes, fixture.bundle());
+
+    fs::write(&executable, b"changed").unwrap();
+    assert!(package(&mut Vec::new(), &manifest, &executable).is_err());
+    fs::remove_file(&executable).unwrap();
+    std::os::unix::fs::symlink(source.path().join(WORKER_PATH), &executable).unwrap();
+    assert!(matches!(
+        package(&mut Vec::new(), &manifest, &executable),
+        Err(Error::InvalidManifest)
+    ));
+}
