@@ -75,6 +75,9 @@ impl EnclaveClient for PontifexEnclaveClient {
 
 /// The boot's identity: hex of the channel key's Pontifex commitment, which the attestation
 /// document carries, so a restarted enclave gets a new one.
+///
+/// Not the document's `module_id`: a job is bound to the key its PCP was sealed to, and the
+/// commitment changes exactly with that key and is checkable against the attested `public_key`.
 #[must_use]
 pub fn enclave_id(public_key: &[u8]) -> String {
     pontifex::channel::public_key_commitment(public_key)
