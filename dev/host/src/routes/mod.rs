@@ -12,14 +12,14 @@ use axum::{
 
 use crate::AppState;
 
-/// Builds the router; the body limit hangs off the submit route alone.
+/// Builds the router; the body limit hangs off the migrations route alone.
 pub fn handler(max_request_bytes: usize) -> Router<AppState> {
     Router::new()
         .route("/health", get(health::handler))
         .route("/ready", get(readiness::handler))
         .route(
             "/v1/migrations",
-            post(migrations::submit).layer(DefaultBodyLimit::max(max_request_bytes)),
+            post(migrations::handler).layer(DefaultBodyLimit::max(max_request_bytes)),
         )
 }
 
