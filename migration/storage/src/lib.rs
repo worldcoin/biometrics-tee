@@ -16,4 +16,4 @@ mod table;
 
 pub use bucket::PcpBucket;
 pub use error::StorageError;
-pub use table::JobTable;
+pub use table::{JobRecord, JobTable, NewJob};

@@ -89,10 +89,10 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: host end-to-end against LocalStack
+      - name: host and storage against LocalStack
         env:
           LOCALSTACK_ENDPOINT: http://localhost:4566
-        run: cargo test --locked -p di-migration-host --test localstack -- --ignored
+        run: cargo test --locked -p di-migration-host -p di-migration-storage --test localstack -- --ignored
 
   flake:
     name: Flake eval

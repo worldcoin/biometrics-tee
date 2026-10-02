@@ -2,7 +2,10 @@
 
 use std::time::Duration;
 
-use aws_sdk_s3::{Client, presigning::PresigningConfig, primitives::ByteStream};
+use aws_sdk_s3::{
+    Client, operation::head_object::HeadObjectError, presigning::PresigningConfig,
+    primitives::ByteStream,
+};
 use bytes::Bytes;
 use tokio::time::timeout;
 
@@ -13,7 +16,7 @@ use crate::{
 };
 use di_migration_primitives::JobId;
 
-/// Readiness must not hang behind a slow S3.
+/// Readiness and existence checks must not hang behind a slow S3.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Sized for a PCP of tens of MiB within the region.
@@ -103,6 +106,39 @@ impl PcpBucket {
             .map_err(|error| failed(OPERATION, &error))?
             .uri()
             .to_owned())
+    }
+
+    /// Whether the app has uploaded the job's sealed PCP.
+    ///
+    /// # Errors
+    ///
+    /// `HeadObject` timed out or failed for any reason other than a missing object.
+    pub async fn pcp_exists(&self, job_id: &JobId) -> Result<bool, StorageError> {
+        const OPERATION: &str = "S3 HeadObject";
+        let result = timeout(
+            READINESS_TIMEOUT,
+            self.client
+                .head_object()
+                .bucket(&self.bucket)
+                .key(pcp_key(job_id))
+                .send(),
+        )
+        .await
+        .map_err(|_| StorageError::Timeout {
+            operation: OPERATION,
+        })?;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(HeadObjectError::is_not_found) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(failed(OPERATION, &error)),
+        }
     }
 
     /// Reads the sealed PCP at `object_key`, refusing objects larger than `max_bytes`.

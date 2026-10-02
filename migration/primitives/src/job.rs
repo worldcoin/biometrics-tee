@@ -80,6 +80,9 @@ pub enum Status {
 }
 
 impl Status {
+    /// Every status, for parsing.
+    pub const ALL: [Self; 4] = [Self::Created, Self::Migrating, Self::Migrated, Self::Failed];
+
     /// The wire and storage value.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -109,6 +112,15 @@ pub enum Reason {
 }
 
 impl Reason {
+    /// Every reason, for parsing.
+    pub const ALL: [Self; 5] = [
+        Self::HostBusy,
+        Self::EnclaveChanged,
+        Self::EnclaveError,
+        Self::S3Error,
+        Self::Timeout,
+    ];
+
     /// The wire and storage value.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -119,6 +131,33 @@ impl Reason {
             Self::S3Error => "s3_error",
             Self::Timeout => "timeout",
         }
+    }
+}
+
+/// A value that is not a known [`Status`] or [`Reason`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown value {0:?}")]
+pub struct UnknownValue(pub String);
+
+impl FromStr for Status {
+    type Err = UnknownValue;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_str() == value)
+            .ok_or_else(|| UnknownValue(value.to_owned()))
+    }
+}
+
+impl FromStr for Reason {
+    type Err = UnknownValue;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|reason| reason.as_str() == value)
+            .ok_or_else(|| UnknownValue(value.to_owned()))
     }
 }
 
@@ -163,6 +202,12 @@ mod tests {
         assert!(first.as_str().parse::<JobId>().is_ok());
     }
 
+    #[test]
+    fn unknown_values_do_not_parse() {
+        assert!("pending".parse::<Status>().is_err());
+        assert!("oom".parse::<Reason>().is_err());
+    }
+
     /// Pins the values; the app and API branch on them, and the job table stores them.
     #[test]
     fn values_are_stable_on_the_wire() {
@@ -174,6 +219,7 @@ mod tests {
         ];
         for (status, value) in statuses {
             assert_eq!(status.as_str(), value);
+            assert_eq!(value.parse::<Status>(), Ok(status));
             assert_eq!(
                 serde_json::to_string(&status).expect("json"),
                 format!("\"{value}\"")
@@ -189,6 +235,7 @@ mod tests {
         ];
         for (reason, value) in reasons {
             assert_eq!(reason.as_str(), value);
+            assert_eq!(value.parse::<Reason>(), Ok(reason));
             assert_eq!(
                 serde_json::to_string(&reason).expect("json"),
                 format!("\"{value}\"")
