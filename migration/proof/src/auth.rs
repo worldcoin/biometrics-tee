@@ -1,6 +1,7 @@
 //! Short-lived JWTs signed by AWS KMS for service-to-service authentication.
 //!
-//! Matches signup-service `kmsjwt`: ES256 via `ECDSA_SHA_256`, 5-minute lifetime.
+//! Matches signup-service `kmsjwt`: ES256 via `ECDSA_SHA_256`, 5-minute lifetime. A token is
+//! reused until shortly before it expires, so a verify costs a KMS call only every few minutes.
 
 use std::{
     sync::Arc,
@@ -17,6 +18,13 @@ use serde::Serialize;
 
 const TOKEN_LIFETIME: Duration = Duration::from_secs(5 * 60);
 
+/// A cached token is replaced this long before it expires, so a request never carries one that
+/// lapses in flight.
+const REFRESH_MARGIN: Duration = Duration::from_secs(60);
+
+/// A KMS `Sign` call; anything slower is an outage.
+const KMS_SIGN_TIMEOUT: Duration = Duration::from_secs(3);
+
 #[async_trait]
 pub trait AuthProvider: Send + Sync {
     async fn token(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
@@ -30,6 +38,8 @@ pub enum AuthError {
     Encode(#[source] serde_json::Error),
     #[error("KMS sign failed: {0}")]
     KmsSign(String),
+    #[error("KMS sign timed out")]
+    KmsTimeout,
     #[error("KMS returned an empty signature")]
     EmptySignature,
     #[error("failed to parse DER signature")]
@@ -49,16 +59,19 @@ struct KmsSigner {
 #[async_trait]
 impl JwtSigner for KmsSigner {
     async fn sign(&self, signing_input: &[u8]) -> Result<Vec<u8>, AuthError> {
-        let output = self
-            .client
-            .sign()
-            .key_id(&self.key_id)
-            .message(Blob::new(signing_input))
-            .message_type(MessageType::Raw)
-            .signing_algorithm(SigningAlgorithmSpec::EcdsaSha256)
-            .send()
-            .await
-            .map_err(|error| AuthError::KmsSign(error.to_string()))?;
+        let output = tokio::time::timeout(
+            KMS_SIGN_TIMEOUT,
+            self.client
+                .sign()
+                .key_id(&self.key_id)
+                .message(Blob::new(signing_input))
+                .message_type(MessageType::Raw)
+                .signing_algorithm(SigningAlgorithmSpec::EcdsaSha256)
+                .send(),
+        )
+        .await
+        .map_err(|_| AuthError::KmsTimeout)?
+        .map_err(|error| AuthError::KmsSign(error.to_string()))?;
         output
             .signature
             .map(|signature| signature.into_inner())
@@ -70,6 +83,9 @@ impl JwtSigner for KmsSigner {
 pub struct JwtAuthProvider {
     signer: Arc<dyn JwtSigner>,
     subject: String,
+    /// The last token and when it expires; concurrent callers share one refresh.
+    cache: tokio::sync::Mutex<Option<(String, SystemTime)>>,
+    clock: fn() -> SystemTime,
 }
 
 impl JwtAuthProvider {
@@ -88,11 +104,29 @@ impl JwtAuthProvider {
                 key_id: kms_key_id,
             }),
             subject: subject.into(),
+            cache: tokio::sync::Mutex::new(None),
+            clock: SystemTime::now,
         })
     }
 
-    async fn generate_token(&self) -> Result<String, AuthError> {
-        let exp = (SystemTime::now() + TOKEN_LIFETIME)
+    /// The cached token, or a freshly signed one once it is close to expiry.
+    async fn cached_token(&self) -> Result<String, AuthError> {
+        let mut cache = self.cache.lock().await;
+        let now = (self.clock)();
+        if let Some((token, expires_at)) = cache.as_ref()
+            && now + REFRESH_MARGIN < *expires_at
+        {
+            return Ok(token.clone());
+        }
+
+        let expires_at = now + TOKEN_LIFETIME;
+        let token = self.generate_token(expires_at).await?;
+        *cache = Some((token.clone(), expires_at));
+        Ok(token)
+    }
+
+    async fn generate_token(&self, expires_at: SystemTime) -> Result<String, AuthError> {
+        let exp = expires_at
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_secs();
@@ -135,7 +169,7 @@ impl From<serde_json::Error> for AuthError {
 #[async_trait]
 impl AuthProvider for JwtAuthProvider {
     async fn token(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        self.generate_token()
+        self.cached_token()
             .await
             .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
     }
@@ -167,12 +201,18 @@ mod tests {
     }
 
     fn provider(calls: Arc<AtomicUsize>) -> JwtAuthProvider {
+        provider_at(calls, SystemTime::now)
+    }
+
+    fn provider_at(calls: Arc<AtomicUsize>, clock: fn() -> SystemTime) -> JwtAuthProvider {
         JwtAuthProvider {
             signer: Arc::new(CountingSigner {
                 der: der_r1_s1(),
                 calls,
             }),
             subject: "zkp_v4_shadow".to_owned(),
+            cache: tokio::sync::Mutex::new(None),
+            clock,
         }
     }
 
@@ -267,11 +307,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token_signs_on_every_call() {
+    async fn a_token_is_reused_until_close_to_expiry() {
         let calls = Arc::new(AtomicUsize::new(0));
         let provider = provider(Arc::clone(&calls));
+
+        let first = AuthProvider::token(&provider).await.unwrap();
+        let second = AuthProvider::token(&provider).await.unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Seconds the fake clock is advanced by; a `fn` clock cannot capture state.
+    static CLOCK_OFFSET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn shifted_clock() -> SystemTime {
+        SystemTime::now() + Duration::from_secs(CLOCK_OFFSET.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn a_token_close_to_expiry_is_replaced() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = provider_at(Arc::clone(&calls), shifted_clock);
+
         AuthProvider::token(&provider).await.unwrap();
+        CLOCK_OFFSET.store(
+            (TOKEN_LIFETIME - REFRESH_MARGIN).as_secs(),
+            Ordering::SeqCst,
+        );
         AuthProvider::token(&provider).await.unwrap();
+
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
