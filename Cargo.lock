@@ -1194,8 +1194,23 @@ dependencies = [
 name = "di-migration-enclave"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "di-migration-enclave-types",
+ "pontifex",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "di-migration-enclave-types"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "pontifex",
+ "serde",
+ "serde_bytes",
 ]
 
 [[package]]

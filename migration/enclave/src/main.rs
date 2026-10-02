@@ -1,23 +1,19 @@
-//! Nitro enclave workload for the `DeepIdentifier` migration.
+use std::sync::Arc;
 
-#![deny(
-    clippy::all,
-    clippy::pedantic,
-    clippy::nursery,
-    missing_docs,
-    dead_code
-)]
-
-use std::process::ExitCode;
-
+use di_migration_enclave::{server, state::EnclaveState};
+use di_migration_enclave_types::PONTIFEX_PORT;
 use tracing_subscriber::EnvFilter;
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    // Non-zero rather than idling: a skeleton that stays up reads as healthy.
-    tracing::error!("di-migration-enclave is a skeleton and has no boot sequence yet");
-    ExitCode::FAILURE
+    // Err exits non-zero so the carrier restarts the enclave rather than idling without a server.
+    server::start(Arc::new(EnclaveState::boot()), PONTIFEX_PORT)
+        .await
+        .inspect_err(|error| {
+            tracing::error!(%error, "enclave Pontifex server stopped");
+        })
 }
