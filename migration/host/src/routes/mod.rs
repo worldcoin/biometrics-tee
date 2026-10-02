@@ -19,7 +19,7 @@ pub fn handler() -> Router<AppState> {
         .route("/health", get(health::handler))
         .route("/ready", get(readiness::handler))
         .route("/attestation", get(attestation::handler))
-        .route("/jobs", post(jobs::submit))
+        .route("/jobs", post(jobs::handler))
         .route("/capacity", get(capacity::handler))
 }
 
