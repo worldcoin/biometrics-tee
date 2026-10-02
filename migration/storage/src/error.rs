@@ -28,6 +28,18 @@ pub enum StorageError {
     /// The job row is no longer `migrating`, e.g. it timed out first; the write was skipped.
     #[error("job is no longer migrating")]
     NotMigrating,
+    /// The job is no longer `created`, or another job for its `sub` superseded it.
+    #[error("job is no longer created")]
+    NotCreated,
+    /// The `sub` already has an active job.
+    #[error("an active job exists for this sub")]
+    ActiveJob,
+    /// A stored row does not have the expected shape.
+    #[error("malformed {attribute} in a stored row")]
+    Malformed {
+        /// The attribute that failed to parse.
+        attribute: &'static str,
+    },
 }
 
 /// Wraps an SDK error with its source chain.
