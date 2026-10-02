@@ -1,6 +1,6 @@
 //! Nitro enclave workload for the `DeepIdentifier` migration.
 //!
-//! Mock: echoes the sealed blob and serves a stub identity until the pipeline and attestation land.
+//! Mock: echoes the sealed blob and serves an empty attestation until the pipeline and NSM land.
 
 #![deny(
     clippy::all,

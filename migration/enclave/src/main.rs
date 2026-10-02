@@ -10,8 +10,12 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    let state = EnclaveState::boot().inspect_err(|error| {
+        tracing::error!(%error, "failed to generate the boot-scoped channel key");
+    })?;
+
     // Err exits non-zero so the carrier restarts the enclave rather than idling without a server.
-    server::start(Arc::new(EnclaveState::boot()), PONTIFEX_PORT)
+    server::start(Arc::new(state), PONTIFEX_PORT)
         .await
         .inspect_err(|error| {
             tracing::error!(%error, "enclave Pontifex server stopped");

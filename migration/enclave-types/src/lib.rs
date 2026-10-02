@@ -11,13 +11,16 @@
 
 mod error;
 mod health;
-mod identity;
+mod keys;
 mod migrate;
 
 /// vsock port the enclave serves and the host dials; both sides ship together.
 pub const PONTIFEX_PORT: u32 = 1000;
 
+/// Pontifex channel domain the app seals PCPs under; both sides must agree on it.
+pub const MIGRATION_CHANNEL_DOMAIN: &str = "di-migration/migrate_v1";
+
 pub use error::Error;
 pub use health::HealthRequest;
-pub use identity::{Identity, IdentityRequest};
+pub use keys::{GetEncryptionKeyRequest, KeyAttestation};
 pub use migrate::{MigrateRequest, MigrateResponse};

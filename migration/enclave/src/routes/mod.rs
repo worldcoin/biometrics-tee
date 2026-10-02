@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use di_migration_enclave_types::{HealthRequest, IdentityRequest, MigrateRequest};
+use di_migration_enclave_types::{GetEncryptionKeyRequest, HealthRequest, MigrateRequest};
 use pontifex::Router;
 
+mod encryption_key;
 mod health;
-mod identity;
 mod migrate;
 
 use crate::state::EnclaveState;
@@ -15,7 +15,7 @@ use crate::state::EnclaveState;
 pub(crate) fn router(state: Arc<EnclaveState>) -> Router<Arc<EnclaveState>> {
     Router::with_state(state)
         .route::<HealthRequest, _, _>(health::handler)
-        .route::<IdentityRequest, _, _>(identity::handler)
+        .route::<GetEncryptionKeyRequest, _, _>(encryption_key::handler)
         .route::<MigrateRequest, _, _>(migrate::handler)
 }
 
@@ -28,6 +28,8 @@ mod tests {
 
     #[test]
     fn router_registers_enclave_operations() {
-        let _router = router(Arc::new(EnclaveState::boot()));
+        let _router = router(Arc::new(
+            EnclaveState::boot().expect("should generate a key"),
+        ));
     }
 }

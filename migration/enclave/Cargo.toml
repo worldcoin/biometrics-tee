@@ -13,8 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 di-migration-enclave-types.workspace = true
-pontifex = { workspace = true, features = ["server"] }
+pontifex = { workspace = true, features = ["channel", "server"] }
 tokio = { workspace = true, features = ["macros"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-uuid.workspace = true

@@ -36,18 +36,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_blob_comes_back_unchanged() {
-        let response = handler(Arc::new(EnclaveState::boot()), request(32))
-            .await
-            .expect("should echo");
+        let response = handler(
+            Arc::new(EnclaveState::boot().expect("should generate a key")),
+            request(32),
+        )
+        .await
+        .expect("should echo");
 
         assert_eq!(response.blob, vec![7u8; 32]);
     }
 
     #[tokio::test]
     async fn an_empty_blob_is_rejected() {
-        let error = handler(Arc::new(EnclaveState::boot()), request(0))
-            .await
-            .expect_err("should reject");
+        let error = handler(
+            Arc::new(EnclaveState::boot().expect("should generate a key")),
+            request(0),
+        )
+        .await
+        .expect_err("should reject");
 
         assert_eq!(error, enclave_types::Error::InvalidInput);
     }
