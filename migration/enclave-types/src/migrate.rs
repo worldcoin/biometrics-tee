@@ -8,6 +8,10 @@ use crate::Error;
 pub struct MigrateRequest {
     /// The sealed PCP as uploaded by the app.
     pub blob: bytes::Bytes,
+    /// Account the ownership proof was verified for; sealed into the new PCP.
+    pub sub: String,
+    /// The app's attested device key; sealed into the new PCP so only it can refresh.
+    pub device_public_key: String,
 }
 
 impl Request for MigrateRequest {

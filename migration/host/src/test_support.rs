@@ -10,7 +10,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use di_migration_enclave_types::KeyAttestation;
+use di_migration_enclave_types::{KeyAttestation, MigrateRequest, MigrateResponse};
 use di_migration_primitives::{JobId, Reason};
 use di_migration_storage::StorageError;
 
@@ -45,6 +45,12 @@ impl EnclaveClient for StubEnclave {
             public_key: self.public_key.clone(),
         })
     }
+
+    async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error> {
+        Ok(MigrateResponse {
+            blob: request.blob.to_vec(),
+        })
+    }
 }
 
 /// Fails every call with a fixed error.
@@ -57,6 +63,10 @@ impl EnclaveClient for FailingEnclave {
     }
 
     async fn encryption_key(&self) -> Result<KeyAttestation, Error> {
+        Err(self.0.clone())
+    }
+
+    async fn migrate(&self, _: MigrateRequest) -> Result<MigrateResponse, Error> {
         Err(self.0.clone())
     }
 }
@@ -82,6 +92,10 @@ impl EnclaveClient for CountingEnclave {
 
     async fn encryption_key(&self) -> Result<KeyAttestation, Error> {
         StubEnclave::default().encryption_key().await
+    }
+
+    async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error> {
+        StubEnclave::default().migrate(request).await
     }
 }
 
