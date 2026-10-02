@@ -1,9 +1,10 @@
 //! Fakes shared by the route tests.
 
 use std::{
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -11,13 +12,13 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use di_migration_enclave_types::{KeyAttestation, MigrateRequest, MigrateResponse};
-use di_migration_primitives::{JobId, Reason};
+use di_migration_primitives::{JobId, Reason, host_api::JobRequest};
 use di_migration_storage::StorageError;
+use tokio::sync::Notify;
 
 use crate::{
     AppState,
     enclave::{EnclaveClient, Error},
-    queue::Job,
     store::{BlobStore, JobStore, StoreError},
 };
 
@@ -133,6 +134,161 @@ impl JobStore for HealthyStore {
     }
 }
 
+/// Holds each migration until released, so a test can observe one in flight.
+///
+/// Both handles use `notify_one`: neither side is guaranteed to be waiting yet, and only
+/// `notify_one` stores a permit for a wake that arrives first.
+pub struct GatedEnclave {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl GatedEnclave {
+    /// The fake, a handle that fires once a migration reached it, and one that lets it finish.
+    pub fn new() -> (Self, Arc<Notify>, Arc<Notify>) {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        (
+            Self {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            },
+            entered,
+            release,
+        )
+    }
+}
+
+#[async_trait]
+impl EnclaveClient for GatedEnclave {
+    async fn health(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn encryption_key(&self) -> Result<KeyAttestation, Error> {
+        StubEnclave::default().encryption_key().await
+    }
+
+    async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        StubEnclave::default().migrate(request).await
+    }
+}
+
+/// A job's recorded outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Migrated(String),
+    Failed(Reason),
+}
+
+#[derive(Default)]
+struct Memory {
+    pcps: HashMap<String, Vec<u8>>,
+    results: HashMap<JobId, Vec<u8>>,
+    outcomes: HashMap<JobId, Outcome>,
+    last_error: Option<StoreError>,
+}
+
+/// S3 and the job table in memory, with switches for the failures the worker must handle.
+#[derive(Default)]
+pub struct MemoryStore {
+    memory: Mutex<Memory>,
+    failing_writes: bool,
+    resolved_elsewhere: bool,
+}
+
+impl MemoryStore {
+    /// A store holding a sealed PCP for `job`.
+    pub fn with_pcp(job: &JobRequest, pcp: &[u8]) -> Self {
+        Self::default().and_pcp(job, pcp)
+    }
+
+    /// Adds a sealed PCP for `job`.
+    pub fn and_pcp(self, job: &JobRequest, pcp: &[u8]) -> Self {
+        self.lock()
+            .pcps
+            .insert(job.object_key.clone(), pcp.to_vec());
+        self
+    }
+
+    /// Fails every result write.
+    pub const fn failing_writes(mut self) -> Self {
+        self.failing_writes = true;
+        self
+    }
+
+    /// Every row is already resolved, as if it timed out first.
+    pub const fn resolved_elsewhere(mut self) -> Self {
+        self.resolved_elsewhere = true;
+        self
+    }
+
+    pub fn result(&self, job_id: &JobId) -> Option<Vec<u8>> {
+        self.lock().results.get(job_id).cloned()
+    }
+
+    pub fn outcome(&self, job_id: &JobId) -> Option<Outcome> {
+        self.lock().outcomes.get(job_id).cloned()
+    }
+
+    pub fn last_error(&self) -> Option<StoreError> {
+        self.lock().last_error.clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Memory> {
+        self.memory.lock().expect("lock should hold")
+    }
+
+    fn record(&self, job_id: &JobId, outcome: Outcome) -> Result<(), StoreError> {
+        if self.resolved_elsewhere {
+            self.lock().last_error = Some(StoreError::NotMigrating);
+            return Err(StoreError::NotMigrating);
+        }
+        self.lock().outcomes.insert(job_id.clone(), outcome);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BlobStore for MemoryStore {
+    async fn check_ready(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn get_pcp(&self, object_key: &str) -> Result<Bytes, StoreError> {
+        self.lock()
+            .pcps
+            .get(object_key)
+            .map(|pcp| Bytes::from(pcp.clone()))
+            .ok_or_else(unreachable)
+    }
+
+    async fn put_result(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError> {
+        if self.failing_writes {
+            return Err(unreachable());
+        }
+        self.lock().results.insert(job_id.clone(), blob);
+        Ok(di_migration_storage::schema::result_key(job_id))
+    }
+}
+
+#[async_trait]
+impl JobStore for MemoryStore {
+    async fn check_ready(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn mark_migrated(&self, job_id: &JobId, result_key: &str) -> Result<(), StoreError> {
+        self.record(job_id, Outcome::Migrated(result_key.to_owned()))
+    }
+
+    async fn mark_failed(&self, job_id: &JobId, reason: Reason) -> Result<(), StoreError> {
+        self.record(job_id, Outcome::Failed(reason))
+    }
+}
+
 /// Fails every readiness check.
 pub struct FailingStore;
 
@@ -183,15 +339,16 @@ pub fn state_with(client: Arc<dyn EnclaveClient>) -> AppState {
     )
 }
 
-/// Job number `n`, with the object key the API would send.
-pub fn job(n: u64) -> Job {
+/// Job number `n`, as the API would dispatch it to the stub enclave.
+pub fn job(n: u64) -> JobRequest {
     let job_id: JobId = format!("00000000-0000-4000-8000-{n:012}")
         .parse()
         .expect("should be a UUID");
-    Job {
+    JobRequest {
         object_key: di_migration_storage::schema::pcp_key(&job_id),
         job_id,
         sub: "sub".to_owned(),
         device_public_key: "device-key".to_owned(),
+        enclave_id: crate::enclave::enclave_id(&StubEnclave::default().public_key),
     }
 }

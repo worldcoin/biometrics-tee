@@ -21,5 +21,6 @@ pub mod readiness;
 pub mod routes;
 pub mod server;
 pub mod store;
+pub mod worker;
 
 pub use app_state::AppState;
