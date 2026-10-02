@@ -25,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
     let migrate_timeout = config.enclave_migrate_timeout();
+    let drain_timeout = config.drain_timeout();
 
     // The SDK's standard retry mode applies: bounded attempts with exponential backoff and jitter.
     let aws_config = tokio::time::timeout(
@@ -69,5 +70,5 @@ async fn main() -> anyhow::Result<()> {
     );
     let state = AppState::new(enclave_client, readiness, queue, config.host_ip);
 
-    di_migration_host::server::start(config.port, state, worker).await
+    di_migration_host::server::start(config.port, state, worker, drain_timeout).await
 }
