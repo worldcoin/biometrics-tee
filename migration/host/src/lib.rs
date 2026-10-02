@@ -14,6 +14,7 @@ mod app_state;
 mod test_support;
 
 pub mod config;
+pub mod drain;
 pub mod enclave;
 pub mod error;
 pub mod queue;

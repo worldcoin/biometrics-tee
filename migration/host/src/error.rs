@@ -63,6 +63,40 @@ impl ApiError {
         self.allow_retry
     }
 
+    /// A job request that failed validation; resending it unchanged cannot succeed.
+    #[must_use]
+    pub fn invalid_job(detail: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            codes::INVALID_JOB,
+            "The job request is invalid",
+            false,
+        )
+        .with_detail(detail)
+    }
+
+    /// A job sealed to another boot's key; the PCP can never be opened here, so the app restarts.
+    #[must_use]
+    pub const fn enclave_changed() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            codes::ENCLAVE_CHANGED,
+            "The enclave restarted since the job was assigned",
+            false,
+        )
+    }
+
+    /// The safety cap was hit. Not retried: the job is pinned here and the API fails it.
+    #[must_use]
+    pub const fn host_busy() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            codes::HOST_BUSY,
+            "The host is at capacity",
+            false,
+        )
+    }
+
     /// Maps an enclave failure on a control call such as the attestation read.
     #[must_use]
     pub fn enclave(error: &enclave::Error) -> Self {
