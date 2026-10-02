@@ -47,7 +47,9 @@ di-migration-storage = { path = "migration/storage" }
 flate2 = "1.1"
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 http-body-util = "0.1"
+libc = "0.2"
 mime = "0.3"
+minijail = { git = "https://github.com/google/minijail", rev = "b0b5dc6997956cdc027295ade5e425c416f30d33" }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 migration-api-client = { path = "migration/api-client" }
 pontifex = { version = "2.0.0", default-features = false }
