@@ -21,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("failed to initialize telemetry: {error:?}"))?;
 
     let config = Config::parse();
+    let migrate_timeout = config.enclave_migrate_timeout();
 
     // The SDK's standard retry mode applies: bounded attempts with exponential backoff and jitter.
     let aws_config = tokio::time::timeout(
@@ -48,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let enclave_client = Arc::new(PontifexEnclaveClient::new(
         config.enclave_cid,
         config.enclave_port,
+        migrate_timeout,
     ));
 
     di_migration_host::server::start(
