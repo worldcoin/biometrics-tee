@@ -11,13 +11,12 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use di_migration_enclave_types::{KeyAttestation, MigrateRequest, MigrateResponse};
-use di_migration_primitives::{JobId, Reason};
+use di_migration_primitives::{JobId, Reason, host_api::JobRequest};
 use di_migration_storage::StorageError;
 
 use crate::{
     AppState,
     enclave::{EnclaveClient, Error},
-    queue::Job,
     store::{BlobStore, JobStore, StoreError},
 };
 
@@ -183,15 +182,16 @@ pub fn state_with(client: Arc<dyn EnclaveClient>) -> AppState {
     )
 }
 
-/// Job number `n`, with the object key the API would send.
-pub fn job(n: u64) -> Job {
+/// Job number `n`, as the API would dispatch it to the stub enclave.
+pub fn job(n: u64) -> JobRequest {
     let job_id: JobId = format!("00000000-0000-4000-8000-{n:012}")
         .parse()
         .expect("should be a UUID");
-    Job {
+    JobRequest {
         object_key: di_migration_storage::schema::pcp_key(&job_id),
         job_id,
         sub: "sub".to_owned(),
         device_public_key: "device-key".to_owned(),
+        enclave_id: crate::enclave::enclave_id(&StubEnclave::default().public_key),
     }
 }

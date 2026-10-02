@@ -7,21 +7,8 @@ use std::{
     sync::Mutex,
 };
 
-use di_migration_primitives::JobId;
+use di_migration_primitives::{JobId, host_api::JobRequest};
 use tokio::sync::Notify;
-
-/// A job dispatched by the API, already committed as `migrating` in the job table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Job {
-    /// The job's ID; also names its S3 objects.
-    pub job_id: JobId,
-    /// Where the sealed PCP was uploaded.
-    pub object_key: String,
-    /// Account the ownership proof was verified for.
-    pub sub: String,
-    /// The app's attested device key.
-    pub device_public_key: String,
-}
 
 /// How a push was handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,12 +25,12 @@ pub struct Full;
 
 #[derive(Default)]
 struct State {
-    waiting: VecDeque<Job>,
+    waiting: VecDeque<JobRequest>,
     /// Waiting and running job IDs: what dedup and the cap count.
     known: HashSet<JobId>,
 }
 
-/// Jobs waiting for, or held by, the single worker.
+/// Jobs the API dispatched, waiting for or held by the single worker.
 pub struct JobQueue {
     state: Mutex<State>,
     ready: Notify,
@@ -66,7 +53,7 @@ impl JobQueue {
     /// # Errors
     ///
     /// [`Full`] when the queue is at its cap.
-    pub fn push(&self, job: Job) -> Result<Admission, Full> {
+    pub fn push(&self, job: JobRequest) -> Result<Admission, Full> {
         let mut state = self.lock();
         if state.known.contains(&job.job_id) {
             return Ok(Admission::Duplicate);
@@ -83,7 +70,7 @@ impl JobQueue {
     }
 
     /// Waits for the oldest job. It stays counted until [`Self::finish`].
-    pub async fn next(&self) -> Job {
+    pub async fn next(&self) -> JobRequest {
         loop {
             let next = self.lock().waiting.pop_front();
             if let Some(job) = next {
