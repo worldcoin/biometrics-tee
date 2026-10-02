@@ -11,7 +11,7 @@ use crate::{AppState, compression, error::ApiError};
 
 /// Migrates one PCP and returns it. Runs to completion before answering; the enclave deadline
 /// in `enclave.rs` is what bounds how long a client waits.
-pub async fn submit(
+pub async fn handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
