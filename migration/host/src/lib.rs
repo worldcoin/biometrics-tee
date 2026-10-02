@@ -16,6 +16,7 @@ mod test_support;
 pub mod config;
 pub mod enclave;
 pub mod error;
+pub mod queue;
 pub mod readiness;
 pub mod routes;
 pub mod server;
