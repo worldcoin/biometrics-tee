@@ -14,8 +14,6 @@ pub struct Config {
     pub http_addr: SocketAddr,
     #[arg(long, env = "DYNAMODB_TABLE_NAME")]
     pub dynamodb_table_name: String,
-    #[arg(long, env = "SQS_QUEUE_URL")]
-    pub sqs_queue_url: String,
     #[arg(long, env = "PCP_BUCKET")]
     pub pcp_bucket: String,
     #[arg(
@@ -62,10 +60,6 @@ pub enum ConfigError {
         "DYNAMODB_TABLE_NAME must be 3-255 ASCII letters, digits, underscores, hyphens, or dots"
     )]
     InvalidDynamodbTableName,
-    #[error("SQS_QUEUE_URL is required")]
-    MissingSqsQueueUrl,
-    #[error("SQS_QUEUE_URL must be an HTTP(S) URL with a queue path")]
-    InvalidSqsQueueUrl,
     #[error("PCP_BUCKET is required and must be 3-63 lowercase letters, digits, hyphens, or dots")]
     InvalidPcpBucket,
     #[error(
@@ -99,20 +93,6 @@ impl Config {
         {
             return Err(ConfigError::InvalidDynamodbTableName);
         }
-        if config.sqs_queue_url.is_empty() {
-            return Err(ConfigError::MissingSqsQueueUrl);
-        }
-        let queue_uri: axum::http::Uri = config
-            .sqs_queue_url
-            .parse()
-            .map_err(|_| ConfigError::InvalidSqsQueueUrl)?;
-        if !matches!(queue_uri.scheme_str(), Some("http" | "https"))
-            || queue_uri.authority().is_none()
-            || queue_uri.path() == "/"
-        {
-            return Err(ConfigError::InvalidSqsQueueUrl);
-        }
-
         if config.pcp_bucket.trim().is_empty() {
             return Err(ConfigError::InvalidPcpBucket);
         }

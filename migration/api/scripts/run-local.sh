@@ -11,7 +11,6 @@ export AWS_ENDPOINT_URL=http://localhost:4566
 
 export HTTP_ADDR=127.0.0.1:8080
 export DYNAMODB_TABLE_NAME=di-migration
-export SQS_QUEUE_URL=http://localhost:4566/000000000000/di-migration
 export PCP_BUCKET=di-migration-pcp
 export S3_FORCE_PATH_STYLE=true
 export ENCLAVE_ID=local-stub-enclave
