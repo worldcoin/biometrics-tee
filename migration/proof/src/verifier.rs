@@ -47,7 +47,7 @@ impl Verifier {
             Verdict::Error(failure) => {
                 tracing::error!(
                     failure = failure.as_str(),
-                    request = %request.credential_sub,
+                    dependency = "proof-verification",
                     "proof verification failed"
                 );
                 Err(ProofVerificationError::VerificationError)
