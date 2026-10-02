@@ -1,6 +1,9 @@
 //! Host configuration, read once at startup from flags or the environment.
 
-use std::{net::IpAddr, num::NonZeroU16};
+use std::{
+    net::IpAddr,
+    num::{NonZeroU16, NonZeroUsize},
+};
 
 use clap::Parser;
 use di_migration_enclave_types::PONTIFEX_PORT;
@@ -21,6 +24,15 @@ pub struct Config {
     /// This pod's IP, which the API stores per job to dispatch it back here.
     #[arg(long, env = "HOST_IP")]
     pub host_ip: IpAddr,
+    /// Bucket holding sealed PCPs under `pcp/` and results under `result/`.
+    #[arg(long, env = "PCP_BUCKET")]
+    pub pcp_bucket: String,
+    /// `LocalStack` and other S3-compatible endpoints only serve path-style addressing.
+    #[arg(long, env = "S3_FORCE_PATH_STYLE", default_value_t = false, action = clap::ArgAction::Set)]
+    pub s3_force_path_style: bool,
+    /// Largest sealed PCP the host buffers; larger objects fail the job without being read.
+    #[arg(long, env = "MAX_PCP_BYTES", default_value = "33554432")]
+    pub max_pcp_bytes: NonZeroUsize,
 }
 
 #[cfg(test)]
@@ -29,43 +41,56 @@ mod tests {
 
     use super::Config;
 
+    const REQUIRED: [&str; 6] = [
+        "--enclave-cid",
+        "16",
+        "--host-ip",
+        "10.0.0.7",
+        "--pcp-bucket",
+        "pcp-bucket",
+    ];
+
     fn parse(args: &[&str]) -> Result<Config, clap::Error> {
         Config::try_parse_from(std::iter::once("di-migration-host").chain(args.iter().copied()))
     }
 
+    fn parse_with(extra: &[&str]) -> Result<Config, clap::Error> {
+        parse(&[REQUIRED.as_slice(), extra].concat())
+    }
+
     #[test]
     fn defaults_apply_when_only_the_required_values_are_set() {
-        let config =
-            parse(&["--enclave-cid", "16", "--host-ip", "10.0.0.7"]).expect("should parse");
+        let config = parse_with(&[]).expect("should parse");
 
         assert_eq!(config.enclave_cid, 16);
         assert_eq!(config.enclave_port, 1000);
         assert_eq!(config.port.get(), 8000);
         assert_eq!(config.host_ip.to_string(), "10.0.0.7");
+        assert_eq!(config.pcp_bucket, "pcp-bucket");
+        assert!(!config.s3_force_path_style);
+        assert_eq!(config.max_pcp_bytes.get(), 32 * 1024 * 1024);
     }
 
     #[test]
     fn a_missing_enclave_cid_is_rejected() {
-        assert!(parse(&["--host-ip", "10.0.0.7"]).is_err());
+        assert!(parse(&REQUIRED[2..]).is_err());
+    }
+
+    #[test]
+    fn storage_settings_are_required() {
+        assert!(parse(&REQUIRED[..4]).is_err());
     }
 
     #[test]
     fn a_zero_port_is_rejected() {
-        assert!(
-            parse(&[
-                "--enclave-cid",
-                "16",
-                "--host-ip",
-                "10.0.0.7",
-                "--port",
-                "0"
-            ])
-            .is_err()
-        );
+        assert!(parse_with(&["--port", "0"]).is_err());
     }
 
     #[test]
     fn an_invalid_host_ip_is_rejected() {
-        assert!(parse(&["--enclave-cid", "16", "--host-ip", "not-an-ip"]).is_err());
+        let mut args = REQUIRED;
+        args[3] = "not-an-ip";
+
+        assert!(parse(&args).is_err());
     }
 }
