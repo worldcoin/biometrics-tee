@@ -1321,8 +1321,20 @@ dependencies = [
 name = "di-migration-host"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "di-migration-enclave-types",
+ "http-body-util",
+ "pontifex",
+ "serde",
+ "serde_json",
+ "telemetry-batteries",
+ "tokio",
+ "tower",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

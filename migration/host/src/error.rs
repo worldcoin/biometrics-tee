@@ -1,0 +1,185 @@
+//! Every route returns [`ApiError`], so status, body and logging are decided in one place.
+//! Constructors are per route rather than a blanket `From`: the mapping is context-dependent.
+
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use serde::Serialize;
+
+use crate::enclave;
+
+/// Machine-readable error codes returned to the API.
+pub mod codes {
+    /// The enclave did not answer in time.
+    pub const ENCLAVE_TIMEOUT: &str = "enclave_timeout";
+    /// The enclave could not be reached.
+    pub const ENCLAVE_UNREACHABLE: &str = "enclave_unreachable";
+    /// An unexpected failure; detail stays in the log.
+    pub const INTERNAL_ERROR: &str = "internal_error";
+}
+
+/// An API failure, with the status and body to return for it.
+#[derive(Debug)]
+pub struct ApiError {
+    status: StatusCode,
+    code: &'static str,
+    message: &'static str,
+    allow_retry: bool,
+    /// The dependency that failed, logged on 5xx.
+    dependency: Option<&'static str>,
+    /// Log-only context; never serialized, since it may name internals.
+    detail: Option<String>,
+}
+
+/// The JSON body of every error response.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorEnvelope {
+    allow_retry: bool,
+    error: ErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    code: &'static str,
+    message: &'static str,
+}
+
+impl ApiError {
+    const fn new(
+        status: StatusCode,
+        code: &'static str,
+        message: &'static str,
+        allow_retry: bool,
+    ) -> Self {
+        Self {
+            status,
+            code,
+            message,
+            allow_retry,
+            dependency: None,
+            detail: None,
+        }
+    }
+
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// The status this error will return.
+    #[must_use]
+    pub const fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    /// The machine-readable code this error will return.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Whether the caller is told to retry.
+    #[must_use]
+    pub const fn allow_retry(&self) -> bool {
+        self.allow_retry
+    }
+
+    /// Maps an enclave failure on a control call such as the attestation read.
+    #[must_use]
+    pub fn enclave(error: &enclave::Error) -> Self {
+        let mapped = match error {
+            enclave::Error::Timeout => Self::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                codes::ENCLAVE_TIMEOUT,
+                "The enclave did not answer in time",
+                true,
+            ),
+            enclave::Error::Transport(detail) => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                codes::ENCLAVE_UNREACHABLE,
+                "The enclave was unreachable",
+                true,
+            )
+            .with_detail(detail.clone()),
+            enclave::Error::Operation(operation) => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL_ERROR,
+                "Internal server error",
+                true,
+            )
+            .with_detail(format!("{operation:?}")),
+        };
+        Self {
+            dependency: Some("enclave"),
+            ..mapped
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let detail = self.detail.as_deref().unwrap_or_default();
+        if self.status.is_server_error() {
+            tracing::error!(
+                code = self.code,
+                status = %self.status,
+                detail,
+                dependency = self.dependency.unwrap_or_default(),
+                "request failed"
+            );
+        } else {
+            tracing::warn!(code = self.code, status = %self.status, detail, "request rejected");
+        }
+
+        let body = ErrorEnvelope {
+            allow_retry: self.allow_retry,
+            error: ErrorBody {
+                code: self.code,
+                message: self.message,
+            },
+        };
+        (self.status, Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use di_migration_enclave_types as enclave_types;
+
+    use super::{ApiError, codes};
+    use crate::enclave;
+
+    /// Pins the enclave matrix; nothing else fails if one arm is changed alone.
+    #[test]
+    fn each_enclave_failure_maps_to_its_own_status() {
+        let cases = [
+            (
+                enclave::Error::Timeout,
+                StatusCode::GATEWAY_TIMEOUT,
+                codes::ENCLAVE_TIMEOUT,
+            ),
+            (
+                enclave::Error::Transport("boom".to_owned()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                codes::ENCLAVE_UNREACHABLE,
+            ),
+            (
+                enclave::Error::Operation(enclave_types::Error::Internal),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                codes::INTERNAL_ERROR,
+            ),
+        ];
+
+        for (error, status, code) in cases {
+            let mapped = ApiError::enclave(&error);
+
+            assert_eq!(mapped.status(), status, "status for {error:?}");
+            assert_eq!(mapped.code(), code, "code for {error:?}");
+            assert!(mapped.allow_retry(), "{code} should be retryable");
+        }
+    }
+}
