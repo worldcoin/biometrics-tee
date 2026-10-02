@@ -7,7 +7,10 @@ use di_migration_host::{
     AppState,
     config::Config,
     enclave::PontifexEnclaveClient,
+    queue::JobQueue,
+    readiness::Readiness,
     store::{DynamoJobStore, S3BlobStore},
+    worker::Worker,
 };
 use di_migration_storage::{JobTable, PcpBucket};
 
@@ -21,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("failed to initialize telemetry: {error:?}"))?;
 
     let config = Config::parse();
+    let migrate_timeout = config.enclave_migrate_timeout();
 
     // The SDK's standard retry mode applies: bounded attempts with exponential backoff and jitter.
     let aws_config = tokio::time::timeout(
@@ -48,11 +52,22 @@ async fn main() -> anyhow::Result<()> {
     let enclave_client = Arc::new(PontifexEnclaveClient::new(
         config.enclave_cid,
         config.enclave_port,
+        migrate_timeout,
     ));
+    let queue = Arc::new(JobQueue::new(config.queue_capacity));
 
-    di_migration_host::server::start(
-        config.port,
-        AppState::new(enclave_client, blob_store, job_store, config.host_ip),
-    )
-    .await
+    let readiness = Arc::new(Readiness::new(
+        enclave_client.clone(),
+        blob_store.clone(),
+        job_store.clone(),
+    ));
+    let worker = Worker::new(
+        Arc::clone(&queue),
+        enclave_client.clone(),
+        blob_store,
+        job_store,
+    );
+    let state = AppState::new(enclave_client, readiness, queue, config.host_ip);
+
+    di_migration_host::server::start(config.port, state, worker).await
 }

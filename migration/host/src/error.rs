@@ -6,6 +6,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use di_migration_storage::Reason;
 use serde::Serialize;
 
 use crate::enclave;
@@ -18,6 +19,12 @@ pub mod codes {
     pub const ENCLAVE_UNREACHABLE: &str = "enclave_unreachable";
     /// An unexpected failure; detail stays in the log.
     pub const INTERNAL_ERROR: &str = "internal_error";
+    /// The job request was malformed.
+    pub const INVALID_JOB: &str = "invalid_job";
+    /// The job was sealed to a previous enclave boot.
+    pub const ENCLAVE_CHANGED: &str = super::Reason::EnclaveChanged.as_str();
+    /// The host is at its safety cap.
+    pub const HOST_BUSY: &str = super::Reason::HostBusy.as_str();
 }
 
 /// An API failure, with the status and body to return for it.
@@ -85,6 +92,40 @@ impl ApiError {
     #[must_use]
     pub const fn allow_retry(&self) -> bool {
         self.allow_retry
+    }
+
+    /// A job request that failed validation; resending it unchanged cannot succeed.
+    #[must_use]
+    pub fn invalid_job(detail: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            codes::INVALID_JOB,
+            "The job request is invalid",
+            false,
+        )
+        .with_detail(detail)
+    }
+
+    /// A job sealed to another boot's key; the PCP can never be opened here, so the app restarts.
+    #[must_use]
+    pub const fn enclave_changed() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            codes::ENCLAVE_CHANGED,
+            "The enclave restarted since the job was assigned",
+            false,
+        )
+    }
+
+    /// The safety cap was hit. Not retried: the job is pinned here and the API fails it.
+    #[must_use]
+    pub const fn host_busy() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            codes::HOST_BUSY,
+            "The host is at capacity",
+            false,
+        )
     }
 
     /// Maps an enclave failure on a control call such as the attestation read.

@@ -4,7 +4,8 @@ use std::{fmt::Write as _, time::Duration};
 
 use async_trait::async_trait;
 use di_migration_enclave_types::{
-    self as enclave_types, GetEncryptionKeyRequest, HealthRequest, KeyAttestation,
+    self as enclave_types, GetEncryptionKeyRequest, HealthRequest, KeyAttestation, MigrateRequest,
+    MigrateResponse,
 };
 use pontifex::{Request, client::ConnectionDetails};
 use tokio::time::timeout;
@@ -31,20 +32,26 @@ pub trait EnclaveClient: Send + Sync {
 
     /// Returns this boot's channel key and its attestation.
     async fn encryption_key(&self) -> Result<KeyAttestation, Error>;
+
+    /// Migrates one sealed PCP.
+    async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error>;
 }
 
 /// Pontifex-backed enclave client.
 #[derive(Debug, Clone, Copy)]
 pub struct PontifexEnclaveClient {
     connection: ConnectionDetails,
+    migrate_timeout: Duration,
 }
 
 impl PontifexEnclaveClient {
-    /// Creates a client for the provided enclave CID and Pontifex port.
+    /// Creates a client for the provided enclave CID and Pontifex port; a migration that runs
+    /// past `migrate_timeout` fails as a timeout.
     #[must_use]
-    pub const fn new(cid: u32, port: u32) -> Self {
+    pub const fn new(cid: u32, port: u32, migrate_timeout: Duration) -> Self {
         Self {
             connection: ConnectionDetails::new(cid, port),
+            migrate_timeout,
         }
     }
 
@@ -70,6 +77,10 @@ impl EnclaveClient for PontifexEnclaveClient {
     async fn encryption_key(&self) -> Result<KeyAttestation, Error> {
         self.call(GetEncryptionKeyRequest, CONTROL_REQUEST_TIMEOUT)
             .await
+    }
+
+    async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error> {
+        self.call(request, self.migrate_timeout).await
     }
 }
 

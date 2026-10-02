@@ -4,7 +4,8 @@ use di_migration_enclave_types::{self as enclave_types, MigrateRequest, MigrateR
 
 use crate::state::EnclaveState;
 
-/// Echoes the blob back, standing in for the migration pipeline until it lands.
+/// Echoes the blob back, standing in for the migration pipeline until it lands; `sub` and the
+/// device key are unused until the pipeline seals them into the new PCP.
 pub async fn handler(
     _: Arc<EnclaveState>,
     request: MigrateRequest,
@@ -31,6 +32,8 @@ mod tests {
     fn request(bytes: usize) -> MigrateRequest {
         MigrateRequest {
             blob: vec![7u8; bytes].into(),
+            sub: "sub".to_owned(),
+            device_public_key: "device-key".to_owned(),
         }
     }
 

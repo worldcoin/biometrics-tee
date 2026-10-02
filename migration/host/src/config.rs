@@ -2,7 +2,8 @@
 
 use std::{
     net::IpAddr,
-    num::{NonZeroU16, NonZeroUsize},
+    num::{NonZeroU16, NonZeroU64, NonZeroUsize},
+    time::Duration,
 };
 
 use clap::Parser;
@@ -36,6 +37,20 @@ pub struct Config {
     /// Table holding the job rows.
     #[arg(long, env = "DYNAMODB_TABLE_NAME")]
     pub dynamodb_table_name: String,
+    /// Waiting plus running jobs the host holds; also the capacity the API admits against.
+    #[arg(long, env = "QUEUE_CAPACITY", default_value = "16")]
+    pub queue_capacity: NonZeroUsize,
+    /// A migration running past this fails as `timeout`; keep it below the job deadline.
+    #[arg(long, env = "ENCLAVE_MIGRATE_TIMEOUT_SECS", default_value = "300")]
+    pub enclave_migrate_timeout_secs: NonZeroU64,
+}
+
+impl Config {
+    /// The enclave migration deadline.
+    #[must_use]
+    pub const fn enclave_migrate_timeout(&self) -> Duration {
+        Duration::from_secs(self.enclave_migrate_timeout_secs.get())
+    }
 }
 
 #[cfg(test)]
@@ -75,6 +90,8 @@ mod tests {
         assert_eq!(config.dynamodb_table_name, "jobs");
         assert!(!config.s3_force_path_style);
         assert_eq!(config.max_pcp_bytes.get(), 32 * 1024 * 1024);
+        assert_eq!(config.queue_capacity.get(), 16);
+        assert_eq!(config.enclave_migrate_timeout().as_secs(), 300);
     }
 
     #[test]
@@ -85,6 +102,11 @@ mod tests {
     #[test]
     fn storage_settings_are_required() {
         assert!(parse(&REQUIRED[..4]).is_err());
+    }
+
+    #[test]
+    fn a_zero_queue_capacity_is_rejected() {
+        assert!(parse_with(&["--queue-capacity", "0"]).is_err());
     }
 
     #[test]

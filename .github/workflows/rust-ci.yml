@@ -50,6 +50,33 @@ jobs:
       - name: tests
         run: cargo test --locked --workspace --all-features --verbose
 
+  localstack:
+    name: LocalStack tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      localstack:
+        image: localstack/localstack:3
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3,dynamodb
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: host end-to-end against LocalStack
+        env:
+          LOCALSTACK_ENDPOINT: http://localhost:4566
+        run: cargo test --locked -p di-migration-host --test localstack -- --ignored
+
   flake:
     name: Flake eval
     runs-on: ubuntu-latest

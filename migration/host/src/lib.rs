@@ -1,5 +1,5 @@
 //! Untrusted host for the `DeepIdentifier` migration enclave: relays the enclave's key
-//! attestation and, in later steps, queues and runs migration jobs against S3 and `DynamoDB`.
+//! attestation, and queues and runs migration jobs against S3 and `DynamoDB`.
 
 #![deny(
     clippy::all,
@@ -16,9 +16,11 @@ mod test_support;
 pub mod config;
 pub mod enclave;
 pub mod error;
+pub mod queue;
 pub mod readiness;
 pub mod routes;
 pub mod server;
 pub mod store;
+pub mod worker;
 
 pub use app_state::AppState;

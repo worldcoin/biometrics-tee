@@ -76,10 +76,14 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use super::{READINESS_TTL, Readiness};
-    use crate::test_support::{CountingEnclave, FailingStore, HealthyStore, StubEnclave};
+    use crate::test_support::{CountingEnclave, FailingStore, MemoryStore, StubEnclave};
 
     fn healthy(enclave: Arc<CountingEnclave>) -> Readiness {
-        Readiness::new(enclave, Arc::new(HealthyStore), Arc::new(HealthyStore))
+        Readiness::new(
+            enclave,
+            Arc::new(MemoryStore::default()),
+            Arc::new(MemoryStore::default()),
+        )
     }
 
     #[tokio::test(start_paused = true)]
@@ -113,9 +117,13 @@ mod tests {
         let no_bucket = Readiness::new(
             enclave.clone(),
             Arc::new(FailingStore),
-            Arc::new(HealthyStore),
+            Arc::new(MemoryStore::default()),
         );
-        let no_table = Readiness::new(enclave, Arc::new(HealthyStore), Arc::new(FailingStore));
+        let no_table = Readiness::new(
+            enclave,
+            Arc::new(MemoryStore::default()),
+            Arc::new(FailingStore),
+        );
 
         assert!(!no_bucket.is_ready().await);
         assert!(!no_table.is_ready().await);

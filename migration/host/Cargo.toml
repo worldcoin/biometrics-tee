@@ -28,6 +28,7 @@ telemetry-batteries = { workspace = true, features = ["axum"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
