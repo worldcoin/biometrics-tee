@@ -80,7 +80,7 @@ pub enum Status {
 }
 
 impl Status {
-    /// Every status, for parsing stored values.
+    /// Every status, for parsing.
     pub const ALL: [Self; 4] = [Self::Created, Self::Migrating, Self::Migrated, Self::Failed];
 
     /// The wire and storage value.
@@ -112,7 +112,7 @@ pub enum Reason {
 }
 
 impl Reason {
-    /// Every reason, for parsing stored values.
+    /// Every reason, for parsing.
     pub const ALL: [Self; 5] = [
         Self::HostBusy,
         Self::EnclaveChanged,
@@ -134,7 +134,7 @@ impl Reason {
     }
 }
 
-/// A stored value that is not a known [`Status`] or [`Reason`].
+/// A value that is not a known [`Status`] or [`Reason`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown value {0:?}")]
 pub struct UnknownValue(pub String);
