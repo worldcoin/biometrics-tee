@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_stored_values_do_not_parse() {
+    fn unknown_values_do_not_parse() {
         assert!("pending".parse::<Status>().is_err());
         assert!("oom".parse::<Reason>().is_err());
     }
