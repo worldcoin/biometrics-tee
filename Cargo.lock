@@ -1323,18 +1323,40 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
  "axum",
  "base64 0.22.1",
+ "bytes",
  "clap",
  "di-migration-enclave-types",
+ "di-migration-storage",
  "http-body-util",
  "pontifex",
  "serde",
  "serde_json",
  "telemetry-batteries",
+ "thiserror 2.0.20",
  "tokio",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "di-migration-jobs"
+version = "0.1.0"
+
+[[package]]
+name = "di-migration-storage"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "axum",
+ "bytes",
+ "di-migration-jobs",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
