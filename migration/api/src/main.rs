@@ -322,7 +322,10 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
-        assert_eq!(body, serde_json::json!({"queued": 0, "capacity": 0}));
+        assert_eq!(
+            body,
+            serde_json::json!({"queued": 0, "capacity": 0, "open_slots": 0})
+        );
     }
 
     #[tokio::test]

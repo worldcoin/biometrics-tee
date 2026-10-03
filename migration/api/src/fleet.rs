@@ -11,6 +11,7 @@ use std::{
 
 use async_trait::async_trait;
 use di_migration_primitives::host_api::Capacity;
+use serde::Serialize;
 use tokio::{task::JoinSet, time::Instant};
 
 use crate::host_client::HostClient;
@@ -61,6 +62,18 @@ struct HostLoad {
 struct Snapshot {
     hosts: Vec<HostLoad>,
     refreshed_at: Option<Instant>,
+}
+
+/// The fleet's summed load, as the notification scheduler reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct FleetLoad {
+    /// Waiting plus running jobs.
+    pub queued: usize,
+    /// The most the hosts hold.
+    pub capacity: usize,
+    /// Jobs init still admits before every host reaches the admission threshold; the scheduler
+    /// paces prompts on this, not on `capacity - queued`.
+    pub open_slots: usize,
 }
 
 /// Where init may place a job.
@@ -152,12 +165,25 @@ impl Fleet {
     }
 
     /// The fleet's summed load, or `None` while it is unknown.
-    pub fn totals(&self) -> Option<Capacity> {
+    pub fn totals(&self) -> Option<FleetLoad> {
         let snapshot = self.read();
-        self.is_fresh(&snapshot).then(|| Capacity {
+        self.is_fresh(&snapshot).then(|| FleetLoad {
             queued: snapshot.hosts.iter().map(|host| host.queued).sum(),
             capacity: snapshot.hosts.iter().map(|host| host.capacity).sum(),
+            open_slots: snapshot
+                .hosts
+                .iter()
+                .map(|host| self.open_slots(host))
+                .sum(),
         })
+    }
+
+    /// Jobs `host` takes before it reaches the threshold; summed per host, so one host over it
+    /// does not hide another's room.
+    const fn open_slots(&self, host: &HostLoad) -> usize {
+        (host.capacity * self.threshold_percent)
+            .div_ceil(100)
+            .saturating_sub(host.queued)
     }
 
     /// Picks a random host below the admission threshold. Nothing is counted between polls:
@@ -174,7 +200,7 @@ impl Fleet {
         let open: Vec<SocketAddr> = snapshot
             .hosts
             .iter()
-            .filter(|host| host.queued * 100 < host.capacity * self.threshold_percent)
+            .filter(|host| self.open_slots(host) > 0)
             .map(|host| host.addr)
             .collect();
         fastrand::choice(open).map_or(Placement::AtCapacity, Placement::Host)
@@ -215,7 +241,7 @@ mod tests {
     use axum::{Json, Router, routing::get};
     use di_migration_primitives::host_api::Capacity;
 
-    use super::{Fleet, Placement, Resolver};
+    use super::{Fleet, FleetLoad, Placement, Resolver};
     use crate::host_client::HostClient;
 
     /// Serves a host whose `/capacity` reports `queued` of `capacity`.
@@ -281,11 +307,21 @@ mod tests {
 
         assert_eq!(
             fleet.totals(),
-            Some(Capacity {
+            Some(FleetLoad {
                 queued: 4,
-                capacity: 12
+                capacity: 12,
+                open_slots: 2
             })
         );
+    }
+
+    /// A host over the threshold does not offset another's room.
+    #[tokio::test]
+    async fn open_slots_count_only_room_below_the_threshold() {
+        let fleet = fleet(Arc::new(Fixed(vec![host(4, 4).await, host(1, 5).await])));
+        fleet.refresh().await;
+
+        assert_eq!(fleet.totals().map(|load| load.open_slots), Some(2));
     }
 
     #[tokio::test]
@@ -318,9 +354,10 @@ mod tests {
         }
         assert_eq!(
             fleet.totals(),
-            Some(Capacity {
+            Some(FleetLoad {
                 queued: 0,
-                capacity: 4
+                capacity: 4,
+                open_slots: 2
             })
         );
     }

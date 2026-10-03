@@ -4,11 +4,11 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use di_migration_primitives::{JobId, host_api::Capacity};
+use di_migration_primitives::JobId;
 use di_migration_storage::schema::pcp_key;
 use serde::{Deserialize, Serialize};
 
-use crate::{AppState, error::ApiError};
+use crate::{AppState, error::ApiError, fleet::FleetLoad};
 /// Bounds the subject we accept; real subjects are short opaque identifiers.
 const MAX_SUB_LEN: usize = 255;
 
@@ -49,7 +49,7 @@ struct InitMigrationResponse {
 }
 
 /// The fleet's summed load for the notification scheduler, which pauses prompting on an error.
-async fn capacity(State(state): State<AppState>) -> Result<Json<Capacity>, ApiError> {
+async fn capacity(State(state): State<AppState>) -> Result<Json<FleetLoad>, ApiError> {
     state
         .fleet
         .totals()
