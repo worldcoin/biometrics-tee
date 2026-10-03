@@ -33,9 +33,6 @@ pub struct Config {
     /// LocalStack and other S3-compatible endpoints only serve path-style addressing.
     #[arg(long, env = "S3_FORCE_PATH_STYLE", default_value_t = false, action = clap::ArgAction::Set)]
     pub s3_force_path_style: bool,
-    /// Trusts the caller's device key from a header; there is no real device auth yet.
-    #[arg(long, env = "INSECURE_DEVICE_AUTH", default_value_t = false, action = clap::ArgAction::Set)]
-    pub insecure_device_auth: bool,
     #[arg(long, env = "PROOF_VERIFICATION_HOST")]
     pub proof_verification_host: String,
     #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 2)]
@@ -87,11 +84,7 @@ pub enum ConfigError {
     InvalidPresignedUrlTtl,
     #[error("UPLOAD_WINDOW_SECS must be at least PRESIGNED_URL_TTL_SECS")]
     InvalidUploadWindow,
-    #[error(
-        "device auth is not implemented yet; set INSECURE_DEVICE_AUTH=true to trust a header \
-         outside production"
-    )]
-    DeviceAuthUnavailable,
+
     #[error("PROOF_VERIFICATION_HOST is required")]
     MissingProofVerificationHost,
     #[error("PROOF_VERIFICATION_HOST must be an HTTP(S) URL")]
@@ -137,10 +130,6 @@ impl Config {
 
         if config.upload_window_secs < config.presigned_url_ttl.as_secs() {
             return Err(ConfigError::InvalidUploadWindow);
-        }
-
-        if !config.insecure_device_auth {
-            return Err(ConfigError::DeviceAuthUnavailable);
         }
 
         let host = config.proof_verification_host.trim();

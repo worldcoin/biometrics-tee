@@ -2,14 +2,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
     Json, Router,
-    body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
 use di_migration_primitives::{
     JobId,
-    app_api::{InitMigrationRequest, InitMigrationResponse},
+    app_api::{DEVICE_PUBLIC_KEY_HEADER, InitMigrationRequest, InitMigrationResponse},
 };
 use di_migration_storage::{NewJob, StorageError};
 
@@ -21,6 +20,9 @@ use crate::{
 
 /// Bounds the subject we accept; real subjects are short opaque identifiers.
 const MAX_SUB_LEN: usize = 255;
+
+/// Bounds the device key we store; a real key is a few hundred bytes of base64.
+const MAX_DEVICE_KEY_LEN: usize = 1024;
 
 /// Base `Retry-After` when the fleet is full; up to as much again is added as jitter, so
 /// rejected apps do not return together.
@@ -80,14 +82,9 @@ async fn ready(State(state): State<AppState>) -> StatusCode {
 async fn init_migration(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: Bytes,
+    Json(request): Json<InitMigrationRequest>,
 ) -> Result<Json<InitMigrationResponse>, ApiError> {
-    let device_public_key = state
-        .authenticator
-        .authenticate(&headers, &body)
-        .map_err(|_| ApiError::unauthenticated())?;
-    let request: InitMigrationRequest =
-        serde_json::from_slice(&body).map_err(|_| ApiError::invalid_request())?;
+    let device_public_key = device_public_key(&headers).ok_or_else(ApiError::invalid_device_key)?;
     let sub = request.sub.trim();
     if sub.is_empty() || sub.len() > MAX_SUB_LEN || sub.chars().any(char::is_control) {
         return Err(ApiError::invalid_sub());
@@ -155,6 +152,12 @@ async fn init_migration(
         upload_url,
         migrate_by: job.active_until,
     }))
+}
+
+/// The device key the auth proxy forwards; the API does not verify devices itself.
+fn device_public_key(headers: &HeaderMap) -> Option<String> {
+    let key = headers.get(DEVICE_PUBLIC_KEY_HEADER)?.to_str().ok()?.trim();
+    (!key.is_empty() && key.len() <= MAX_DEVICE_KEY_LEN).then(|| key.to_owned())
 }
 
 fn unix_now() -> u64 {

@@ -26,7 +26,7 @@ struct Cli {
 enum Command {
     /// Starts a migration and prints the enclave id, attestation and upload URL.
     InitMigration {
-        /// The device public key; sent as a trusted header while device auth is mocked.
+        /// The device public key; in production the auth proxy sets it after verifying the device.
         #[arg(long, env = "DEVICE_PUBLIC_KEY")]
         device_public_key: String,
 

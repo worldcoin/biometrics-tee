@@ -1,4 +1,3 @@
-mod auth;
 mod config;
 mod error;
 mod fleet;
@@ -16,7 +15,6 @@ use tokio::net::TcpListener;
 use di_migration_storage::{JobTable, PcpBucket};
 
 use crate::{
-    auth::{Authenticator, TrustedHeaderAuthenticator},
     fleet::{DnsResolver, Fleet},
     host_client::HostClient,
 };
@@ -56,7 +54,6 @@ struct AppState {
     presigned_url_ttl: Duration,
     /// How long after init migrate is accepted.
     upload_window: Duration,
-    authenticator: Arc<dyn Authenticator>,
     verifier: Arc<proof::Verifier>,
     fleet: Arc<Fleet>,
     hosts: HostClient,
@@ -87,12 +84,6 @@ async fn main() -> anyhow::Result<()> {
         .build();
     let bucket = PcpBucket::new(aws_sdk_s3::Client::from_conf(s3_config), config.pcp_bucket);
 
-    if config.insecure_device_auth {
-        tracing::warn!(
-            "trusting device keys from a header; this build must not handle production traffic"
-        );
-    }
-
     let hosts = HostClient::new().context("failed to build the host client")?;
     let poll_interval = Duration::from_secs(config.capacity_poll_interval_secs);
     let fleet = Arc::new(Fleet::new(
@@ -109,7 +100,6 @@ async fn main() -> anyhow::Result<()> {
         bucket,
         presigned_url_ttl: config.presigned_url_ttl,
         upload_window: Duration::from_secs(config.upload_window_secs),
-        authenticator: Arc::new(TrustedHeaderAuthenticator),
         verifier: Arc::new(verifier),
         fleet,
         hosts,
@@ -207,9 +197,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::{
-        AppState, auth::TrustedHeaderAuthenticator, fleet::Fleet, host_client::HostClient, routes,
-    };
+    use crate::{AppState, fleet::Fleet, host_client::HostClient, routes};
 
     const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
     const AMZ_JSON: &str = "application/x-amz-json-1.0";
@@ -346,7 +334,6 @@ mod tests {
             bucket: unavailable_bucket(),
             presigned_url_ttl: Duration::from_secs(300),
             upload_window: Duration::from_secs(420),
-            authenticator: Arc::new(TrustedHeaderAuthenticator),
             verifier: verifier(proof::Verdict::Accepted),
             fleet: fleet(Vec::new()),
             hosts: HostClient::new().unwrap(),
@@ -433,14 +420,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_without_a_device_key_is_unauthenticated() {
+    async fn init_without_a_device_key_is_rejected() {
         let response = routes::router(unavailable_state())
             .oneshot(init_request(None, "test-sub", "YQ=="))
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(error_code(response).await, "unauthenticated");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(error_code(response).await, "invalid_device_key");
     }
 
     /// Hosts at the admission threshold take no jobs; the app backs off for a jittered while.

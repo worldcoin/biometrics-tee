@@ -77,12 +77,12 @@ impl ApiError {
         self.code
     }
 
-    /// The device key is missing or invalid.
-    pub const fn unauthenticated() -> Self {
+    /// The device key header is missing, blank or oversized.
+    pub const fn invalid_device_key() -> Self {
         Self::new(
-            StatusCode::UNAUTHORIZED,
-            codes::UNAUTHENTICATED,
-            "The device could not be authenticated",
+            StatusCode::BAD_REQUEST,
+            codes::INVALID_DEVICE_KEY,
+            "The device key is invalid",
             false,
         )
     }
@@ -119,16 +119,6 @@ impl ApiError {
         )
         .with_dependency("host")
         .with_detail(detail)
-    }
-
-    /// The body is not a valid request.
-    pub const fn invalid_request() -> Self {
-        Self::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "The request body is invalid",
-            false,
-        )
     }
 
     /// A `sub` that is blank, too long or has control characters.

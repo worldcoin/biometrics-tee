@@ -6,8 +6,8 @@ use crate::EnclaveId;
 
 pub use crate::host_api::{ErrorBody, ErrorEnvelope};
 
-/// Carries the caller's device public key while device auth is mocked; the real verifier
-/// replaces it with an integrity token and a request signature.
+/// The caller's device public key, set by the auth proxy in front of the API once it has
+/// verified the device.
 pub const DEVICE_PUBLIC_KEY_HEADER: &str = "x-device-public-key";
 
 /// `POST /v1/init-migration`.
@@ -38,8 +38,8 @@ pub struct InitMigrationResponse {
 
 /// Machine-readable error codes.
 pub mod codes {
-    /// The device key is missing or invalid.
-    pub const UNAUTHENTICATED: &str = "unauthenticated";
+    /// The device key header is missing or invalid.
+    pub const INVALID_DEVICE_KEY: &str = "invalid_device_key";
     /// No host has room; retry after `Retry-After`.
     pub const AT_CAPACITY: &str = "at_capacity";
     /// The `sub` already has an active migration; poll it instead.

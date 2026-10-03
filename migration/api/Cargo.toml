@@ -20,7 +20,6 @@ fastrand.workspace = true
 proof.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
-serde_json.workspace = true
 telemetry-batteries = { workspace = true, features = ["axum"] }
 thiserror.workspace = true
 tokio.workspace = true
@@ -31,4 +30,5 @@ di-migration-storage.workspace = true
 [dev-dependencies]
 http-body-util.workspace = true
 migration-api-client.workspace = true
+serde_json.workspace = true
 tower.workspace = true
