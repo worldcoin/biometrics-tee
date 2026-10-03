@@ -100,11 +100,11 @@ async fn the_job_lifecycle_honours_the_sub_lock() {
 
     // Migrate claims it once, and keeps the lock until the deadline.
     let deadline = NOW + 600;
-    jobs.claim(&first.job_id, "sub-a", deadline)
+    jobs.claim(&first.job_id, "sub-a", NOW + 60, deadline)
         .await
         .expect("claim should succeed");
     assert_eq!(
-        jobs.claim(&first.job_id, "sub-a", deadline).await,
+        jobs.claim(&first.job_id, "sub-a", NOW + 60, deadline).await,
         Err(StorageError::NotCreated)
     );
     let latest = jobs.latest_job("sub-a").await.expect("read").expect("job");
@@ -139,7 +139,7 @@ async fn the_job_lifecycle_honours_the_sub_lock() {
 
     // The superseded job can no longer be claimed or failed through the lock.
     assert_eq!(
-        jobs.claim(&first.job_id, "sub-a", deadline).await,
+        jobs.claim(&first.job_id, "sub-a", NOW + 60, deadline).await,
         Err(StorageError::NotCreated)
     );
 
@@ -158,6 +158,29 @@ async fn an_expired_init_frees_the_lock() {
     jobs.create_job(&after_window)
         .await
         .expect("an init past the previous job's active window is allowed");
+
+    client.delete_table().table_name(&name).send().await.ok();
+}
+
+#[tokio::test]
+#[ignore = "needs LocalStack"]
+async fn a_migrate_after_the_upload_window_is_refused() {
+    let (jobs, client, name) = table().await;
+
+    let late = new_job("sub-d", NOW);
+    jobs.create_job(&late).await.expect("created");
+
+    assert_eq!(
+        jobs.claim(&late.job_id, "sub-d", late.active_until + 1, NOW + 900)
+            .await,
+        Err(StorageError::UploadWindowPassed)
+    );
+    let latest = jobs.latest_job("sub-d").await.expect("read").expect("job");
+    assert_eq!(latest.status, Status::Created);
+
+    jobs.claim(&late.job_id, "sub-d", late.active_until, NOW + 900)
+        .await
+        .expect("the last second of the window still claims");
 
     client.delete_table().table_name(&name).send().await.ok();
 }
