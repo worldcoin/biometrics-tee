@@ -164,8 +164,8 @@ pub struct NewJob {
     pub enclave_id: EnclaveId,
     /// Unix seconds now.
     pub created_at: u64,
-    /// Unix seconds until which the job blocks another init for the same `sub`, unless migrate
-    /// extends it; roughly the upload window.
+    /// Unix seconds until which the job blocks another init for the same `sub` and may still be
+    /// claimed: the upload window. Migrate extends it to the deadline.
     pub active_until: u64,
     /// Unix seconds after which `DynamoDB` deletes the rows.
     pub expires_at: u64,
@@ -292,15 +292,19 @@ impl JobTable {
 
     /// Moves a `created` job to `migrating` with `deadline`, and keeps its `sub`'s lock active
     /// until then. Committed before dispatch, so a retried migrate never starts the job twice.
+    /// Only allowed until the lock's upload window ends, which bounds how long an admitted job
+    /// stays invisible to admission.
     ///
     /// # Errors
     ///
+    /// [`StorageError::UploadWindowPassed`] when `now` is past the upload window,
     /// [`StorageError::NotCreated`] when the job already left `created` or a newer job for the
     /// `sub` took the lock, or the write failed.
     pub async fn claim(
         &self,
         job_id: &JobId,
         sub: &str,
+        now: u64,
         deadline: u64,
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "DynamoDB TransactWriteItems";
@@ -320,11 +324,14 @@ impl JobTable {
         match self
             .transact([
                 TransactWriteItem::builder().update(job_row).build(),
-                self.retarget_lock(sub, job_id, deadline)?,
+                self.retarget_lock(sub, job_id, deadline, Some(now))?,
             ])
             .await?
         {
             Transaction::Committed => Ok(()),
+            Transaction::Rejected(failed_items) if failed_items == [false, true] => {
+                Err(StorageError::UploadWindowPassed)
+            }
             Transaction::Rejected(_) => Err(StorageError::NotCreated),
         }
     }
@@ -358,7 +365,7 @@ impl JobTable {
         match self
             .transact([
                 TransactWriteItem::builder().update(job_row).build(),
-                self.retarget_lock(sub, job_id, 0)?,
+                self.retarget_lock(sub, job_id, 0, None)?,
             ])
             .await?
         {
@@ -367,14 +374,16 @@ impl JobTable {
         }
     }
 
-    /// Sets the `sub`'s lock to stay active until `active_until`, if it still points to `job_id`.
+    /// Sets the `sub`'s lock to stay active until `active_until`, if it still points to `job_id`
+    /// and, given `active_at`, is still active then.
     fn retarget_lock(
         &self,
         sub: &str,
         job_id: &JobId,
         active_until: u64,
+        active_at: Option<u64>,
     ) -> Result<TransactWriteItem, StorageError> {
-        let lock_row = Update::builder()
+        let mut lock_row = Update::builder()
             .table_name(&self.table_name)
             .key(attributes::ID, string(&lock_id(sub)))
             .update_expression("SET #active_until = :active_until")
@@ -382,7 +391,13 @@ impl JobTable {
             .expression_attribute_names("#active_until", attributes::ACTIVE_UNTIL)
             .expression_attribute_names("#job_id", attributes::JOB_ID)
             .expression_attribute_values(":active_until", number(active_until))
-            .expression_attribute_values(":job_id", string(job_id.as_str()))
+            .expression_attribute_values(":job_id", string(job_id.as_str()));
+        if let Some(now) = active_at {
+            lock_row = lock_row
+                .condition_expression("#job_id = :job_id AND #active_until >= :now")
+                .expression_attribute_values(":now", number(now));
+        }
+        let lock_row = lock_row
             .build()
             .map_err(|error| failed("DynamoDB TransactWriteItems", &error))?;
         Ok(TransactWriteItem::builder().update(lock_row).build())
