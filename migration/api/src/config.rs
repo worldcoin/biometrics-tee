@@ -56,6 +56,10 @@ pub struct Config {
     /// How often the fleet's load is polled.
     #[arg(long, env = "CAPACITY_POLL_INTERVAL_SECS", default_value_t = 5)]
     pub capacity_poll_interval_secs: u64,
+    /// A host takes new jobs while its queue is below this share of its capacity; the rest is
+    /// headroom for jobs admitted but not yet reported.
+    #[arg(long, env = "ADMISSION_THRESHOLD_PERCENT", default_value_t = 70)]
+    pub admission_threshold_percent: usize,
 }
 
 fn parse_presigned_url_ttl(raw: &str) -> Result<Duration, std::num::ParseIntError> {
@@ -93,6 +97,8 @@ pub enum ConfigError {
     MissingHostService,
     #[error("CAPACITY_POLL_INTERVAL_SECS must be at least 1")]
     InvalidCapacityPollInterval,
+    #[error("ADMISSION_THRESHOLD_PERCENT must be between 1 and 100")]
+    InvalidAdmissionThreshold,
 }
 
 impl Config {
@@ -148,6 +154,9 @@ impl Config {
         }
         if config.capacity_poll_interval_secs == 0 {
             return Err(ConfigError::InvalidCapacityPollInterval);
+        }
+        if !(1..=100).contains(&config.admission_threshold_percent) {
+            return Err(ConfigError::InvalidAdmissionThreshold);
         }
 
         Ok(config)

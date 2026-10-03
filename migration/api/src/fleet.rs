@@ -49,7 +49,7 @@ impl Resolver for DnsResolver {
     }
 }
 
-/// One host's load as of the last poll, plus jobs placed on it since.
+/// One host's load as of the last poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HostLoad {
     addr: SocketAddr,
@@ -72,7 +72,7 @@ struct Snapshot {
 pub enum Placement {
     /// This host has room.
     Host(SocketAddr),
-    /// Every host is full; the app should back off.
+    /// No host is below the admission threshold; the app should back off.
     AtCapacity,
     /// The fleet's load is unknown, e.g. polling failed; admitting blind could overload it.
     Unknown,
@@ -85,17 +85,25 @@ pub struct Fleet {
     snapshot: RwLock<Snapshot>,
     /// Older snapshots count as unknown; a few missed polls in a row.
     max_age: Duration,
+    /// A host is open while `queued` is below this percentage of its `capacity`.
+    threshold_percent: usize,
 }
 
 impl Fleet {
     /// A fleet with no data yet; it is unknown until the first refresh.
     #[must_use]
-    pub fn new(resolver: Arc<dyn Resolver>, client: HostClient, max_age: Duration) -> Self {
+    pub fn new(
+        resolver: Arc<dyn Resolver>,
+        client: HostClient,
+        max_age: Duration,
+        threshold_percent: usize,
+    ) -> Self {
         Self {
             resolver,
             client,
             snapshot: RwLock::new(Snapshot::default()),
             max_age,
+            threshold_percent,
         }
     }
 
@@ -152,36 +160,24 @@ impl Fleet {
         })
     }
 
-    /// Picks a host by power of two choices: of two random hosts with room, the less loaded
-    /// one. Counts the job against it at once, so a burst between polls spreads out.
+    /// Picks a random host below the admission threshold. Nothing is counted between polls:
+    /// the share above the threshold is headroom for jobs the hosts do not report yet.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "init places jobs in a follow-up")
     )]
     pub fn place(&self) -> Placement {
-        let mut snapshot = self.write();
+        let snapshot = self.read();
         if !self.is_fresh(&snapshot) {
             return Placement::Unknown;
         }
-        let open: Vec<usize> = (0..snapshot.hosts.len())
-            .filter(|&index| snapshot.hosts[index].queued < snapshot.hosts[index].capacity)
+        let open: Vec<SocketAddr> = snapshot
+            .hosts
+            .iter()
+            .filter(|host| host.queued * 100 < host.capacity * self.threshold_percent)
+            .map(|host| host.addr)
             .collect();
-        let chosen = match open.len() {
-            0 => return Placement::AtCapacity,
-            1 => open[0],
-            len => {
-                // Two distinct random picks: the second skips over the first.
-                let first = fastrand::usize(..len);
-                let mut second = fastrand::usize(..len - 1);
-                if second >= first {
-                    second += 1;
-                }
-                less_loaded(&snapshot.hosts, open[first], open[second])
-            }
-        };
-        let host = &mut snapshot.hosts[chosen];
-        host.queued += 1;
-        Placement::Host(host.addr)
+        fastrand::choice(open).map_or(Placement::AtCapacity, Placement::Host)
     }
 
     fn is_fresh(&self, snapshot: &Snapshot) -> bool {
@@ -201,16 +197,6 @@ impl Fleet {
         self.snapshot
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-/// The host with the lower fill ratio; compared by cross-multiplying to stay in integers.
-fn less_loaded(hosts: &[HostLoad], first: usize, second: usize) -> usize {
-    let (a, b) = (&hosts[first], &hosts[second]);
-    if a.queued * b.capacity <= b.queued * a.capacity {
-        first
-    } else {
-        second
     }
 }
 
@@ -270,6 +256,7 @@ mod tests {
             resolver,
             HostClient::new().expect("client"),
             Duration::from_secs(15),
+            50,
         )
     }
 
@@ -302,43 +289,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_full_fleet_is_at_capacity() {
-        let fleet = fleet(Arc::new(Fixed(vec![host(4, 4).await, host(2, 2).await])));
+    async fn hosts_at_the_threshold_are_at_capacity() {
+        let fleet = fleet(Arc::new(Fixed(vec![host(2, 4).await, host(4, 4).await])));
         fleet.refresh().await;
 
         assert_eq!(fleet.place(), Placement::AtCapacity);
     }
 
-    /// With two hosts, both are the two choices, so the emptier one always wins.
     #[tokio::test]
-    async fn placement_prefers_the_less_loaded_host() {
-        let busy = host(3, 4).await;
-        let idle = host(0, 4).await;
-        let fleet = fleet(Arc::new(Fixed(vec![busy, idle])));
+    async fn placement_picks_only_hosts_below_the_threshold() {
+        let open = host(1, 4).await;
+        let fleet = fleet(Arc::new(Fixed(vec![host(2, 4).await, open])));
         fleet.refresh().await;
 
-        assert_eq!(fleet.place(), Placement::Host(idle));
+        for _ in 0..20 {
+            assert_eq!(fleet.place(), Placement::Host(open));
+        }
     }
 
-    /// Placements between polls count against the host, so a burst fills hosts evenly and stops
-    /// at the fleet's capacity.
+    /// Placements are not counted until the next poll; the threshold's headroom absorbs them.
     #[tokio::test]
-    async fn placements_count_until_the_next_poll() {
-        let fleet = fleet(Arc::new(Fixed(vec![host(0, 2).await, host(0, 2).await])));
+    async fn placements_leave_the_snapshot_unchanged() {
+        let fleet = fleet(Arc::new(Fixed(vec![host(0, 4).await])));
         fleet.refresh().await;
 
-        let placed: Vec<Placement> = (0..5).map(|_| fleet.place()).collect();
-
-        assert!(
-            placed[..4]
-                .iter()
-                .all(|placement| matches!(placement, Placement::Host(_)))
-        );
-        assert_eq!(placed[4], Placement::AtCapacity);
+        for _ in 0..10 {
+            assert!(matches!(fleet.place(), Placement::Host(_)));
+        }
         assert_eq!(
             fleet.totals(),
             Some(Capacity {
-                queued: 4,
+                queued: 0,
                 capacity: 4
             })
         );

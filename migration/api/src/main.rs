@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         HostClient::new().context("failed to build the host client")?,
         // Three missed polls in a row and the fleet's load counts as unknown.
         poll_interval * 3,
+        config.admission_threshold_percent,
     ));
     tokio::spawn(Arc::clone(&fleet).run(poll_interval));
 
@@ -255,6 +256,7 @@ mod tests {
                 Arc::new(NoHosts),
                 HostClient::new().unwrap(),
                 Duration::from_secs(15),
+                70,
             )),
         }
     }
