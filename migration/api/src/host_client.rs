@@ -76,7 +76,6 @@ impl HostClient {
     }
 
     /// The host's enclave identity, attestation and IP.
-    #[cfg_attr(not(test), expect(dead_code, reason = "init uses it in a follow-up"))]
     pub async fn attestation(&self, host: SocketAddr) -> Result<AttestationResponse, HostError> {
         self.get(host, "/attestation", ENCLAVE_BACKED_TIMEOUT).await
     }

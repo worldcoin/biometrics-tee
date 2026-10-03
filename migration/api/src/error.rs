@@ -2,9 +2,10 @@
 
 use axum::{
     Json,
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
+use di_migration_primitives::app_api::codes;
 use serde::Serialize;
 
 /// An API failure, with the status and body to return for it.
@@ -14,6 +15,8 @@ pub struct ApiError {
     code: &'static str,
     message: &'static str,
     allow_retry: bool,
+    /// Seconds for the `Retry-After` header.
+    retry_after: Option<u64>,
     /// The dependency that failed, logged on 5xx.
     dependency: Option<&'static str>,
     /// Log-only context; never serialized, since it may name internals.
@@ -46,6 +49,7 @@ impl ApiError {
             code,
             message,
             allow_retry,
+            retry_after: None,
             dependency: None,
             detail: None,
         }
@@ -71,6 +75,50 @@ impl ApiError {
     #[cfg(test)]
     pub const fn code(&self) -> &'static str {
         self.code
+    }
+
+    /// The device key header is missing, blank or oversized.
+    pub const fn invalid_device_key() -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            codes::INVALID_DEVICE_KEY,
+            "The device key is invalid",
+            false,
+        )
+    }
+
+    /// No host has room; an expected limit, so not a 5xx.
+    pub const fn at_capacity(retry_after_secs: u64) -> Self {
+        let mut error = Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            codes::AT_CAPACITY,
+            "The migration service is at capacity",
+            true,
+        );
+        error.retry_after = Some(retry_after_secs);
+        error
+    }
+
+    /// The `sub` already has an active migration.
+    pub const fn migration_in_progress() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            codes::MIGRATION_IN_PROGRESS,
+            "A migration is already in progress",
+            false,
+        )
+    }
+
+    /// The chosen host did not answer.
+    pub fn host(detail: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "A dependency is unavailable",
+            true,
+        )
+        .with_dependency("host")
+        .with_detail(detail)
     }
 
     /// A `sub` that is blank, too long or has control characters.
@@ -155,7 +203,13 @@ impl IntoResponse for ApiError {
                 message: self.message,
             },
         };
-        (self.status, Json(body)).into_response()
+        let mut response = (self.status, Json(body)).into_response();
+        if let Some(seconds) = self.retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, seconds.into());
+        }
+        response
     }
 }
 

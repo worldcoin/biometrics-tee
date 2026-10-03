@@ -2,27 +2,13 @@
 
 use std::time::Duration;
 
+use di_migration_primitives::app_api::{
+    DEVICE_PUBLIC_KEY_HEADER, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
+};
 use reqwest::{StatusCode, Url};
-use serde::{Deserialize, Serialize};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-#[derive(Debug, Serialize)]
-struct InitMigrationRequest<'a> {
-    sub: &'a str,
-    proof: &'a str,
-    challenge_id: &'a str,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InitMigrationResponse {
-    pub enclave_id: String,
-    /// COSE attestation document, standard padded base64.
-    pub attestation: String,
-    /// Presigned S3 URL the PCP is uploaded to with `PUT`.
-    pub presigned_url: String,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -34,6 +20,8 @@ pub enum Error {
     Transport(#[source] reqwest::Error),
     #[error("migration API answered {status}")]
     UnexpectedStatus { status: StatusCode },
+    #[error("migration API answered {status}: {code}")]
+    Api { status: StatusCode, code: String },
     #[error("failed to decode the migration API response: {0}")]
     Decode(#[source] reqwest::Error),
 }
@@ -64,11 +52,12 @@ impl MigrationApiClient {
         })
     }
 
-    /// Starts a migration for `sub` with a standard-base64 ownership `proof`
-    /// and the `challenge_id` the proof was built for.
+    /// Starts a migration for `sub` as the device with `device_public_key`, with a
+    /// standard-base64 ownership `proof` and the `challenge_id` the proof was built for.
     /// Not retried here: each call creates a new migration record.
     pub async fn init_migration(
         &self,
+        device_public_key: &str,
         sub: &str,
         proof: &str,
         challenge_id: &str,
@@ -76,10 +65,11 @@ impl MigrationApiClient {
         let response = self
             .http
             .post(self.init_migration_url.clone())
+            .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
             .json(&InitMigrationRequest {
-                sub,
-                proof,
-                challenge_id,
+                sub: sub.to_owned(),
+                proof: proof.to_owned(),
+                challenge_id: challenge_id.to_owned(),
             })
             .send()
             .await
@@ -87,17 +77,23 @@ impl MigrationApiClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(Error::UnexpectedStatus { status });
+            return Err(match response.json::<ErrorEnvelope>().await {
+                Ok(envelope) => Error::Api {
+                    status,
+                    code: envelope.error.code,
+                },
+                Err(_) => Error::UnexpectedStatus { status },
+            });
         }
 
         response.json().await.map_err(Error::Decode)
     }
 
     /// Uploads a PCP to a presigned URL returned by [`Self::init_migration`].
-    pub async fn upload_pcp(&self, presigned_url: &str, pcp: Vec<u8>) -> Result<(), Error> {
+    pub async fn upload_pcp(&self, upload_url: &str, pcp: Vec<u8>) -> Result<(), Error> {
         let response = self
             .http
-            .put(presigned_url)
+            .put(upload_url)
             .body(pcp)
             .send()
             .await
@@ -114,7 +110,11 @@ impl MigrationApiClient {
 
 #[cfg(test)]
 mod tests {
-    use axum::{Json, Router, http::StatusCode, routing::post};
+    use axum::{
+        Json, Router,
+        http::{HeaderMap, StatusCode},
+        routing::post,
+    };
 
     use super::{Error, MigrationApiClient};
 
@@ -134,22 +134,28 @@ mod tests {
     async fn init_migration_returns_the_decoded_response() {
         let (url, server) = serve(Router::new().route(
             "/v1/init-migration",
-            post(|Json(body): Json<serde_json::Value>| async move {
-                assert_eq!(body["sub"], "test-sub");
-                assert_eq!(body["proof"], "cHJvb2Y=");
-                assert_eq!(body["challenge_id"], "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31");
-                Json(serde_json::json!({
-                    "enclave_id": "enc-1",
-                    "attestation": "",
-                    "presigned_url": "http://s3.test/pcp/1",
-                }))
-            }),
+            post(
+                |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                    assert_eq!(headers["x-device-public-key"], "device-key");
+                    assert_eq!(body["sub"], "test-sub");
+                    assert_eq!(body["proof"], "cHJvb2Y=");
+                    assert_eq!(body["challenge_id"], "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31");
+                    Json(serde_json::json!({
+                        "enclave_id": "ab".repeat(32),
+                        "attestation": "",
+                        "enclave_public_key": "key",
+                        "upload_url": "http://s3.test/pcp/1",
+                        "migrate_by": 1,
+                    }))
+                },
+            ),
         ))
         .await;
 
         let response = MigrationApiClient::new(&url)
             .unwrap()
             .init_migration(
+                "device-key",
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
@@ -157,8 +163,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.enclave_id, "enc-1");
-        assert_eq!(response.presigned_url, "http://s3.test/pcp/1");
+        assert_eq!(response.enclave_id.as_str(), "ab".repeat(32));
+        assert_eq!(response.upload_url, "http://s3.test/pcp/1");
         server.abort();
     }
 
@@ -173,6 +179,7 @@ mod tests {
         let error = MigrationApiClient::new(&url)
             .unwrap()
             .init_migration(
+                "device-key",
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",

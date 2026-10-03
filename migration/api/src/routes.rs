@@ -1,16 +1,35 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use axum::{
     Json, Router,
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
-use di_migration_primitives::JobId;
-use di_migration_storage::schema::pcp_key;
-use serde::{Deserialize, Serialize};
+use di_migration_primitives::{
+    JobId,
+    app_api::{DEVICE_PUBLIC_KEY_HEADER, InitMigrationRequest, InitMigrationResponse},
+};
+use di_migration_storage::{NewJob, StorageError};
 
-use crate::{AppState, error::ApiError, fleet::FleetLoad};
+use crate::{
+    AppState,
+    error::ApiError,
+    fleet::{FleetLoad, Placement},
+};
+
 /// Bounds the subject we accept; real subjects are short opaque identifiers.
 const MAX_SUB_LEN: usize = 255;
+
+/// Bounds the device key we store; a real key is a few hundred bytes of base64.
+const MAX_DEVICE_KEY_LEN: usize = 1024;
+
+/// Base `Retry-After` when the fleet is full; up to as much again is added as jitter, so
+/// rejected apps do not return together.
+const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 30;
+
+/// How long job rows outlive their job; `DynamoDB` deletes them afterwards.
+const JOB_RETENTION: Duration = Duration::from_secs(2 * 24 * 60 * 60);
 
 /// The public API the app calls, exposed through the gateway.
 pub fn router(state: AppState) -> Router {
@@ -29,25 +48,6 @@ pub fn internal_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-#[derive(Deserialize)]
-struct InitMigrationRequest {
-    /// Subject of the user being migrated.
-    sub: String,
-    /// Standard base64 ownership proof.
-    proof: String,
-    /// Challenge ID.
-    challenge_id: String,
-}
-
-#[derive(Serialize)]
-struct InitMigrationResponse {
-    enclave_id: String,
-    /// COSE attestation document, standard padded base64.
-    attestation: String,
-    /// Presigned S3 URL the client uploads the PCP to with `PUT`.
-    presigned_url: String,
-}
-
 /// The fleet's summed load for the notification scheduler, which pauses prompting on an error.
 async fn capacity(State(state): State<AppState>) -> Result<Json<FleetLoad>, ApiError> {
     state
@@ -62,26 +62,29 @@ async fn health() -> StatusCode {
 }
 
 async fn ready(State(state): State<AppState>) -> StatusCode {
-    let (db_result, bucket_result) =
-        tokio::join!(state.db.check_ready(), state.bucket.check_ready());
+    let (jobs_result, bucket_result) =
+        tokio::join!(state.jobs.check_ready(), state.bucket.check_ready());
 
-    if let Err(error) = &db_result {
-        tracing::warn!(error = %format!("{error:#}"), dependency = "dynamodb", "readiness check failed");
+    if let Err(error) = &jobs_result {
+        tracing::warn!(%error, dependency = "dynamodb", "readiness check failed");
     }
     if let Err(error) = &bucket_result {
         tracing::warn!(%error, dependency = "s3", "readiness check failed");
     }
-    if db_result.is_ok() && bucket_result.is_ok() {
+    if jobs_result.is_ok() && bucket_result.is_ok() {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     }
 }
 
+/// Verifies ownership, admits and places the job, and returns where to seal and upload the PCP.
 async fn init_migration(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<InitMigrationRequest>,
 ) -> Result<Json<InitMigrationResponse>, ApiError> {
+    let device_public_key = device_public_key(&headers).ok_or_else(ApiError::invalid_device_key)?;
     let sub = request.sub.trim();
     if sub.is_empty() || sub.len() > MAX_SUB_LEN || sub.chars().any(char::is_control) {
         return Err(ApiError::invalid_sub());
@@ -90,7 +93,7 @@ async fn init_migration(
     let verification = proof::VerificationRequest {
         challenge_id: request.challenge_id,
         challenge_type: state.verifier.config.challenge_type.clone(),
-        credential_sub: sub.to_string(),
+        credential_sub: sub.to_owned(),
         proof: request.proof,
     };
     state
@@ -99,23 +102,67 @@ async fn init_migration(
         .await
         .map_err(|error| ApiError::proof(&error))?;
 
-    let job_id = JobId::new();
-    state
-        .db
-        .put_migration(job_id.as_str(), sub, &pcp_key(&job_id))
+    // Admission before the lock: a full fleet leaves nothing to release.
+    let host = match state.fleet.place() {
+        Placement::Host(host) => host,
+        Placement::AtCapacity => {
+            return Err(ApiError::at_capacity(
+                AT_CAPACITY_RETRY_AFTER_SECS + fastrand::u64(..=AT_CAPACITY_RETRY_AFTER_SECS),
+            ));
+        }
+        Placement::Unknown => return Err(ApiError::capacity_unknown()),
+    };
+    let attestation = state
+        .hosts
+        .attestation(host)
         .await
-        .map_err(|error| ApiError::storage("dynamodb", format!("{error:#}")))?;
+        .map_err(|error| ApiError::host(error.to_string()))?;
 
-    let presigned_url = state
+    let now = unix_now();
+    let job = NewJob {
+        job_id: JobId::new(),
+        sub: sub.to_owned(),
+        device_public_key,
+        // The address we reached, which migrate dials again.
+        host_ip: host.ip(),
+        enclave_id: attestation.enclave_id.clone(),
+        created_at: now,
+        active_until: now + state.upload_window.as_secs(),
+        expires_at: now + JOB_RETENTION.as_secs(),
+    };
+    state
+        .jobs
+        .create_job(&job)
+        .await
+        .map_err(|error| match error {
+            StorageError::ActiveJob => ApiError::migration_in_progress(),
+            error => ApiError::storage("dynamodb", error.to_string()),
+        })?;
+
+    let upload_url = state
         .bucket
-        .presign_upload(&job_id, state.presigned_url_ttl)
+        .presign_upload(&job.job_id, state.presigned_url_ttl)
         .await
         .map_err(|error| ApiError::storage("s3", error.to_string()))?;
-    let attestation = state.attestor.attest();
 
     Ok(Json(InitMigrationResponse {
         enclave_id: attestation.enclave_id,
-        attestation: attestation.document,
-        presigned_url,
+        attestation: attestation.attestation,
+        enclave_public_key: attestation.enclave_public_key,
+        upload_url,
+        migrate_by: job.active_until,
     }))
+}
+
+/// The device key the auth proxy forwards; the API does not verify devices itself.
+fn device_public_key(headers: &HeaderMap) -> Option<String> {
+    let key = headers.get(DEVICE_PUBLIC_KEY_HEADER)?.to_str().ok()?.trim();
+    (!key.is_empty() && key.len() <= MAX_DEVICE_KEY_LEN).then(|| key.to_owned())
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
 }

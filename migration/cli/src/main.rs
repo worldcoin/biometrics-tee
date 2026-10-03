@@ -24,8 +24,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Starts a migration and prints the enclave id, attestation and presigned upload URL.
+    /// Starts a migration and prints the enclave id, attestation and upload URL.
     InitMigration {
+        /// The device public key; in production the auth proxy sets it after verifying the device.
+        #[arg(long, env = "DEVICE_PUBLIC_KEY")]
+        device_public_key: String,
+
         /// Subject of the user being migrated.
         #[arg(long, env = "SUB")]
         sub: String,
@@ -67,13 +71,14 @@ async fn main() -> ExitCode {
 async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String> {
     match command {
         Command::InitMigration {
+            device_public_key,
             sub,
             proof,
             challenge_id,
             upload,
         } => {
             let response = client
-                .init_migration(&sub, &proof, &challenge_id)
+                .init_migration(&device_public_key, &sub, &proof, &challenge_id)
                 .await
                 .map_err(|error| format!("init-migration failed: {error}"))?;
             println!(
@@ -85,7 +90,7 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
                 let pcp = std::fs::read(&path)
                     .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
                 client
-                    .upload_pcp(&response.presigned_url, pcp)
+                    .upload_pcp(&response.upload_url, pcp)
                     .await
                     .map_err(|error| format!("upload failed: {error}"))?;
                 println!("uploaded {}", path.display());

@@ -18,9 +18,6 @@ export PCP_BUCKET=di-migration-pcp
 export HOST_SERVICE="${HOST_SERVICE:-localhost}"
 export HOST_PORT="${HOST_PORT:-8000}"
 export S3_FORCE_PATH_STYLE=true
-export ENCLAVE_ID=local-stub-enclave
-# LocalStack has no Nitro enclave to attest; never set this outside local runs.
-export STUB_ATTESTATION=true
 # LocalStack alias created by scripts/localstack-init.sh. KMS Sign accepts an alias as a key id.
 export PROOF_JWT_KMS_KEY_ID=alias/di-migration-proof
 # nginx service in docker-compose.yml. It accepts every POST /api/v4/verify.

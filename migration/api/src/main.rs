@@ -1,6 +1,4 @@
-mod attestation;
 mod config;
-mod db;
 mod error;
 mod fleet;
 mod host_client;
@@ -14,11 +12,9 @@ use std::sync::Arc;
 use telemetry_batteries::tracing::middleware::TraceLayer;
 use tokio::net::TcpListener;
 
-use di_migration_storage::PcpBucket;
+use di_migration_storage::{JobTable, PcpBucket};
 
 use crate::{
-    attestation::Attestor,
-    db::Db,
     fleet::{DnsResolver, Fleet},
     host_client::HostClient,
 };
@@ -52,13 +48,15 @@ fn verifier(
 
 #[derive(Clone)]
 struct AppState {
-    db: Db,
+    jobs: JobTable,
     bucket: PcpBucket,
     /// How long presigned upload URLs stay valid.
     presigned_url_ttl: Duration,
-    attestor: Attestor,
+    /// How long after init migrate is accepted.
+    upload_window: Duration,
     verifier: Arc<proof::Verifier>,
     fleet: Arc<Fleet>,
+    hosts: HostClient,
 }
 
 #[tokio::main]
@@ -77,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         "AWS region is not configured"
     );
     let verifier = verifier(&config, &aws_config)?;
-    let db = Db::new(
+    let jobs = JobTable::new(
         aws_sdk_dynamodb::Client::new(&aws_config),
         config.dynamodb_table_name,
     );
@@ -86,15 +84,11 @@ async fn main() -> anyhow::Result<()> {
         .build();
     let bucket = PcpBucket::new(aws_sdk_s3::Client::from_conf(s3_config), config.pcp_bucket);
 
-    if config.stub_attestation {
-        tracing::warn!("serving a stub attestation; this build must not handle production traffic");
-    }
-    let attestor = Attestor::stub(config.enclave_id);
-
+    let hosts = HostClient::new().context("failed to build the host client")?;
     let poll_interval = Duration::from_secs(config.capacity_poll_interval_secs);
     let fleet = Arc::new(Fleet::new(
         Arc::new(DnsResolver::new(config.host_service, config.host_port)),
-        HostClient::new().context("failed to build the host client")?,
+        hosts.clone(),
         // Three missed polls in a row and the fleet's load counts as unknown.
         poll_interval * 3,
         config.admission_threshold_percent,
@@ -102,12 +96,13 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(Arc::clone(&fleet).run(poll_interval));
 
     let state = AppState {
-        db,
+        jobs,
         bucket,
         presigned_url_ttl: config.presigned_url_ttl,
-        attestor,
+        upload_window: Duration::from_secs(config.upload_window_secs),
         verifier: Arc::new(verifier),
         fleet,
+        hosts,
     };
     let listener = TcpListener::bind(config.http_addr)
         .await
@@ -181,37 +176,106 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::{Arc, Mutex},
         time::Duration,
     };
 
     use async_trait::async_trait;
     use axum::{
-        Router,
+        Json, Router,
         body::Body,
         http::{Request, StatusCode, header},
-        routing::post,
+        routing::{get, post},
     };
+    use di_migration_primitives::{
+        EnclaveId,
+        app_api::DEVICE_PUBLIC_KEY_HEADER,
+        host_api::{AttestationResponse, Capacity},
+    };
+    use di_migration_storage::{JobTable, PcpBucket};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use di_migration_storage::PcpBucket;
+    use crate::{AppState, fleet::Fleet, host_client::HostClient, routes};
 
-    use crate::{
-        AppState, attestation::Attestor, db::Db, fleet::Fleet, host_client::HostClient, routes,
-    };
+    const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
+    const AMZ_JSON: &str = "application/x-amz-json-1.0";
 
-    fn unavailable_db() -> Db {
+    async fn serve(router: Router) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        address
+    }
+
+    fn enclave_id() -> EnclaveId {
+        EnclaveId::from_commitment([7; 32])
+    }
+
+    /// A host reporting `queued` of `capacity` that attests as [`enclave_id`].
+    async fn host(queued: usize, capacity: usize) -> SocketAddr {
+        serve(
+            Router::new()
+                .route(
+                    "/capacity",
+                    get(move || async move { Json(Capacity { queued, capacity }) }),
+                )
+                .route(
+                    "/attestation",
+                    get(|| async {
+                        Json(AttestationResponse {
+                            enclave_id: enclave_id(),
+                            attestation: "attestation".to_owned(),
+                            enclave_public_key: "enclave-key".to_owned(),
+                            host_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        })
+                    }),
+                ),
+        )
+        .await
+    }
+
+    /// `DynamoDB` that accepts every write and records the request bodies.
+    async fn dynamodb(seen: Arc<Mutex<Vec<serde_json::Value>>>) -> SocketAddr {
+        serve(Router::new().route(
+            "/",
+            post(move |body: String| async move {
+                seen.lock()
+                    .unwrap()
+                    .push(serde_json::from_str(&body).unwrap());
+                ([(header::CONTENT_TYPE, AMZ_JSON)], "{}")
+            }),
+        ))
+        .await
+    }
+
+    /// `DynamoDB` that refuses the lock because the `sub` has an active job.
+    async fn dynamodb_with_active_job() -> SocketAddr {
+        serve(Router::new().route(
+            "/",
+            post(|| async {
+                (
+                    StatusCode::BAD_REQUEST,
+                    [(header::CONTENT_TYPE, AMZ_JSON)],
+                    r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"canceled","CancellationReasons":[{"Code":"None"},{"Code":"ConditionalCheckFailed"}]}"#,
+                )
+            }),
+        ))
+        .await
+    }
+
+    fn job_table(endpoint: &str) -> JobTable {
         let config = aws_sdk_dynamodb::Config::builder()
             .region(aws_sdk_dynamodb::config::Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
             .credentials_provider(aws_sdk_dynamodb::config::Credentials::new(
                 "test", "test", None, None, "test",
             ))
-            .endpoint_url("http://127.0.0.1:9")
+            .endpoint_url(endpoint)
             .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled())
             .build();
-        Db::new(
+        JobTable::new(
             aws_sdk_dynamodb::Client::from_conf(config),
             "test-table".to_owned(),
         )
@@ -235,39 +299,277 @@ mod tests {
         )
     }
 
-    fn accepting_verifier() -> Arc<proof::Verifier> {
+    fn verifier(verdict: proof::Verdict) -> Arc<proof::Verifier> {
         Arc::new(proof::Verifier::new(
             proof::VerifierConfig::default(),
             Arc::new(MockVerifier {
-                result: proof::Verdict::Accepted,
+                result: verdict,
                 seen: Mutex::new(Vec::new()),
             }),
         ))
     }
 
-    fn unavailable_state() -> AppState {
-        AppState {
-            db: unavailable_db(),
-            bucket: unavailable_bucket(),
-            presigned_url_ttl: Duration::from_secs(900),
-            attestor: Attestor::stub("i-0123456789abcdef-enc0".to_owned()),
-            verifier: accepting_verifier(),
-            fleet: Arc::new(Fleet::new(
-                Arc::new(NoHosts),
-                HostClient::new().unwrap(),
-                Duration::from_secs(15),
-                70,
-            )),
+    struct Fixed(Vec<SocketAddr>);
+
+    #[async_trait]
+    impl crate::fleet::Resolver for Fixed {
+        async fn resolve(&self) -> Result<Vec<SocketAddr>, String> {
+            Ok(self.0.clone())
         }
     }
 
-    struct NoHosts;
+    fn fleet(hosts: Vec<SocketAddr>) -> Arc<Fleet> {
+        Arc::new(Fleet::new(
+            Arc::new(Fixed(hosts)),
+            HostClient::new().unwrap(),
+            Duration::from_secs(15),
+            70,
+        ))
+    }
 
-    #[async_trait]
-    impl crate::fleet::Resolver for NoHosts {
-        async fn resolve(&self) -> Result<Vec<std::net::SocketAddr>, String> {
-            Ok(Vec::new())
+    /// Every dependency unreachable and an unpolled, empty fleet.
+    fn unavailable_state() -> AppState {
+        AppState {
+            jobs: job_table("http://127.0.0.1:9"),
+            bucket: unavailable_bucket(),
+            presigned_url_ttl: Duration::from_secs(300),
+            upload_window: Duration::from_secs(420),
+            verifier: verifier(proof::Verdict::Accepted),
+            fleet: fleet(Vec::new()),
+            hosts: HostClient::new().unwrap(),
         }
+    }
+
+    /// A polled fleet of `hosts` and a `DynamoDB` at `dynamodb`.
+    async fn state(hosts: Vec<SocketAddr>, dynamodb: SocketAddr) -> AppState {
+        let state = AppState {
+            jobs: job_table(&format!("http://{dynamodb}")),
+            fleet: fleet(hosts),
+            ..unavailable_state()
+        };
+        state.fleet.refresh().await;
+        state
+    }
+
+    fn init_request(device_key: Option<&str>, sub: &str, proof: &str) -> Request<Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/v1/init-migration")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(key) = device_key {
+            request = request.header(DEVICE_PUBLIC_KEY_HEADER, key);
+        }
+        request
+            .body(Body::from(
+                serde_json::json!({"sub": sub, "proof": proof, "challenge_id": CHALLENGE_ID})
+                    .to_string(),
+            ))
+            .unwrap()
+    }
+
+    fn valid_init() -> Request<Body> {
+        init_request(Some("device-key"), "test-sub", "YQ==")
+    }
+
+    async fn json(response: axum::response::Response) -> serde_json::Value {
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    }
+
+    async fn error_code(response: axum::response::Response) -> String {
+        json(response).await["error"]["code"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn init_admits_places_and_pins_the_job() {
+        let host = host(0, 4).await;
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let state = state(vec![host], dynamodb(Arc::clone(&writes)).await).await;
+
+        let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json(response).await;
+        assert_eq!(body["enclave_id"], enclave_id().as_str());
+        assert_eq!(body["attestation"], "attestation");
+        assert_eq!(body["enclave_public_key"], "enclave-key");
+        let upload_url = body["upload_url"].as_str().unwrap();
+        assert!(
+            upload_url.starts_with("http://127.0.0.1:9/test-bucket/pcp/")
+                && upload_url.contains("X-Amz-Signature="),
+            "{upload_url}"
+        );
+
+        let writes = writes.lock().unwrap();
+        assert_eq!(writes.len(), 1, "one transaction: job row and lock");
+        let job = &writes[0]["TransactItems"][0]["Put"]["Item"];
+        assert_eq!(job["device_public_key"]["S"], "device-key");
+        assert_eq!(job["host_ip"]["S"], "127.0.0.1");
+        assert_eq!(job["enclave_id"]["S"], enclave_id().as_str());
+        let lock = &writes[0]["TransactItems"][1]["Put"]["Item"];
+        let created_at: u64 = job["created_at"]["N"].as_str().unwrap().parse().unwrap();
+        let active_until: u64 = lock["active_until"]["N"].as_str().unwrap().parse().unwrap();
+        assert_eq!(
+            active_until,
+            created_at + 420,
+            "the lock lasts the upload window"
+        );
+        assert_eq!(body["migrate_by"], active_until);
+    }
+
+    #[tokio::test]
+    async fn init_without_a_device_key_is_rejected() {
+        let response = routes::router(unavailable_state())
+            .oneshot(init_request(None, "test-sub", "YQ=="))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(error_code(response).await, "invalid_device_key");
+    }
+
+    /// Hosts at the admission threshold take no jobs; the app backs off for a jittered while.
+    #[tokio::test]
+    async fn a_full_fleet_answers_at_capacity() {
+        let state = state(vec![host(3, 4).await], dynamodb(Arc::default()).await).await;
+
+        let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after: u64 = response.headers()[header::RETRY_AFTER]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((30..=60).contains(&retry_after), "{retry_after}");
+        assert_eq!(error_code(response).await, "at_capacity");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_fleet_admits_nothing() {
+        let response = routes::router(unavailable_state())
+            .oneshot(valid_init())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_code(response).await, "capacity_unknown");
+    }
+
+    #[tokio::test]
+    async fn a_second_init_for_the_sub_is_in_progress() {
+        let state = state(vec![host(0, 4).await], dynamodb_with_active_job().await).await;
+
+        let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(error_code(response).await, "migration_in_progress");
+    }
+
+    /// The host was polled but stops answering before init asks it to attest.
+    #[tokio::test]
+    async fn a_silent_host_fails_init_before_any_write() {
+        let only_capacity = serve(Router::new().route(
+            "/capacity",
+            get(|| async {
+                Json(Capacity {
+                    queued: 0,
+                    capacity: 4,
+                })
+            }),
+        ))
+        .await;
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let state = state(vec![only_capacity], dynamodb(Arc::clone(&writes)).await).await;
+
+        let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn init_rejects_a_blank_sub() {
+        let response = routes::router(unavailable_state())
+            .oneshot(init_request(Some("device-key"), "   ", "YQ=="))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(error_code(response).await, "invalid_sub");
+    }
+
+    #[tokio::test]
+    async fn init_reports_a_missing_proof() {
+        let response = routes::router(unavailable_state())
+            .oneshot(init_request(Some("device-key"), "test-sub", ""))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(error_code(response).await, "proof_missing");
+    }
+
+    #[tokio::test]
+    async fn init_reports_a_verification_service_failure() {
+        let state = AppState {
+            verifier: Arc::new(proof::Verifier::new(
+                proof::VerifierConfig::default(),
+                Arc::new(FailingVerifier),
+            )),
+            ..unavailable_state()
+        };
+        let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_code(response).await, "verification_error");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_proof_is_forbidden() {
+        let state = AppState {
+            verifier: verifier(proof::Verdict::Rejected),
+            ..unavailable_state()
+        };
+        let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(error_code(response).await, "verification_failed");
+    }
+
+    /// The client sends the proof fields and the device key header the API expects.
+    #[tokio::test]
+    async fn the_client_round_trips_init() {
+        let mock = Arc::new(MockVerifier {
+            result: proof::Verdict::Accepted,
+            seen: Mutex::new(Vec::new()),
+        });
+        let state = AppState {
+            verifier: Arc::new(proof::Verifier::new(
+                proof::VerifierConfig::default(),
+                Arc::clone(&mock) as Arc<dyn proof::ProofVerificationClient>,
+            )),
+            ..state(vec![host(0, 4).await], dynamodb(Arc::default()).await).await
+        };
+        let api = serve(routes::router(state)).await;
+
+        let response = migration_api_client::MigrationApiClient::new(
+            &format!("http://{api}").parse().unwrap(),
+        )
+        .unwrap()
+        .init_migration("device-key", "test-sub", "0xa100ff00deadbeef", CHALLENGE_ID)
+        .await
+        .unwrap();
+
+        assert_eq!(response.enclave_id, enclave_id());
+        let seen = mock.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0.challenge_id, CHALLENGE_ID);
+        assert_eq!(seen[0].0.challenge_type, proof::DEFAULT_CHALLENGE_TYPE);
+        assert_eq!(seen[0].0.credential_sub, "test-sub");
+        assert_eq!(seen[0].0.proof, "0xa100ff00deadbeef");
     }
 
     /// Internal routes must not be reachable through the public listener.
@@ -305,8 +607,7 @@ mod tests {
 
     #[tokio::test]
     async fn capacity_reports_the_polled_fleet() {
-        let state = unavailable_state();
-        state.fleet.refresh().await;
+        let state = state(vec![host(1, 4).await], dynamodb(Arc::default()).await).await;
 
         let response = routes::internal_router(state)
             .oneshot(
@@ -319,12 +620,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
         assert_eq!(
-            body,
-            serde_json::json!({"queued": 0, "capacity": 0, "open_slots": 0})
+            json(response).await,
+            serde_json::json!({"queued": 1, "capacity": 4, "open_slots": 2})
         );
     }
 
@@ -343,165 +641,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_migration_returns_attestation_and_presigned_url() {
-        let (address, server) = spawn_put_item_dynamodb().await;
-        let state = state_with_db(&address);
-
-        let response = routes::router(state)
-            .oneshot(init_migration_request("test-sub"))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(body["enclave_id"], "i-0123456789abcdef-enc0");
-        assert_eq!(body["attestation"], "");
-        let presigned_url = body["presigned_url"].as_str().unwrap();
-        assert!(
-            presigned_url.starts_with("http://127.0.0.1:9/test-bucket/pcp/"),
-            "{presigned_url}"
-        );
-        assert!(
-            presigned_url.contains("X-Amz-Signature="),
-            "{presigned_url}"
-        );
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn init_migration_rejects_a_blank_sub() {
-        let response = routes::router(unavailable_state())
-            .oneshot(init_migration_request("   "))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(error_code(response).await, "invalid_sub");
-    }
-
-    #[tokio::test]
-    async fn init_migration_reports_a_missing_proof() {
-        let response = routes::router(unavailable_state())
-            .oneshot(json_request(
-                "test-sub",
-                "",
-                "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(error_code(response).await, "proof_missing");
-    }
-
-    #[tokio::test]
-    async fn init_migration_reports_a_verification_service_failure() {
-        let state = AppState {
-            verifier: Arc::new(proof::Verifier::new(
-                proof::VerifierConfig::default(),
-                Arc::new(FailingVerifier),
-            )),
-            ..unavailable_state()
-        };
-        let response = routes::router(state)
-            .oneshot(init_migration_request("test-sub"))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(error_code(response).await, "verification_error");
-    }
-
-    #[tokio::test]
-    async fn init_migration_verifies_the_ownership_proof() {
-        const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
-        const PROOF: &str = "0xa100ff00deadbeef";
-        let mocked = proof::Verdict::Accepted;
-        let verifier = Arc::new(MockVerifier {
-            result: mocked,
-            seen: Mutex::new(Vec::new()),
-        });
-
-        let (address, server) = spawn_put_item_dynamodb().await;
-        let state = AppState {
-            verifier: Arc::new(proof::Verifier::new(
-                proof::VerifierConfig::default(),
-                Arc::clone(&verifier) as Arc<dyn proof::ProofVerificationClient>,
-            )),
-            ..state_with_db(&address)
-        };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let api_url = format!("http://{}", listener.local_addr().unwrap())
-            .parse()
-            .unwrap();
-        let api = tokio::spawn(async move {
-            axum::serve(listener, routes::router(state)).await.unwrap();
-        });
-
-        let response = migration_api_client::MigrationApiClient::new(&api_url)
-            .unwrap()
-            .init_migration("test-sub", PROOF, CHALLENGE_ID)
-            .await
-            .unwrap();
-
-        assert_eq!(response.enclave_id, "i-0123456789abcdef-enc0");
-        assert!(
-            response.presigned_url.contains("X-Amz-Signature="),
-            "{}",
-            response.presigned_url
-        );
-
-        let seen = verifier.seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].0.challenge_id, CHALLENGE_ID);
-        assert_eq!(seen[0].0.challenge_type, proof::DEFAULT_CHALLENGE_TYPE);
-        assert_eq!(seen[0].0.credential_sub, "test-sub");
-        assert_eq!(seen[0].0.proof, "0xa100ff00deadbeef");
-        assert_eq!(seen[0].1, mocked);
-        api.abort();
-        server.abort();
-    }
-
-    #[tokio::test]
     async fn readiness_fails_when_only_the_bucket_is_unavailable() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                Router::new().route(
-                    "/",
-                    post(|| async {
-                        (
-                            [(header::CONTENT_TYPE, "application/x-amz-json-1.0")],
-                            r#"{"Table":{"TableName":"test-table","TableStatus":"ACTIVE"}}"#,
-                        )
-                    }),
-                ),
-            )
-            .await
-            .unwrap();
-        });
-
-        let db_config = aws_sdk_dynamodb::Config::builder()
-            .region(aws_sdk_dynamodb::config::Region::new("us-east-1"))
-            .behavior_version(aws_config::BehaviorVersion::latest())
-            .credentials_provider(aws_sdk_dynamodb::config::Credentials::new(
-                "test", "test", None, None, "test",
-            ))
-            .endpoint_url(format!("http://{address}"))
-            .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled())
-            .build();
+        let table = serve(Router::new().route(
+            "/",
+            post(|| async {
+                (
+                    [(header::CONTENT_TYPE, AMZ_JSON)],
+                    r#"{"Table":{"TableName":"test-table","TableStatus":"ACTIVE"}}"#,
+                )
+            }),
+        ))
+        .await;
         let state = AppState {
-            db: Db::new(
-                aws_sdk_dynamodb::Client::from_conf(db_config),
-                "test-table".to_owned(),
-            ),
+            jobs: job_table(&format!("http://{table}")),
             ..unavailable_state()
         };
-        assert!(state.db.check_ready().await.is_ok());
+        assert!(state.jobs.check_ready().await.is_ok());
 
         let response = routes::router(state)
             .oneshot(
@@ -513,91 +668,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn a_rejected_proof_is_forbidden() {
-        let state = AppState {
-            verifier: Arc::new(proof::Verifier::new(
-                proof::VerifierConfig::default(),
-                Arc::new(MockVerifier {
-                    result: proof::Verdict::Rejected,
-                    seen: Mutex::new(Vec::new()),
-                }),
-            )),
-            ..unavailable_state()
-        };
-        let response = routes::router(state)
-            .oneshot(init_migration_request("test-sub"))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(error_code(response).await, "verification_failed");
-    }
-
-    async fn error_code(response: axum::response::Response) -> String {
-        let body: serde_json::Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        body["error"]["code"].as_str().unwrap().to_owned()
-    }
-
-    fn init_migration_request(sub: &str) -> Request<Body> {
-        json_request(sub, "YQ==", "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31")
-    }
-
-    fn json_request(sub: &str, proof: &str, challenge_id: &str) -> Request<Body> {
-        let body = serde_json::json!({
-            "sub": sub,
-            "proof": proof,
-            "challenge_id": challenge_id,
-        });
-        Request::builder()
-            .method("POST")
-            .uri("/v1/init-migration")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap()
-    }
-
-    async fn spawn_put_item_dynamodb() -> (String, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                Router::new().route(
-                    "/",
-                    post(|| async {
-                        ([(header::CONTENT_TYPE, "application/x-amz-json-1.0")], "{}")
-                    }),
-                ),
-            )
-            .await
-            .unwrap();
-        });
-        (address, server)
-    }
-
-    fn state_with_db(address: &str) -> AppState {
-        let db_config = aws_sdk_dynamodb::Config::builder()
-            .region(aws_sdk_dynamodb::config::Region::new("us-east-1"))
-            .behavior_version(aws_config::BehaviorVersion::latest())
-            .credentials_provider(aws_sdk_dynamodb::config::Credentials::new(
-                "test", "test", None, None, "test",
-            ))
-            .endpoint_url(format!("http://{address}"))
-            .retry_config(aws_sdk_dynamodb::config::retry::RetryConfig::disabled())
-            .build();
-        AppState {
-            db: Db::new(
-                aws_sdk_dynamodb::Client::from_conf(db_config),
-                "test-table".to_owned(),
-            ),
-            ..unavailable_state()
-        }
     }
 
     struct FailingVerifier;
