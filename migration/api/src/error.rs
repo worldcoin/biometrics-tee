@@ -109,6 +109,17 @@ impl ApiError {
         }
     }
 
+    /// The fleet's load is unknown, e.g. every recent capacity poll failed.
+    pub const fn capacity_unknown() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "capacity_unknown",
+            "The fleet's capacity is unknown",
+            true,
+        )
+        .with_dependency("host")
+    }
+
     /// The job table or bucket failed.
     pub fn storage(dependency: &'static str, detail: impl Into<String>) -> Self {
         Self::new(

@@ -2,6 +2,8 @@ mod attestation;
 mod config;
 mod db;
 mod error;
+mod fleet;
+mod host_client;
 mod routes;
 
 use std::time::Duration;
@@ -14,7 +16,12 @@ use tokio::net::TcpListener;
 
 use di_migration_storage::PcpBucket;
 
-use crate::{attestation::Attestor, db::Db};
+use crate::{
+    attestation::Attestor,
+    db::Db,
+    fleet::{DnsResolver, Fleet},
+    host_client::HostClient,
+};
 
 fn verifier(
     config: &config::Config,
@@ -51,6 +58,7 @@ struct AppState {
     presigned_url_ttl: Duration,
     attestor: Attestor,
     verifier: Arc<proof::Verifier>,
+    fleet: Arc<Fleet>,
 }
 
 #[tokio::main]
@@ -83,24 +91,59 @@ async fn main() -> anyhow::Result<()> {
     }
     let attestor = Attestor::stub(config.enclave_id);
 
+    let poll_interval = Duration::from_secs(config.capacity_poll_interval_secs);
+    let fleet = Arc::new(Fleet::new(
+        Arc::new(DnsResolver::new(config.host_service, config.host_port)),
+        HostClient::new().context("failed to build the host client")?,
+        // Three missed polls in a row and the fleet's load counts as unknown.
+        poll_interval * 3,
+        config.admission_threshold_percent,
+    ));
+    tokio::spawn(Arc::clone(&fleet).run(poll_interval));
+
+    let state = AppState {
+        db,
+        bucket,
+        presigned_url_ttl: config.presigned_url_ttl,
+        attestor,
+        verifier: Arc::new(verifier),
+        fleet,
+    };
     let listener = TcpListener::bind(config.http_addr)
         .await
         .with_context(|| format!("failed to bind HTTP server to {}", config.http_addr))?;
+    let internal_listener = TcpListener::bind(config.internal_http_addr)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to bind internal HTTP server to {}",
+                config.internal_http_addr
+            )
+        })?;
 
-    axum::serve(
+    // One signal stops both servers; each lets its in-flight requests finish.
+    let (stop, _) = tokio::sync::watch::channel(());
+    let stopped = |mut receiver: tokio::sync::watch::Receiver<()>| async move {
+        let _ = receiver.changed().await;
+    };
+    let public = axum::serve(
         listener,
-        routes::router(AppState {
-            db,
-            bucket,
-            presigned_url_ttl: config.presigned_url_ttl,
-            attestor,
-            verifier: Arc::new(verifier),
-        })
-        .layer(TraceLayer::new_for_axum()),
+        routes::router(state.clone()).layer(TraceLayer::new_for_axum()),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("HTTP server failed")
+    .with_graceful_shutdown(stopped(stop.subscribe()));
+    let internal = axum::serve(
+        internal_listener,
+        routes::internal_router(state).layer(TraceLayer::new_for_axum()),
+    )
+    .with_graceful_shutdown(stopped(stop.subscribe()));
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = stop.send(());
+    });
+
+    let (public, internal) = tokio::join!(public, internal);
+    public.context("HTTP server failed")?;
+    internal.context("internal HTTP server failed")
 }
 
 /// Resolves on the first shutdown signal; SIGTERM too, since that is what drains a pod.
@@ -154,7 +197,9 @@ mod tests {
 
     use di_migration_storage::PcpBucket;
 
-    use crate::{AppState, attestation::Attestor, db::Db, routes};
+    use crate::{
+        AppState, attestation::Attestor, db::Db, fleet::Fleet, host_client::HostClient, routes,
+    };
 
     fn unavailable_db() -> Db {
         let config = aws_sdk_dynamodb::Config::builder()
@@ -207,7 +252,80 @@ mod tests {
             presigned_url_ttl: Duration::from_secs(900),
             attestor: Attestor::stub("i-0123456789abcdef-enc0".to_owned()),
             verifier: accepting_verifier(),
+            fleet: Arc::new(Fleet::new(
+                Arc::new(NoHosts),
+                HostClient::new().unwrap(),
+                Duration::from_secs(15),
+                70,
+            )),
         }
+    }
+
+    struct NoHosts;
+
+    #[async_trait]
+    impl crate::fleet::Resolver for NoHosts {
+        async fn resolve(&self) -> Result<Vec<std::net::SocketAddr>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Internal routes must not be reachable through the public listener.
+    #[tokio::test]
+    async fn the_public_router_does_not_serve_internal_routes() {
+        let response = routes::router(unavailable_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/capacity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The scheduler pauses on an error, so an unknown fleet must not read as zero capacity.
+    #[tokio::test]
+    async fn capacity_is_unavailable_until_the_fleet_is_polled() {
+        let response = routes::internal_router(unavailable_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/capacity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_code(response).await, "capacity_unknown");
+    }
+
+    #[tokio::test]
+    async fn capacity_reports_the_polled_fleet() {
+        let state = unavailable_state();
+        state.fleet.refresh().await;
+
+        let response = routes::internal_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/internal/capacity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"queued": 0, "capacity": 0, "open_slots": 0})
+        );
     }
 
     #[tokio::test]

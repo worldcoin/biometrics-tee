@@ -53,6 +53,7 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 migration-api-client = { path = "migration/api-client" }
 pontifex = { version = "2.0.0", default-features = false }
 proof = { path = "migration/proof" }
+fastrand = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_bytes = "0.11"

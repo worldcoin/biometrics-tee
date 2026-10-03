@@ -21,6 +21,6 @@ COPY --from=builder /app/host-bin /usr/local/bin/migration-api
 
 USER 65532
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 ENTRYPOINT ["/usr/local/bin/migration-api"]

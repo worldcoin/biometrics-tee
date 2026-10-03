@@ -12,6 +12,9 @@ const DEFAULT_PRESIGNED_URL_TTL_SECS: &str = "900";
 pub struct Config {
     #[arg(long, env = "HTTP_ADDR", default_value = "0.0.0.0:8080")]
     pub http_addr: SocketAddr,
+    /// Listener for cluster-internal routes; must never be exposed through the gateway.
+    #[arg(long, env = "INTERNAL_HTTP_ADDR", default_value = "0.0.0.0:8081")]
+    pub internal_http_addr: SocketAddr,
     #[arg(long, env = "DYNAMODB_TABLE_NAME")]
     pub dynamodb_table_name: String,
     #[arg(long, env = "PCP_BUCKET")]
@@ -44,6 +47,19 @@ pub struct Config {
     pub proof_jwt_kms_key_id: String,
     #[arg(long, env = "PROOF_JWT_SUBJECT", default_value = "tee-migration")]
     pub proof_jwt_subject: String,
+    /// The hosts' headless Service; it resolves to every ready host pod.
+    #[arg(long, env = "HOST_SERVICE")]
+    pub host_service: String,
+    /// The port hosts serve their internal API on.
+    #[arg(long, env = "HOST_PORT", default_value_t = 8000)]
+    pub host_port: u16,
+    /// How often the fleet's load is polled.
+    #[arg(long, env = "CAPACITY_POLL_INTERVAL_SECS", default_value_t = 5)]
+    pub capacity_poll_interval_secs: u64,
+    /// A host takes new jobs while its queue is below this share of its capacity; the rest is
+    /// headroom for jobs admitted but not yet reported.
+    #[arg(long, env = "ADMISSION_THRESHOLD_PERCENT", default_value_t = 70)]
+    pub admission_threshold_percent: usize,
 }
 
 fn parse_presigned_url_ttl(raw: &str) -> Result<Duration, std::num::ParseIntError> {
@@ -77,6 +93,12 @@ pub enum ConfigError {
     InvalidProofVerificationHost,
     #[error("PROOF_JWT_KMS_KEY_ID is required")]
     MissingProofJwtKmsKeyId,
+    #[error("HOST_SERVICE is required")]
+    MissingHostService,
+    #[error("CAPACITY_POLL_INTERVAL_SECS must be at least 1")]
+    InvalidCapacityPollInterval,
+    #[error("ADMISSION_THRESHOLD_PERCENT must be between 1 and 100")]
+    InvalidAdmissionThreshold,
 }
 
 impl Config {
@@ -126,6 +148,15 @@ impl Config {
         }
         if config.proof_jwt_kms_key_id.trim().is_empty() {
             return Err(ConfigError::MissingProofJwtKmsKeyId);
+        }
+        if config.host_service.trim().is_empty() {
+            return Err(ConfigError::MissingHostService);
+        }
+        if config.capacity_poll_interval_secs == 0 {
+            return Err(ConfigError::InvalidCapacityPollInterval);
+        }
+        if !(1..=100).contains(&config.admission_threshold_percent) {
+            return Err(ConfigError::InvalidAdmissionThreshold);
         }
 
         Ok(config)

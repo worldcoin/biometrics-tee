@@ -10,8 +10,13 @@ export AWS_SECRET_ACCESS_KEY=test
 export AWS_ENDPOINT_URL=http://localhost:4566
 
 export HTTP_ADDR=127.0.0.1:8080
+# 8081 is taken by the local proof-verification stand-in.
+export INTERNAL_HTTP_ADDR=127.0.0.1:8082
 export DYNAMODB_TABLE_NAME=di-migration
 export PCP_BUCKET=di-migration-pcp
+# A locally running di-migration-host on its default port.
+export HOST_SERVICE="${HOST_SERVICE:-localhost}"
+export HOST_PORT="${HOST_PORT:-8000}"
 export S3_FORCE_PATH_STYLE=true
 export ENCLAVE_ID=local-stub-enclave
 # LocalStack has no Nitro enclave to attest; never set this outside local runs.
