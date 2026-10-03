@@ -30,6 +30,10 @@ pub struct Config {
     /// invisible to admission. Must cover the upload URL's validity.
     #[arg(long, env = "UPLOAD_WINDOW_SECS", default_value_t = 420)]
     pub upload_window_secs: u64,
+    /// How long after migrate an unfinished job reads as `failed (timeout)`; must cover a full
+    /// host queue, (queue cap + 1) times the job time.
+    #[arg(long, env = "JOB_DEADLINE_SECS", default_value_t = 600)]
+    pub job_deadline_secs: u64,
     /// LocalStack and other S3-compatible endpoints only serve path-style addressing.
     #[arg(long, env = "S3_FORCE_PATH_STYLE", default_value_t = false, action = clap::ArgAction::Set)]
     pub s3_force_path_style: bool,
@@ -84,6 +88,8 @@ pub enum ConfigError {
     InvalidPresignedUrlTtl,
     #[error("UPLOAD_WINDOW_SECS must be at least PRESIGNED_URL_TTL_SECS")]
     InvalidUploadWindow,
+    #[error("JOB_DEADLINE_SECS must be at least 1")]
+    InvalidJobDeadline,
 
     #[error("PROOF_VERIFICATION_HOST is required")]
     MissingProofVerificationHost,
@@ -130,6 +136,9 @@ impl Config {
 
         if config.upload_window_secs < config.presigned_url_ttl.as_secs() {
             return Err(ConfigError::InvalidUploadWindow);
+        }
+        if config.job_deadline_secs == 0 {
+            return Err(ConfigError::InvalidJobDeadline);
         }
 
         let host = config.proof_verification_host.trim();

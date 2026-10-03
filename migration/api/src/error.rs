@@ -5,7 +5,7 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use di_migration_primitives::app_api::codes;
+use di_migration_primitives::{Reason, app_api::codes};
 use serde::Serialize;
 
 /// An API failure, with the status and body to return for it.
@@ -105,6 +105,66 @@ impl ApiError {
             StatusCode::CONFLICT,
             codes::MIGRATION_IN_PROGRESS,
             "A migration is already in progress",
+            false,
+        )
+    }
+
+    /// The `sub` has no migration.
+    pub const fn not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            codes::NOT_FOUND,
+            "No migration exists for this subject",
+            false,
+        )
+    }
+
+    /// The caller's device key is not the one the job was created with.
+    pub const fn device_key_mismatch() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            codes::DEVICE_KEY_MISMATCH,
+            "The device key does not match the migration",
+            false,
+        )
+    }
+
+    /// Migrate before the sealed PCP was uploaded.
+    pub const fn not_uploaded() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            codes::NOT_UPLOADED,
+            "The PCP has not been uploaded",
+            true,
+        )
+    }
+
+    /// Migrate after the upload window; the app must init again.
+    pub const fn expired() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            codes::EXPIRED,
+            "The upload window has passed",
+            false,
+        )
+    }
+
+    /// The migration already finished.
+    pub const fn invalid_state() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            codes::INVALID_STATE,
+            "The migration already finished",
+            false,
+        )
+    }
+
+    /// The job failed, e.g. its host could not take it; the app must init again.
+    pub const fn failed(reason: Reason) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            reason.as_str(),
+            "The migration failed",
             false,
         )
     }

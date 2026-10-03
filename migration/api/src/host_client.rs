@@ -34,10 +34,6 @@ pub enum HostError {
 
 /// Why a host did not queue a job.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "migrate dispatches jobs in a follow-up")
-)]
 pub enum DispatchError {
     /// The enclave restarted; the PCP was sealed to a key that no longer exists.
     #[error("enclave changed")]
@@ -81,10 +77,6 @@ impl HostClient {
     }
 
     /// Queues `job` on the host; a repeated dispatch is accepted once.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "migrate dispatches jobs in a follow-up")
-    )]
     pub async fn submit(&self, host: SocketAddr, job: &JobRequest) -> Result<(), DispatchError> {
         let response = self
             .http

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::EnclaveId;
+use crate::{EnclaveId, Reason, Status};
 
 pub use crate::host_api::{ErrorBody, ErrorEnvelope};
 
@@ -36,7 +36,36 @@ pub struct InitMigrationResponse {
     pub migrate_by: u64,
 }
 
-/// Machine-readable error codes.
+/// `202` body of `POST /v1/migrations/{sub}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrateResponse {
+    /// Always `migrating`.
+    pub status: Status,
+    /// Unix seconds after which an unfinished job reads as `failed (timeout)`.
+    pub deadline: u64,
+}
+
+/// `200` body of `GET /v1/migrations/{sub}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrationStatus {
+    /// The job's state; a `migrating` job past its deadline reads as `failed`.
+    pub status: Status,
+    /// Why it failed, once `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Reason>,
+    /// Unix seconds the job must finish by, once migrate was called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<u64>,
+    /// Presigned S3 URL of the result, sealed to the app, once `migrated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+    /// Unix seconds `download_url` stops working; poll again for a fresh one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_expires_at: Option<u64>,
+}
+
+/// Machine-readable error codes. A migrate whose dispatch failed answers with the [`Reason`]
+/// as its code.
 pub mod codes {
     /// The device key header is missing or invalid.
     pub const INVALID_DEVICE_KEY: &str = "invalid_device_key";
@@ -44,4 +73,14 @@ pub mod codes {
     pub const AT_CAPACITY: &str = "at_capacity";
     /// The `sub` already has an active migration; poll it instead.
     pub const MIGRATION_IN_PROGRESS: &str = "migration_in_progress";
+    /// The `sub` has no migration.
+    pub const NOT_FOUND: &str = "not_found";
+    /// The device key does not match the one stored at init.
+    pub const DEVICE_KEY_MISMATCH: &str = "device_key_mismatch";
+    /// Migrate was called before the sealed PCP was uploaded.
+    pub const NOT_UPLOADED: &str = "not_uploaded";
+    /// Migrate came after the upload window; the app must init again.
+    pub const EXPIRED: &str = "expired";
+    /// The migration already finished.
+    pub const INVALID_STATE: &str = "invalid_state";
 }
