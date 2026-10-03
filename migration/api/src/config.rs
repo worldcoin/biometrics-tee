@@ -5,7 +5,7 @@ use thiserror::Error;
 
 /// S3 rejects presigned URLs that outlive seven days.
 const MAX_PRESIGNED_URL_TTL_SECS: u64 = 7 * 24 * 60 * 60;
-const DEFAULT_PRESIGNED_URL_TTL_SECS: &str = "900";
+const DEFAULT_PRESIGNED_URL_TTL_SECS: &str = "300";
 
 #[derive(Debug, Parser)]
 #[command(name = "migration-api")]
@@ -26,13 +26,16 @@ pub struct Config {
         value_parser = parse_presigned_url_ttl
     )]
     pub presigned_url_ttl: Duration,
+    /// How long after init migrate is accepted (Tᵤ); bounds how long an admitted job stays
+    /// invisible to admission. Must cover the upload URL's validity.
+    #[arg(long, env = "UPLOAD_WINDOW_SECS", default_value_t = 420)]
+    pub upload_window_secs: u64,
     /// LocalStack and other S3-compatible endpoints only serve path-style addressing.
     #[arg(long, env = "S3_FORCE_PATH_STYLE", default_value_t = false, action = clap::ArgAction::Set)]
     pub s3_force_path_style: bool,
-    #[arg(long, env = "ENCLAVE_ID")]
-    pub enclave_id: String,
-    #[arg(long, env = "STUB_ATTESTATION", default_value_t = false, action = clap::ArgAction::Set)]
-    pub stub_attestation: bool,
+    /// Trusts the caller's device key from a header; there is no real device auth yet.
+    #[arg(long, env = "INSECURE_DEVICE_AUTH", default_value_t = false, action = clap::ArgAction::Set)]
+    pub insecure_device_auth: bool,
     #[arg(long, env = "PROOF_VERIFICATION_HOST")]
     pub proof_verification_host: String,
     #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 2)]
@@ -82,11 +85,13 @@ pub enum ConfigError {
         "PRESIGNED_URL_TTL_SECS must be a positive number of seconds, at most {MAX_PRESIGNED_URL_TTL_SECS}"
     )]
     InvalidPresignedUrlTtl,
+    #[error("UPLOAD_WINDOW_SECS must be at least PRESIGNED_URL_TTL_SECS")]
+    InvalidUploadWindow,
     #[error(
-        "the migration enclave cannot attest yet; set STUB_ATTESTATION=true to serve an empty \
-         attestation outside production"
+        "device auth is not implemented yet; set INSECURE_DEVICE_AUTH=true to trust a header \
+         outside production"
     )]
-    AttestationUnavailable,
+    DeviceAuthUnavailable,
     #[error("PROOF_VERIFICATION_HOST is required")]
     MissingProofVerificationHost,
     #[error("PROOF_VERIFICATION_HOST must be an HTTP(S) URL")]
@@ -130,8 +135,12 @@ impl Config {
             return Err(ConfigError::InvalidPresignedUrlTtl);
         }
 
-        if !config.stub_attestation {
-            return Err(ConfigError::AttestationUnavailable);
+        if config.upload_window_secs < config.presigned_url_ttl.as_secs() {
+            return Err(ConfigError::InvalidUploadWindow);
+        }
+
+        if !config.insecure_device_auth {
+            return Err(ConfigError::DeviceAuthUnavailable);
         }
 
         let host = config.proof_verification_host.trim();

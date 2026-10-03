@@ -78,10 +78,6 @@ pub struct FleetLoad {
 
 /// Where init may place a job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "init places jobs in a follow-up")
-)]
 pub enum Placement {
     /// This host has room.
     Host(SocketAddr),
@@ -188,10 +184,6 @@ impl Fleet {
 
     /// Picks a random host below the admission threshold. Nothing is counted between polls:
     /// the share above the threshold is headroom for jobs the hosts do not report yet.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "init places jobs in a follow-up")
-    )]
     pub fn place(&self) -> Placement {
         let snapshot = self.read();
         if !self.is_fresh(&snapshot) {
