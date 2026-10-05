@@ -13,6 +13,7 @@ members = [
     "migration/api-client",
     "migration/cli",
     "migration/proof",
+    "migration/pcp",
 ]
 resolver = "3"
 

@@ -11,6 +11,16 @@ deny = [
     { name = "openssl-src" },
 ]
 
+[advisories]
+# The PCP builder pins the legacy Hyrax implementation for commitment compatibility.
+# These transitive crates have maintenance notices, with no compatible upgrade.
+# Keep vulnerability advisories enforced; remove these exceptions when Hyrax updates.
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is used by the pinned Hyrax serialization; changing it requires upstream PCP compatibility validation" },
+    { id = "RUSTSEC-2024-0388", reason = "derivative 2.2.0 is a transitive macro dependency of Hyrax/arkworks 0.4; no compatible upstream replacement" },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive macro dependency of Hyrax/arkworks 0.4; no compatible upstream replacement" },
+]
+
 [licenses]
 version = 2
 confidence-threshold = 1.0
@@ -32,8 +42,16 @@ exceptions = [
     { allow = ["MPL-2.0"], name = "option-ext", version = "0.2.0" },
     # The AWS SDK reaches foldhash through hashbrown; Zlib is permissive and OSI approved.
     { allow = ["Zlib"], name = "foldhash", version = "0.2.0" },
+    # PCP builder libsodium/protobuf build dependencies; all are permissive Zlib.
+    { allow = ["Zlib"], name = "foldhash", version = "0.1.5" },
+    { allow = ["Zlib"], name = "adler32", version = "1.2.0" },
+    { allow = ["Zlib"], name = "zlib-rs", version = "0.6.8" },
 ]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = [
+    "https://github.com/worldcoin/orb-software",
+    "https://github.com/worldcoin/hyrax-pcs-commit.git",
+]

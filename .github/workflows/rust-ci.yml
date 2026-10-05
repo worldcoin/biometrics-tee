@@ -31,6 +31,8 @@ jobs:
           toolchain: 1.98.1
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: PCP builder native dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libsodium-dev
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
@@ -47,6 +49,8 @@ jobs:
           toolchain: 1.98.1
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: PCP builder native dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libsodium-dev
       - name: tests
         run: cargo test --locked --workspace --all-features --verbose
 
