@@ -79,7 +79,24 @@ Clients can run the same check with `face::check_image_limits` before encoding a
 
 ## Iris domain
 
-tbd - DeepIdentifier migration
+Processing operations specific to the iris domain are defined in [iris.proto](proto/iris.proto).
+
+|Operation      |Input                         |Successful outcome                                   |
+|:--------------|:-----------------------------|:----------------------------------------------------|
+|`IrisMigration`|Left and right IR PNG captures|Per eye: iris and mask code, DeepIdentifier embedding|
+
+`IrisMigration` re-processes the archived captures of an Orb signup for the DeepIdentifier migration.
+Each eye runs capture QA, the full iris pipeline with its validators, and presentation attack detection; a failure on either eye fails the request.
+
+Per eye, the result carries:
+
+- Iris and mask code as base64 of the packed v2.1 template, byte-identical to the Orb's `iris_codes.json` entries.
+- The int4-quantized embedding and its mirror, one value in `[-8, 7]` per byte, plus their f32 values before quantization.
+
+`protobuf::decode_response` rejects results without both eyes, codes that are not 2,136 base64 characters, and embeddings that are not 512 values in range.
+Shares are not part of the result; the consumer derives them.
+
+Limits: maximum 16 MiB per IR image, reported as `ImageTooLarge` at the offending eye.
 
 ## Failures
 
@@ -97,3 +114,9 @@ The `location` field on a failure indicates which image role or comparison role 
 - No location for anything that is operation-wide or cannot be attributed to a single source.
 
 Helpers to construct `Failure` structures are defined in [face.rs](src/face.rs).
+
+### Iris failures
+
+Iris failures carry the outcome class only, never scores or thresholds: invalid request, invalid image, quality rejected (capture QA or validators), spoof detected, or internal.
+Every failure except `INTERNAL` names the eye it occurred for.
+Helpers are defined in [iris.rs](src/iris.rs).

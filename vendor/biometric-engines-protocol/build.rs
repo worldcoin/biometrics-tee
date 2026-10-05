@@ -1,13 +1,18 @@
 fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-changed=proto/biometric_engines.proto");
     println!("cargo:rerun-if-changed=proto/face.proto");
+    println!("cargo:rerun-if-changed=proto/iris.proto");
     prost_build::Config::new()
         .skip_debug([
             "EmbeddingResult",
             "FaceImage",
             "LightGuard",
             ".biometric_engines.face.v1.Failure",
+            "IrImage",
+            "EyeResult",
+            ".biometric_engines.iris.v1.Failure",
         ])
+        .boxed(".biometric_engines.v1.Response.outcome.iris_migration")
         .enum_attribute(
             ".biometric_engines.face.v1.ImageRole",
             "#[derive(serde::Serialize)]",
@@ -17,7 +22,11 @@ fn main() -> std::io::Result<()> {
             "#[derive(serde::Serialize)]",
         )
         .compile_protos(
-            &["proto/biometric_engines.proto", "proto/face.proto"],
+            &[
+                "proto/biometric_engines.proto",
+                "proto/face.proto",
+                "proto/iris.proto",
+            ],
             &["proto"],
         )
 }

@@ -5,6 +5,7 @@
 
 pub mod face;
 pub mod framing;
+pub mod iris;
 pub mod protobuf;
 
 #[allow(
@@ -18,6 +19,11 @@ mod generated {
     pub mod face {
         pub mod v1 {
             include!(concat!(env!("OUT_DIR"), "/biometric_engines.face.v1.rs"));
+        }
+    }
+    pub mod iris {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/biometric_engines.iris.v1.rs"));
         }
     }
     pub mod v1 {
@@ -65,6 +71,14 @@ impl From<face::Failure> for Failure {
     }
 }
 
+impl From<iris::Failure> for Failure {
+    fn from(value: iris::Failure) -> Self {
+        Self {
+            kind: Some(failure::Kind::Iris(value)),
+        }
+    }
+}
+
 impl From<protocol_failure::Reason> for Failure {
     fn from(reason: protocol_failure::Reason) -> Self {
         Self {
@@ -88,3 +102,11 @@ impl std::fmt::Display for Failure {
 }
 
 impl std::error::Error for Failure {}
+
+/// Formats a prost enumeration field by variant name, or by raw value if unknown.
+pub(crate) fn enum_debug<E: TryFrom<i32> + std::fmt::Debug>(value: i32) -> impl std::fmt::Debug {
+    std::fmt::from_fn(move |f| match E::try_from(value) {
+        Ok(variant) => std::fmt::Debug::fmt(&variant, f),
+        Err(_) => std::fmt::Debug::fmt(&value, f),
+    })
+}

@@ -28,6 +28,7 @@ pub fn check_image_limits(operation: &Operation) -> Result<(), Failure> {
             (request.challenge.as_ref(), ImageRole::Challenge),
         ],
         Operation::Embedding(request) => &[(request.image.as_ref(), ImageRole::EmbeddingInput)],
+        Operation::IrisMigration(_) => &[],
     };
 
     let mut total = 0;
@@ -136,18 +137,10 @@ impl std::fmt::Display for Failure {
 
 impl std::error::Error for Failure {}
 
-/// Formats a prost enumeration field by variant name, or by raw value if unknown.
-fn enum_debug<E: TryFrom<i32> + std::fmt::Debug>(value: i32) -> impl std::fmt::Debug {
-    std::fmt::from_fn(move |f| match E::try_from(value) {
-        Ok(variant) => std::fmt::Debug::fmt(&variant, f),
-        Err(_) => std::fmt::Debug::fmt(&value, f),
-    })
-}
-
 impl std::fmt::Debug for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Failure")
-            .field("code", &enum_debug::<FailureCode>(self.code))
+            .field("code", &crate::enum_debug::<FailureCode>(self.code))
             .field("location", &self.location)
             .field("invalid_request_reason", &self.invalid_request_reason)
             .field("validation_failure", &self.validation_failure)
@@ -160,11 +153,11 @@ impl std::fmt::Debug for failure::Location {
         match *self {
             Self::Image(role) => f
                 .debug_tuple("Image")
-                .field(&enum_debug::<ImageRole>(role))
+                .field(&crate::enum_debug::<ImageRole>(role))
                 .finish(),
             Self::Comparison(role) => f
                 .debug_tuple("Comparison")
-                .field(&enum_debug::<ComparisonRole>(role))
+                .field(&crate::enum_debug::<ComparisonRole>(role))
                 .finish(),
         }
     }
