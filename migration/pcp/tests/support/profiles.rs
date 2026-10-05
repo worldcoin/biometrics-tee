@@ -26,9 +26,10 @@ pub fn legacy_profile(version: &str, optional: bool) -> Files {
         info.remove("thumbnail_image_id");
     } else {
         info.insert("qr_code".into(), json!("synthetic-qr"));
+        // Standard Base64 of the synthetic bytes `synthetic-certificate`.
         info.insert(
             "orb_public_key_certificate".into(),
-            json!("synthetic-certificate"),
+            json!("c3ludGhldGljLWNlcnRpZmljYXRl"),
         );
     }
     if ("2.1"..="2.8").contains(&version) {
@@ -54,23 +55,15 @@ pub fn legacy_profile(version: &str, optional: bool) -> Files {
             );
         }
     }
-    let mut backend =
-        json!({"iris":{"public_key":"historical"},"normalized_iris":{"public_key":"historical"}});
-    if version != "0.2" {
-        backend["face"] = json!({"public_key":"historical"});
-    }
-    if ("2.5"..="2.8").contains(&version) {
-        backend["tier2"] = json!({"encrypted_private_key":"historical-envelope"});
-        if optional {
-            files.insert(
-                "face_ir_and_thermal/face_ir.png".into(),
-                b"synthetic-face-ir".to_vec(),
-            );
-            files.insert(
-                "face_ir_and_thermal/thermal.png".into(),
-                b"synthetic-thermal".to_vec(),
-            );
-        }
+    if optional && ("2.5"..="2.8").contains(&version) {
+        files.insert(
+            "face_ir_and_thermal/face_ir.png".into(),
+            b"synthetic-face-ir".to_vec(),
+        );
+        files.insert(
+            "face_ir_and_thermal/thermal.png".into(),
+            b"synthetic-thermal".to_vec(),
+        );
     }
     if ("2.6"..="2.8").contains(&version) {
         info.insert("left_ir_multiframe_image_ids".into(), json!(["extra-left"]));
@@ -103,9 +96,10 @@ pub fn legacy_profile(version: &str, optional: bool) -> Files {
         b"old-normalization".to_vec(),
     );
     files.insert("info.json".into(), serde_json::to_vec(info).unwrap());
+    // Present in real sources; its contents are never read.
     files.insert(
         "backend_keys.json".into(),
-        serde_json::to_vec(&backend).unwrap(),
+        b"synthetic-backend-keys".to_vec(),
     );
     files
 }

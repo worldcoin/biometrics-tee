@@ -1,6 +1,11 @@
 //! In-memory synthetic fixtures. Images and biometric values are invented
 //! placeholders for mapping checks; builder keys are generated during tests.
+// Each test crate uses a different subset of these helpers.
+#![allow(dead_code)]
 
+use std::io::Read;
+
+use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
 use di_migration_pcp::*;
 use serde_json::json;
 
@@ -12,6 +17,7 @@ pub fn source_files(version: &str) -> Files {
     };
     let info = json!({
         "signup_id": "synthetic-orb-signup", "signup_id_salt": "old-salt",
+        "signup_reason": "synthetic-reason",
         "timestamp": timestamp, "timestamp_salt": "capture-salt",
         "orb_id": "original-orb", "operator_id": "original-operator",
         "left_ir_image_id": "left-id", "right_ir_image_id": "right-id",
@@ -72,13 +78,7 @@ pub fn pipeline() -> PreparedBiometrics<'static> {
         mask_resized: &[4; 8],
     };
     PreparedBiometrics {
-        metadata: PipelineMetadata {
-            biometric_pipeline_version: "pipeline-1".into(),
-            di_model_version: "1.2.3".into(),
-            iris_version: "iris-1".into(),
-            di_inference_backend: "test-runtime".into(),
-            duration_ms: Some(1),
-        },
+        biometric_pipeline_version: "pipeline-1".into(),
         face_embeddings: vec![orb_pcp::FaceEmbedding {
             embedding: "new-face",
             embedding_type: "test-face",
@@ -103,4 +103,149 @@ pub fn pipeline() -> PreparedBiometrics<'static> {
         right_normalized: normalized(),
         extra_normalized: Default::default(),
     }
+}
+
+/// Ephemeral recipient key pairs; a distinct pair per role checks key routing.
+pub struct OutputKeys {
+    user: sealedbox::Keypair,
+    iris: sealedbox::Keypair,
+    normalized_iris: sealedbox::Keypair,
+    face: sealedbox::Keypair,
+    tier2: sealedbox::Keypair,
+}
+
+impl OutputKeys {
+    pub fn generate() -> Self {
+        let pair = || sealedbox::Keypair::generate().unwrap();
+        Self {
+            user: pair(),
+            iris: pair(),
+            normalized_iris: pair(),
+            face: pair(),
+            tier2: pair(),
+        }
+    }
+
+    pub fn recipients(&self) -> OutputRecipients<'_> {
+        fn key(pair: &sealedbox::Keypair) -> orb_pcp::BackendKey<'_> {
+            orb_pcp::BackendKey {
+                public_key: &pair.public_key,
+                encrypted_private_key: "synthetic-envelope",
+            }
+        }
+        OutputRecipients {
+            user_public_key: &self.user.public_key,
+            backend_keys: orb_pcp::BackendKeys {
+                iris: key(&self.iris),
+                normalized_iris: key(&self.normalized_iris),
+                face: key(&self.face),
+                tier2: key(&self.tier2),
+            },
+        }
+    }
+}
+
+/// Opened package members. Inner-archive members use the logical
+/// `<archive stem>/<member>` paths of `SourcePcp`; `legacy/` members are keyed
+/// by basename in `legacy`.
+pub struct OpenedPcp {
+    pub files: Files,
+    pub legacy: Files,
+    pub signed_digest: [u8; 32],
+}
+
+pub const SIGNATURE: &[u8] = b"synthetic-tee-signature";
+
+/// Build the migration with the shared builder, then decrypt and open the result.
+pub fn build_and_open(
+    source: &SourcePcp,
+    biometrics: &PreparedBiometrics<'_>,
+    context: &MigrationContext,
+) -> OpenedPcp {
+    let keys = OutputKeys::generate();
+    let mut signed_digest = None;
+    let package = with_build_request(source, biometrics, context, keys.recipients(), |request| {
+        orb_pcp::build(request, &mut rand::rngs::OsRng, |digest| {
+            signed_digest = Some(*digest);
+            Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
+        })
+    })
+    .unwrap()
+    .unwrap();
+    let (files, legacy) = open(&package, &keys);
+    OpenedPcp {
+        files,
+        legacy,
+        signed_digest: signed_digest.unwrap(),
+    }
+}
+
+/// The checks `with_build_request` runs before building, without building.
+pub fn check_request(
+    source: &SourcePcp,
+    biometrics: &PreparedBiometrics<'_>,
+    context: &MigrationContext,
+) -> Result<(), Error> {
+    with_build_request(
+        source,
+        biometrics,
+        context,
+        OutputKeys::generate().recipients(),
+        |_| (),
+    )
+}
+
+/// Decrypt a v2-envelope package: everything is in tier 0, tiers 1 and 2 are
+/// empty archives. Returns opened members and `legacy/` members.
+pub fn open(package: &orb_pcp::Package, keys: &OutputKeys) -> (Files, Files) {
+    let tier = |bytes: &[u8]| {
+        let gzip = unseal(bytes, &keys.user);
+        let mut tar = Vec::new();
+        flate2::read::GzDecoder::new(gzip.as_slice())
+            .read_to_end(&mut tar)
+            .unwrap();
+        untar(&tar)
+    };
+    assert!(tier(&package.tier1).is_empty() && tier(&package.tier2).is_empty());
+    let mut files = Files::new();
+    let mut legacy = Files::new();
+    for (name, bytes) in tier(&package.tier0) {
+        if let Some(name) = name.strip_prefix("legacy/") {
+            assert!(legacy.insert(name.to_owned(), bytes).is_none());
+            continue;
+        }
+        let Some(stem) = name.strip_suffix(".tar") else {
+            assert!(files.insert(name, bytes).is_none());
+            continue;
+        };
+        let pair = match stem {
+            "iris" => &keys.iris,
+            "normalized_iris" => &keys.normalized_iris,
+            "face" | "fraud" => &keys.face,
+            "face_ir_and_thermal" => &keys.tier2,
+            _ => panic!("unexpected inner archive {name}"),
+        };
+        for (member, bytes) in untar(&unseal(&bytes, pair)) {
+            assert!(files.insert(format!("{stem}/{member}"), bytes).is_none());
+        }
+    }
+    (files, legacy)
+}
+
+fn unseal(ciphertext: &[u8], pair: &sealedbox::Keypair) -> Vec<u8> {
+    let mut plaintext = vec![0; ciphertext.len() - sealedbox::OVERHEAD_LENGTH];
+    sealedbox::decrypt(ciphertext, pair, &mut plaintext).unwrap();
+    plaintext
+}
+
+fn untar(bytes: &[u8]) -> Files {
+    let mut files = Files::new();
+    for entry in tar::Archive::new(bytes).entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let name = entry.path().unwrap().to_str().unwrap().to_owned();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        assert!(files.insert(name, bytes).is_none(), "duplicate member");
+    }
+    files
 }

@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, de::IntoDeserializer};
 
-use crate::{BackendKeys, Error, Files, Info, parse_json, validate_files};
+use crate::{Error, Files, Info, parse_json, validate_files};
 
 /// Source versions accepted by the opened-artifact mapper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -58,7 +58,8 @@ impl FromStr for SourceVersion {
     }
 }
 
-// Historical hashes.json files encode the PCP version as either a string or a number.
+// Historical hashes.json files encode the PCP version as a string, or as a
+// number in 0.2 and 0.3.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum LegacyVersionValue {
@@ -66,15 +67,10 @@ enum LegacyVersionValue {
     Number(serde_json::Number),
 }
 
-/// Parse structure only; this type is NOT evidence of authenticity.
-///
-/// The caller must verify source signatures/hashes, authorize ownership, decrypt
-/// tiers and open inner archives before using these bytes for a migration.
-/// Directory markers are not files. Duplicate members must be rejected upstream.
+/// Parse structure only
 pub struct SourcePcp {
     pub(crate) version: SourceVersion,
     pub(crate) info: Info,
-    pub(crate) backend_keys: Option<BackendKeys>,
     pub(crate) files: Files,
 }
 
@@ -87,15 +83,16 @@ impl SourcePcp {
         }
         let manifest: Manifest = parse_json(required(&files, "hashes.json")?, "hashes.json")?;
         let version = match manifest.version {
-            LegacyVersionValue::Text(s) => s,
-            LegacyVersionValue::Number(n) => n.to_string(),
+            LegacyVersionValue::Text(s) => s.parse()?,
+            // A number is rendered as the shortest float, so restrict it to the
+            // versions that used numbers; `2.10` would otherwise become `2.1`.
+            LegacyVersionValue::Number(n) => match n.to_string().as_str() {
+                "0.2" => SourceVersion::V0_2,
+                "0.3" => SourceVersion::V0_3,
+                _ => return Err(Error::UnsupportedVersion),
+            },
         };
-        let version = version.parse::<SourceVersion>()?;
         let info = parse_json(required(&files, "info.json")?, "info.json")?;
-        let backend_keys = files
-            .get("backend_keys.json")
-            .map(|bytes| parse_json(bytes, "backend_keys.json"))
-            .transpose()?;
         if files.contains_key("face_ir_and_thermal.tar") {
             return Err(Error::UnopenedArtifact("face_ir_and_thermal.tar"));
         }
@@ -106,7 +103,6 @@ impl SourcePcp {
         Ok(Self {
             version,
             info,
-            backend_keys,
             files,
         })
     }
@@ -116,9 +112,6 @@ impl SourcePcp {
     }
     pub const fn info(&self) -> &Info {
         &self.info
-    }
-    pub const fn backend_keys(&self) -> Option<&BackendKeys> {
-        self.backend_keys.as_ref()
     }
 
     /// Required image inputs for migration. Missing
@@ -193,38 +186,28 @@ pub(crate) fn normalized_artifact(path: &str) -> bool {
 fn known_source_artifact(path: &str) -> bool {
     raw_image(path)
         || normalized_artifact(path)
-        || matches!(
-            path,
-            "info.json"
-                | "backend_keys.json"
-                | "hashes.json"
-                | "hashes.sign"
-                | "face_embeddings.json"
-                | "iris_codes.json"
-                | "iris_code_shares_0.json"
-                | "iris_code_shares_1.json"
-                | "iris_code_shares_2.json"
-                | "di_iris_embeddings.pb"
-                | "di_iris_embeddings_shares_0.pb"
-                | "di_iris_embeddings_shares_1.pb"
-                | "di_iris_embeddings_shares_2.pb"
-        )
+        || legacy_artifact(path)
+        || matches!(path, "info.json")
+        // Only opens the source's inner archives, which the new package replaces.
+        || path == "backend_keys.json"
 }
 
 /// Source biometrics and signed manifest retained verbatim under `legacy/`.
+/// This is the shared builder's closed legacy inventory.
+pub(crate) const LEGACY_ARTIFACTS: [&str; 11] = [
+    "hashes.json",
+    "hashes.sign",
+    "iris_codes.json",
+    "iris_code_shares_0.json",
+    "iris_code_shares_1.json",
+    "iris_code_shares_2.json",
+    "di_iris_embeddings.pb",
+    "di_iris_embeddings_shares_0.pb",
+    "di_iris_embeddings_shares_1.pb",
+    "di_iris_embeddings_shares_2.pb",
+    "face_embeddings.json",
+];
+
 pub(crate) fn legacy_artifact(path: &str) -> bool {
-    matches!(
-        path,
-        "hashes.json"
-            | "hashes.sign"
-            | "iris_codes.json"
-            | "iris_code_shares_0.json"
-            | "iris_code_shares_1.json"
-            | "iris_code_shares_2.json"
-            | "di_iris_embeddings.pb"
-            | "di_iris_embeddings_shares_0.pb"
-            | "di_iris_embeddings_shares_1.pb"
-            | "di_iris_embeddings_shares_2.pb"
-            | "face_embeddings.json"
-    )
+    LEGACY_ARTIFACTS.contains(&path)
 }

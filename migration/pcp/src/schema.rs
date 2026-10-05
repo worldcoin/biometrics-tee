@@ -1,7 +1,7 @@
 //! Convert legacy-normalized fields to the shared generated PCP messages.
 //! Keep original bytes separately: protojson output is not a signing preimage.
 
-use crate::{BackendKey, BackendKeys, Info};
+use crate::Info;
 
 impl From<Info> for orb_pcp_defs::v1::Info {
     /// The shared v1 schema uses repeated fields, so an unavailable source list
@@ -9,7 +9,6 @@ impl From<Info> for orb_pcp_defs::v1::Info {
     fn from(info: Info) -> Self {
         Self {
             signup_id: info.signup_id,
-            src_signup_id: info.src_signup_id,
             signup_id_salt: info.signup_id_salt,
             signup_reason: info.signup_reason,
             signup_reason_salt: info.signup_reason_salt,
@@ -41,26 +40,6 @@ impl From<Info> for orb_pcp_defs::v1::Info {
             id_commitment_salt: info.id_commitment_salt,
             device_public_key: info.device_public_key,
             device_public_key_salt: info.device_public_key_salt,
-        }
-    }
-}
-
-impl From<BackendKey> for orb_pcp_defs::v1::BackendKey {
-    fn from(key: BackendKey) -> Self {
-        Self {
-            public_key: key.public_key,
-            encrypted_private_key: key.encrypted_private_key,
-        }
-    }
-}
-
-impl From<BackendKeys> for orb_pcp_defs::v1::BackendKeys {
-    fn from(keys: BackendKeys) -> Self {
-        Self {
-            iris: keys.iris.map(Into::into),
-            normalized_iris: keys.normalized_iris.map(Into::into),
-            face: keys.face.map(Into::into),
-            tier2: keys.tier2.map(Into::into),
         }
     }
 }

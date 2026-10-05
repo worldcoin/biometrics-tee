@@ -1,5 +1,4 @@
-use crate::source::{legacy_artifact, raw_image};
-use crate::{BackendKeys, Error, Files, Info, Migration, PipelineMetadata, SourcePcp};
+use crate::{Error, SourcePcp};
 
 /// Values supplied by the trusted TEE orchestration layer, never by the sandbox.
 pub struct MigrationContext {
@@ -12,10 +11,11 @@ pub struct MigrationContext {
 /// commitments, archive layout, hashing, signing or encryption in this crate.
 ///
 /// The sandbox adapter must validate model-specific dimensions and encodings;
-/// the sharing stage must bind every share to these exact outputs. This mapper
-/// checks availability and cross-output version consistency before assembly.
+/// the sharing stage must bind every share to these exact outputs.
+/// `with_build_request` checks availability and consistency before building.
 pub struct PreparedBiometrics<'a> {
-    pub metadata: PipelineMetadata,
+    /// Release version of the executed biometric pipeline, recorded in `migration.pb`.
+    pub biometric_pipeline_version: String,
     pub face_embeddings: Vec<orb_pcp::FaceEmbedding<'a>>,
     pub daugman: orb_pcp::DaugmanData<'a>,
     pub di: orb_pcp::DiData<'a>,
@@ -26,31 +26,22 @@ pub struct PreparedBiometrics<'a> {
 }
 
 impl PreparedBiometrics<'_> {
-    fn validate(&self, source: &SourcePcp) -> Result<(), Error> {
+    pub(crate) fn validate(&self, source: &SourcePcp) -> Result<(), Error> {
         // These upper bounds are local resource guards, not model dimensions.
+        // `di.model_version` is checked when deriving the signup ID.
         for (name, value) in [
             (
                 "biometric_pipeline_version",
-                self.metadata.biometric_pipeline_version.as_str(),
+                self.biometric_pipeline_version.as_str(),
             ),
-            ("di_model_version", self.metadata.di_model_version.as_str()),
-            ("iris_version", self.metadata.iris_version.as_str()),
-            (
-                "di_inference_backend",
-                self.metadata.di_inference_backend.as_str(),
-            ),
+            ("di_inference_backend", self.di.inference_backend),
             ("iris_shares_version", self.daugman.shares_version),
             ("di_shares_version", self.di.shares_version),
             ("di_embedding_version", self.di.embedding_version),
         ] {
             nonempty(value, name)?;
         }
-        if self.di.model_version != self.metadata.di_model_version
-            || self.di.inference_backend != self.metadata.di_inference_backend
-            || self.daugman.iris_version != Some(self.metadata.iris_version.as_str())
-        {
-            return Err(Error::MetadataMismatch);
-        }
+        required_text(self.daugman.iris_version, "iris_version")?;
         if self.face_embeddings.is_empty() || self.face_embeddings.len() > 16 {
             return Err(Error::InvalidField("face_embeddings"));
         }
@@ -91,9 +82,6 @@ impl PreparedBiometrics<'_> {
             {
                 return Err(Error::InvalidField("di_eye"));
             }
-        }
-        if self.extra_normalized.len() > 512 {
-            return Err(Error::SizeLimit);
         }
         for id in self.extra_normalized.keys() {
             let referenced = source
@@ -138,69 +126,14 @@ impl PreparedBiometrics<'_> {
     }
 }
 
-/// PCP v2.9 content for assembly by the shared builder.
-/// `None` represents unavailable metadata.
-pub struct MappedPcp<'a> {
-    pub info: Info,
-    /// Source envelopes for migration/diagnostics, not automatically authorized
-    /// encryption recipients for the new package. New keys come from the caller.
-    pub source_backend_keys: Option<BackendKeys>,
-    pub migration: Migration,
-    pub raw_images: Files,
-    /// Relative file names inside `legacy/`. Bytes are exact.
-    pub legacy: Files,
-    pub biometrics: PreparedBiometrics<'a>,
-}
-
-impl MappedPcp<'_> {
-    pub const VERSION: &'static str = "2.9";
-}
-
-/// Map one authenticated, opened source and one successful pipeline execution.
-/// Source versions lacking a required image remain inspectable via `SourcePcp`,
-/// but cannot produce mapped output. Retain `source` until the
-/// final `verify_preserved_data` check of the assembled output has passed.
-pub fn migrate<'a>(
-    source: &SourcePcp,
-    biometrics: PreparedBiometrics<'a>,
-    context: MigrationContext,
-) -> Result<MappedPcp<'a>, Error> {
-    source.pipeline_inputs()?;
-    crate::source::required(&source.files, "hashes.sign")?;
-    biometrics.validate(source)?;
-    nonempty(&context.tee_version, "tee_version")?;
-    let old_signup_id = required_text(source.info.signup_id.as_deref(), "signup_id")?.to_owned();
-    let new_signup_id =
-        generate_migration_signup_id(&old_signup_id, &biometrics.metadata.di_model_version)?;
-    let migration = Migration {
-        tee_version: Some(context.tee_version),
-        src_signup_id: Some(old_signup_id),
-        source_pcp_version: Some(source.version.as_str().to_owned()),
-        migrated_ts: Some(context.migrated_ts),
-        biometric_pipeline_version: Some(biometrics.metadata.biometric_pipeline_version.clone()),
-    };
-    let mut info = source.info.clone();
-    info.src_signup_id.clone_from(&source.info.signup_id);
-    info.signup_id = Some(new_signup_id);
-    info.signup_id_salt = None; // Builder generates a salt for the changed identity.
-    let mut raw_images = Files::new();
-    let mut legacy = Files::new();
-    for (path, bytes) in &source.files {
-        if raw_image(path) {
-            raw_images.insert(path.clone(), bytes.clone());
-        } else if legacy_artifact(path) {
-            legacy.insert(path.clone(), bytes.clone());
-        }
-    }
-    crate::preservation::verify_artifacts(source, &raw_images, &legacy)?;
-    Ok(MappedPcp {
-        info,
-        source_backend_keys: source.backend_keys.clone(),
-        migration,
-        raw_images,
-        legacy,
-        biometrics,
-    })
+/// The source signup ID and the new one derived from it and the DI model version.
+pub(crate) fn signup_ids<'a>(
+    source: &'a SourcePcp,
+    biometrics: &PreparedBiometrics<'_>,
+) -> Result<(&'a str, String), Error> {
+    let source_signup_id = required_text(source.info.signup_id.as_deref(), "signup_id")?;
+    let signup_id = generate_migration_signup_id(source_signup_id, biometrics.di.model_version)?;
+    Ok((source_signup_id, signup_id))
 }
 
 /// Identity rule for supported original Orb sources (through v2.8).
@@ -213,8 +146,8 @@ pub fn generate_migration_signup_id(
         (src_signup_id, "src_signup_id"),
         (di_model_version, "di_model_version"),
     ] {
-        nonempty(value, name)?;
-        if value.len() > 128
+        if value.is_empty()
+            || value.len() > 128
             || !value
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
@@ -225,7 +158,7 @@ pub fn generate_migration_signup_id(
     Ok(format!("{src_signup_id}_di_v{di_model_version}"))
 }
 
-fn nonempty(value: &str, field: &'static str) -> Result<(), Error> {
+pub(crate) fn nonempty(value: &str, field: &'static str) -> Result<(), Error> {
     if value.is_empty() || value.len() > 1024 * 1024 {
         Err(Error::InvalidField(field))
     } else {

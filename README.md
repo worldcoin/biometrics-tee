@@ -1,6 +1,12 @@
 ## Deep Identifier Migration 
 This repo contains the implementation of the TEE-based migration from iris code-based PCPs to DeepIdentifier-based ones
 
+## PCP mapping
+
+[`di-migration-pcp`](migration/pcp) maps opened legacy PCPs and prepared
+biometric outputs into migrated PCPs, using the shared `orb-pcp` builder and
+protobuf definitions.
+
 ## Migration API
 
 Run `cargo run -p migration-api`. `HTTP_ADDR` defaults to `0.0.0.0:8080`.

@@ -1,14 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-/// v2.8 capture metadata plus the v2.9 source signup, with explicit absence.
+/// v2.8 capture metadata, with explicit absence.
 /// Lists use `Option` as well: unavailable is distinct from a known empty list.
-/// Salts are retained only for unchanged source values. The builder must generate
-/// fresh salts for new identity fields and rebuild all hashes over final bytes.
+/// Source salts are parsed but never emitted: the builder generates a fresh salt
+/// and hash for every salted value it writes.
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Info {
     pub signup_id: Option<String>,
-    pub src_signup_id: Option<String>,
     pub signup_id_salt: Option<String>,
     pub signup_reason: Option<String>,
     pub signup_reason_salt: Option<String>,
@@ -52,44 +51,11 @@ fn deserialize_timestamp<'de, D: serde::Deserializer<'de>>(
     match value {
         None => Ok(None),
         Some(Timestamp::Integer(n)) => Ok(Some(n.to_string())),
-        Some(Timestamp::Text(s))
-            if !s.is_empty()
-                && s.bytes().all(|b| b.is_ascii_digit())
-                && s.parse::<u64>().is_ok() =>
-        {
+        // Canonical decimal only: the builder re-renders capture time from its
+        // integer value, so leading zeros or a sign could not be preserved.
+        Some(Timestamp::Text(s)) if s.parse::<u64>().is_ok_and(|n| n.to_string() == s) => {
             Ok(Some(s))
         }
         Some(Timestamp::Text(_)) => Err(serde::de::Error::custom("expected Unix seconds")),
     }
-}
-
-/// A source encryption-key envelope. Its presence is not authorization to reuse
-/// the recipient or to encrypt new artifacts with the historical key.
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BackendKey {
-    pub public_key: Option<String>,
-    pub encrypted_private_key: Option<String>,
-}
-
-/// v2.8 backend roles. Older versions may lack any of these envelopes.
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BackendKeys {
-    pub iris: Option<BackendKey>,
-    pub normalized_iris: Option<BackendKey>,
-    pub face: Option<BackendKey>,
-    pub tier2: Option<BackendKey>,
-}
-
-/// Allowlisted pipeline provenance; debug reports travel on the separate debug
-/// channel and are never automatically embedded in a PCP or in logs.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PipelineMetadata {
-    pub biometric_pipeline_version: String,
-    pub di_model_version: String,
-    pub iris_version: String,
-    pub di_inference_backend: String,
-    pub duration_ms: Option<u64>,
 }

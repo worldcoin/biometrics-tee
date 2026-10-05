@@ -1,9 +1,12 @@
 use di_migration_pcp::*;
-use serde_json::json;
+use orb_pcp_defs::{prost::Message, v1::Migration};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 mod support;
-use support::{context, pipeline, source_files};
+use support::{
+    OutputKeys, SIGNATURE, build_and_open, check_request, context, open, pipeline, source_files,
+};
 
 fn edit_info(files: &mut Files, f: impl FnOnce(&mut serde_json::Value)) {
     let mut info = serde_json::from_slice(&files["info.json"]).unwrap();
@@ -20,55 +23,38 @@ fn all_supported_versions_preserve_capture_and_fill_absence() {
         let source = SourcePcp::parse(files.clone()).unwrap();
         assert_eq!(source.version().as_str(), version);
         assert_eq!(version.parse::<SourceVersion>().unwrap(), source.version());
-        let mapped = migrate(&source, pipeline(), context()).unwrap();
-        assert_eq!(mapped.info.timestamp.as_deref(), Some("1700000000"));
-        assert_eq!(mapped.info.timestamp_salt.as_deref(), Some("capture-salt"));
+        let (bio, ctx) = (pipeline(), context());
+        let new = build_and_open(&source, &bio, &ctx);
+        // The final check compares every preserved image and legacy file with the source.
+        verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
+        for name in [
+            "hashes.json",
+            "hashes.sign",
+            "iris_codes.json",
+            "face_embeddings.json",
+        ] {
+            assert_eq!(new.legacy[name], files[name], "{name}");
+        }
+        let info: Value = serde_json::from_slice(&new.files["info.json"]).unwrap();
+        assert_eq!(info["signup_id"], "synthetic-orb-signup_di_v1.2.3");
+        assert_eq!(info["timestamp"], "1700000000");
+        assert_eq!(info["id_commitment"], "original-commitment");
         assert_eq!(
-            mapped.info.signup_id.as_deref(),
-            Some("synthetic-orb-signup_di_v1.2.3")
+            info["left_iris_code_aggregate_image_ids"],
+            json!(["old-aggregate"])
         );
-        assert_eq!(mapped.info.src_signup_id, source.info().signup_id);
-        assert_eq!(mapped.info.src_signup_id, mapped.migration.src_signup_id);
-        assert!(mapped.info.signup_id_salt.is_none());
+        assert_eq!(info["left_ir_multiframe_image_ids"], json!([]));
+        let migration = Migration::decode(new.files["migration.pb"].as_slice()).unwrap();
         assert_eq!(
-            mapped.info.id_commitment.as_deref(),
-            Some("original-commitment")
+            migration,
+            Migration {
+                tee_version: Some("0.1.0-test".into()),
+                src_signup_id: Some("synthetic-orb-signup".into()),
+                source_pcp_version: Some(version.into()),
+                migrated_ts: Some(1800000000),
+                biometric_pipeline_version: Some("pipeline-1".into()),
+            }
         );
-        assert!(mapped.info.orb_country.is_none());
-        assert!(mapped.info.qr_code.is_none());
-        assert!(mapped.info.device_public_key.is_none());
-        assert!(mapped.source_backend_keys.is_none());
-        assert_eq!(
-            mapped.migration.source_pcp_version.as_deref(),
-            Some(version)
-        );
-        assert_eq!(
-            mapped.migration.src_signup_id.as_deref(),
-            Some("synthetic-orb-signup")
-        );
-        assert_eq!(mapped.migration.tee_version.as_deref(), Some("0.1.0-test"));
-        assert_eq!(mapped.migration.migrated_ts, Some(1800000000));
-        assert_eq!(
-            mapped.migration.biometric_pipeline_version.as_deref(),
-            Some("pipeline-1")
-        );
-        assert_eq!(mapped.legacy["hashes.json"], files["hashes.json"]);
-        assert_eq!(mapped.legacy["hashes.sign"], files["hashes.sign"]);
-        assert!(!mapped.legacy.contains_key("info.json"));
-        assert_eq!(mapped.legacy["iris_codes.json"], files["iris_codes.json"]);
-        assert_eq!(
-            mapped.legacy["face_embeddings.json"],
-            files["face_embeddings.json"]
-        );
-        assert_eq!(
-            mapped.raw_images["iris/left_ir.png"],
-            files["iris/left_ir.png"]
-        );
-        assert_eq!(
-            mapped.info.left_iris_code_aggregate_image_ids,
-            Some(vec!["old-aggregate".into()])
-        );
-        assert!(mapped.info.left_ir_multiframe_image_ids.is_none());
     }
 }
 
@@ -83,11 +69,68 @@ fn sparse_metadata_preserves_null_empty_and_missing_semantics() {
     assert!(json["orb_country"].is_null());
     assert_eq!(json["left_ir_multiframe_image_ids"], json!([]));
     assert!(json["right_ir_multiframe_image_ids"].is_null());
-    let mapped = migrate(&source, pipeline(), context()).unwrap();
     assert_eq!(
-        mapped.with_builder_biometrics(|_| ()).err().unwrap(),
-        Error::InvalidField("left_ir_image_id")
+        check_request(&source, &pipeline(), &context()).err(),
+        Some(Error::MissingCaptureField("timestamp"))
     );
+}
+
+#[test]
+fn builder_required_capture_fields_are_never_invented() {
+    for field in ["signup_reason", "orb_id", "operator_id", "timestamp"] {
+        let mut files = source_files("2.8");
+        edit_info(&mut files, |i| {
+            i.as_object_mut().unwrap().remove(field);
+        });
+        let source = SourcePcp::parse(files).unwrap();
+        assert_eq!(
+            check_request(&source, &pipeline(), &context()).err(),
+            Some(Error::MissingCaptureField(field))
+        );
+    }
+}
+
+#[test]
+fn missing_primary_and_thumbnail_ids_stay_absent_in_the_new_pcp() {
+    let mut files = source_files("2.8");
+    edit_info(&mut files, |i| {
+        let info = i.as_object_mut().unwrap();
+        for field in [
+            "left_ir_image_id",
+            "right_ir_image_id",
+            "thumbnail_image_id",
+        ] {
+            info.remove(field);
+        }
+    });
+    let source = SourcePcp::parse(files).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    let new = build_and_open(&source, &bio, &ctx);
+    verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
+    let info: Value = serde_json::from_slice(&new.files["info.json"]).unwrap();
+    for field in [
+        "left_ir_image_id",
+        "right_ir_image_id",
+        "thumbnail_image_id",
+    ] {
+        assert!(info.get(field).is_none(), "{field}");
+    }
+}
+
+#[test]
+fn certificate_must_be_canonical_base64() {
+    for certificate in ["YQ", "YR==", "not base64", "c3ludGhldGljLWNlcnRpZmljYXRl\n"] {
+        let mut files = source_files("2.8");
+        edit_info(&mut files, |i| {
+            i["orb_public_key_certificate"] = json!(certificate)
+        });
+        let source = SourcePcp::parse(files).unwrap();
+        assert_eq!(
+            check_request(&source, &pipeline(), &context()).err(),
+            Some(Error::InvalidField("orb_public_key_certificate")),
+            "{certificate}"
+        );
+    }
 }
 
 #[test]
@@ -113,7 +156,9 @@ fn absent_or_empty_primary_images_fail_by_presence_not_version() {
                     Error::MissingArtifact(name)
                 );
                 assert_eq!(
-                    migrate(&source, pipeline(), context()).err().unwrap(),
+                    check_request(&source, &pipeline(), &context())
+                        .err()
+                        .unwrap(),
                     Error::MissingArtifact(name)
                 );
             }
@@ -134,74 +179,20 @@ fn legacy_biometrics_and_opened_thermal_images_are_preserved_exactly() {
         b"obsolete".to_vec(),
     );
     files.insert("di_iris_embeddings.pb".into(), b"obsolete".to_vec());
-    let mapped = migrate(
-        &SourcePcp::parse(files.clone()).unwrap(),
-        pipeline(),
-        context(),
-    )
-    .unwrap();
-    assert_eq!(
-        mapped.legacy["iris_code_shares_0.json"],
-        files["iris_code_shares_0.json"]
-    );
-    assert!(!mapped.legacy.contains_key("iris_code_shares_1.json"));
-    assert_eq!(
-        mapped.legacy["di_iris_embeddings.pb"],
-        files["di_iris_embeddings.pb"]
-    );
-    assert!(!mapped.legacy.contains_key("face_ir_and_thermal.tar"));
-    assert!(
-        !mapped
-            .legacy
-            .contains_key("normalized_iris/left_normalized_image.bin")
-    );
-    assert_eq!(
-        mapped.raw_images["face_ir_and_thermal/face_ir.png"],
-        vec![1, 2]
-    );
-    assert!(!mapped.raw_images.contains_key("di_iris_embeddings.pb"));
-}
-
-#[test]
-fn backend_key_roles_and_missing_members_remain_optional() {
-    let mut files = source_files("2.5");
-    files.insert(
-        "backend_keys.json".into(),
-        br#"{"iris":{"public_key":"pk"},"tier2":{"encrypted_private_key":"envelope"}}"#.to_vec(),
-    );
-    let source = SourcePcp::parse(files).unwrap();
-    let keys = source.backend_keys().unwrap();
-    assert!(keys.face.is_none());
-    assert!(keys.iris.as_ref().unwrap().encrypted_private_key.is_none());
-    assert_eq!(
-        keys.tier2
-            .as_ref()
-            .unwrap()
-            .encrypted_private_key
-            .as_deref(),
-        Some("envelope")
-    );
-}
-
-#[test]
-fn device_binding_is_preserved_with_its_salt() {
-    for key in [None, Some("device-1")] {
-        let mut files = source_files("2.8");
-        edit_info(&mut files, |i| {
-            i["device_public_key"] = json!(key);
-            i["device_public_key_salt"] = json!(key.map(|_| "device-salt"));
-        });
-        let source = SourcePcp::parse(files).unwrap();
-        let mapped = migrate(&source, pipeline(), context()).unwrap();
-        assert_eq!(
-            mapped.info.device_public_key,
-            source.info().device_public_key
-        );
-        assert_eq!(
-            mapped.info.device_public_key_salt,
-            source.info().device_public_key_salt
-        );
+    let source = SourcePcp::parse(files.clone()).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    let new = build_and_open(&source, &bio, &ctx);
+    // Also rejects any legacy or raw-image member the source lacks.
+    verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
+    for name in ["iris_code_shares_0.json", "di_iris_embeddings.pb"] {
+        assert_eq!(new.legacy[name], files[name], "{name}");
     }
+    assert_eq!(new.files["face_ir_and_thermal/face_ir.png"], [1, 2]);
+    // Fresh normalization replaces the source's.
+    assert_eq!(
+        new.files["normalized_iris/left_normalized_image.bin"],
+        [1; 16]
+    );
 }
 
 #[test]
@@ -212,6 +203,9 @@ fn malformed_fields_versions_and_duplicates_are_rejected_without_payloads() {
         json!(true),
         json!("private-invalid-time"),
         json!("18446744073709551616"),
+        json!("01700000000"),
+        json!("+1700000000"),
+        json!(""),
     ] {
         let mut files = source_files("0.2");
         edit_info(&mut files, |i| i["timestamp"] = timestamp);
@@ -226,7 +220,18 @@ fn malformed_fields_versions_and_duplicates_are_rejected_without_payloads() {
         assert!(!format!("{error:?}").contains("private-invalid-time"));
     }
     for version in [
-        "3.0", "2.9", "2.99", "0.1", "1.0", "2.10", "", "V2_8", "2.8.0", " 2.8", "2.8 ",
+        // Migrated packages cannot be migrated again.
+        OUTPUT_PCP_VERSION,
+        "3.0",
+        "2.99",
+        "0.1",
+        "1.0",
+        "2.10",
+        "",
+        "V2_8",
+        "2.8.0",
+        " 2.8",
+        "2.8 ",
     ] {
         assert_eq!(
             version.parse::<SourceVersion>(),
@@ -261,9 +266,15 @@ fn numeric_manifest_and_large_integer_timestamp_are_exact() {
         i["timestamp"] = json!(18446744073709551615u64)
     });
     let source = SourcePcp::parse(files).unwrap();
+    assert_eq!(source.version(), SourceVersion::V0_2);
     assert_eq!(
         source.info().timestamp.as_deref(),
         Some("18446744073709551615")
+    );
+    // Parsing is exact, but this capture time cannot be represented for the builder.
+    assert_eq!(
+        check_request(&source, &pipeline(), &context()).err(),
+        Some(Error::InvalidField("timestamp"))
     );
 }
 
@@ -306,19 +317,13 @@ fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
             1 => bio.di.left = None,
             2 => bio.daugman.left.iris_code = None,
             3 => bio.daugman.right.mask_code_shares[1] = "",
-            4 => bio.di.model_version = "different",
+            4 => bio.daugman.iris_version = None,
             5 => bio.face_embeddings[0].embedding_version = "",
             6 => bio.di.right.as_mut().unwrap().embedding_f32 = &[f32::NAN, 0.1],
             _ => bio.left_normalized.image = &[],
         }
-        assert!(
-            migrate(
-                &SourcePcp::parse(source_files("2.7")).unwrap(),
-                bio,
-                context()
-            )
-            .is_err()
-        );
+        let source = SourcePcp::parse(source_files("2.7")).unwrap();
+        assert!(check_request(&source, &bio, &context()).is_err());
     }
 }
 
@@ -329,16 +334,21 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
         i["left_ir_multiframe_image_ids"] = json!(["extra"])
     });
     files.insert("iris/extra.png".into(), vec![9]);
-    let mapped = migrate(&SourcePcp::parse(files).unwrap(), pipeline(), context()).unwrap();
-    mapped
-        .with_builder_biometrics(|policy| {
+    let source = SourcePcp::parse(files).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    with_build_request(
+        &source,
+        &bio,
+        &ctx,
+        OutputKeys::generate().recipients(),
+        |request| {
             let orb_pcp::BiometricPolicy::Included {
                 images,
                 daugman,
                 di,
                 face_embeddings,
                 ..
-            } = policy
+            } = &request.biometrics
             else {
                 panic!("must include")
             };
@@ -364,8 +374,9 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
                 &[31, 32]
             );
             assert_eq!(face_embeddings[0].embedding, "new-face");
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
 }
 
 #[test]
@@ -378,8 +389,8 @@ fn builder_bridge_rejects_unmapped_or_duplicate_images() {
                 i["left_ir_multiframe_image_ids"] = json!(["extra", "extra"])
             });
         }
-        let mapped = migrate(&SourcePcp::parse(files).unwrap(), pipeline(), context()).unwrap();
-        assert!(mapped.with_builder_biometrics(|_| ()).is_err());
+        let source = SourcePcp::parse(files).unwrap();
+        assert!(check_request(&source, &pipeline(), &context()).is_err());
     }
 }
 
@@ -399,31 +410,6 @@ fn migration_identity_uses_source_signup_and_rejects_path_characters() {
 }
 
 #[test]
-fn normalized_fields_convert_to_shared_generated_types() {
-    use orb_pcp_defs::prost::Message;
-    let source = SourcePcp::parse(source_files("0.3")).unwrap();
-    let shared: orb_pcp_defs::v1::Info = source.info().clone().into();
-    assert_eq!(shared.timestamp.as_deref(), Some("1700000000"));
-    assert!(shared.orb_country.is_none());
-    assert!(shared.left_ir_multiframe_image_ids.is_empty());
-    let decoded = orb_pcp_defs::v1::Info::decode(shared.encode_to_vec().as_slice()).unwrap();
-    assert!(decoded == shared);
-    let json = serde_json::to_value(&shared).unwrap();
-    assert!(json.get("signup_id").is_some());
-    assert!(json.get("signupId").is_none());
-    let keys: orb_pcp_defs::v1::BackendKeys = BackendKeys {
-        tier2: Some(BackendKey {
-            public_key: Some("synthetic".into()),
-            encrypted_private_key: None,
-        }),
-        ..Default::default()
-    }
-    .into();
-    assert!(keys.iris.is_none());
-    assert_eq!(keys.tier2.unwrap().public_key.as_deref(), Some("synthetic"));
-}
-
-#[test]
 fn face_outputs_retain_individual_model_versions_and_backends() {
     let mut bio = pipeline();
     bio.face_embeddings[0].embedding_inference_backend = "other-runtime";
@@ -433,21 +419,17 @@ fn face_outputs_retain_individual_model_versions_and_backends() {
         embedding_version: "face-3",
         embedding_inference_backend: "another-runtime",
     });
-    assert!(
-        migrate(
-            &SourcePcp::parse(source_files("2.8")).unwrap(),
-            bio,
-            context()
-        )
-        .is_ok()
-    );
+    let source = SourcePcp::parse(source_files("2.8")).unwrap();
+    let new = build_and_open(&source, &bio, &context());
+    let faces: Value = serde_json::from_slice(&new.files["face_embeddings.json"]).unwrap();
+    assert_eq!(faces[0]["embedding_inference_backend"], "other-runtime");
+    assert_eq!(faces[1]["embedding_version"], "face-3");
+    assert_eq!(faces[1]["embedding_inference_backend"], "another-runtime");
 }
 
 #[test]
-fn mapped_biometrics_build_and_decrypt_using_shared_builder() {
-    // Existing producer formats only: upstream has no v2.9 envelope yet.
-    use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
-    use std::io::Read;
+fn builder_generated_orb_captures_open_as_sources() {
+    // The reader's logical paths must match the shared builder's 2.7/2.8 output.
     for (version, device_public_key, expected_version) in [
         (orb_pcp::PcpVersion::V2_7, None, SourceVersion::V2_7),
         (
@@ -456,93 +438,74 @@ fn mapped_biometrics_build_and_decrypt_using_shared_builder() {
             SourceVersion::V2_8,
         ),
     ] {
-        let mapped = migrate(
-            &SourcePcp::parse(source_files("2.8")).unwrap(),
-            pipeline(),
-            context(),
-        )
-        .unwrap();
-        let pair = sealedbox::Keypair::generate().unwrap();
-        let key = || orb_pcp::BackendKey {
-            public_key: &pair.public_key,
-            encrypted_private_key: "synthetic-envelope",
-        };
+        let source = SourcePcp::parse(source_files("2.8")).unwrap();
+        let (bio, ctx) = (pipeline(), context());
+        let keys = OutputKeys::generate();
         let mut signed_digest = None;
-        let package = mapped
-            .with_builder_biometrics(|biometrics| {
-                orb_pcp::build(
-                    &orb_pcp::BuildRequest {
-                        version,
-                        timestamp: 1800000000,
-                        info: orb_pcp::PackageInfo {
-                            signup_id: mapped.info.signup_id.as_deref().unwrap(),
-                            signup_reason: "test",
-                            orb_id: "orb",
-                            operator_id: "operator",
-                            capture_start: std::time::UNIX_EPOCH
-                                + std::time::Duration::from_secs(1700000000),
-                            qr_code: "test",
-                            id_commitment: "test",
-                            software_version: "test",
-                            orb_country: "test",
-                            orb_public_key_certificate: b"synthetic-certificate",
-                            device_public_key,
-                        },
-                        user_public_key: &pair.public_key,
-                        backend_keys: orb_pcp::BackendKeys {
-                            iris: key(),
-                            normalized_iris: key(),
-                            face: key(),
-                            tier2: key(),
-                        },
-                        biometrics,
+        let package = with_build_request(&source, &bio, &ctx, keys.recipients(), |request| {
+            // Reuse the migration inputs as an Orb capture, which requires
+            // fields the synthetic source lacks.
+            let orb_pcp::BiometricPolicy::Included {
+                images,
+                thumbnail_image_id,
+                left_iris_code_aggregate_image_ids,
+                right_iris_code_aggregate_image_ids,
+                face_embeddings,
+                daugman,
+                di,
+            } = request.biometrics
+            else {
+                panic!("must include")
+            };
+            let info = &request.info;
+            orb_pcp::build(
+                &orb_pcp::BuildRequest {
+                    version,
+                    timestamp: request.timestamp,
+                    info: orb_pcp::PackageInfo {
+                        signup_id: info.signup_id,
+                        signup_reason: info.signup_reason,
+                        orb_id: info.orb_id,
+                        operator_id: info.operator_id,
+                        capture_start: info.capture_start,
+                        qr_code: Some("synthetic-qr"),
+                        id_commitment: info.id_commitment,
+                        software_version: Some("synthetic-software"),
+                        orb_country: Some("XX"),
+                        orb_public_key_certificate: Some(b"synthetic-certificate"),
+                        device_public_key,
                     },
-                    &mut rand::rngs::OsRng,
-                    |digest| {
-                        signed_digest = Some(*digest);
-                        Ok::<_, std::convert::Infallible>(b"test-signature".to_vec())
+                    user_public_key: request.user_public_key,
+                    backend_keys: keys.recipients().backend_keys,
+                    biometrics: orb_pcp::BiometricPolicy::Included {
+                        images,
+                        thumbnail_image_id,
+                        left_iris_code_aggregate_image_ids,
+                        right_iris_code_aggregate_image_ids,
+                        face_embeddings,
+                        daugman,
+                        di,
                     },
-                )
-            })
-            .unwrap()
-            .unwrap();
-        let mut plaintext = vec![0; package.tier0.len() - sealedbox::OVERHEAD_LENGTH];
-        sealedbox::decrypt(&package.tier0, &pair, &mut plaintext).unwrap();
-        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(&plaintext[..]));
-        let mut files = Files::new();
-        for entry in archive.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            let name = entry.path().unwrap().to_str().unwrap().to_owned();
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes).unwrap();
-            files.insert(name, bytes);
-        }
+                    migration: None,
+                },
+                &mut rand::rngs::OsRng,
+                |digest| {
+                    signed_digest = Some(*digest);
+                    Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
+                },
+            )
+        })
+        .unwrap()
+        .unwrap();
+        let (files, _) = open(&package, &keys);
         let digest: [u8; 32] = Sha256::digest(&files["hashes.json"]).into();
         assert_eq!(signed_digest, Some(digest));
-        let face: serde_json::Value =
-            serde_json::from_slice(&files["face_embeddings.json"]).unwrap();
-        assert_eq!(face[0]["embedding"], "new-face");
-        let iris: serde_json::Value = serde_json::from_slice(&files["iris_codes.json"]).unwrap();
-        assert_eq!(iris["IRIS_version"], "iris-1");
-        assert_eq!(iris["left_iris_code"], "new-code");
-        assert!(!package.tier1.is_empty() && !package.tier2.is_empty());
-        // Verify actual inner member names produced by the shared builder before adding
-        // the logical archive prefixes required by SourcePcp.
-        for prefix in ["iris", "face", "normalized_iris", "face_ir_and_thermal"] {
-            let encrypted = files.remove(&format!("{prefix}.tar")).unwrap();
-            let mut plain = vec![0; encrypted.len() - sealedbox::OVERHEAD_LENGTH];
-            sealedbox::decrypt(&encrypted, &pair, &mut plain).unwrap();
-            let mut inner = tar::Archive::new(plain.as_slice());
-            for entry in inner.entries().unwrap() {
-                let mut entry = entry.unwrap();
-                let name = entry.path().unwrap().to_str().unwrap().to_owned();
-                let mut bytes = Vec::new();
-                entry.read_to_end(&mut bytes).unwrap();
-                assert!(files.insert(format!("{prefix}/{name}"), bytes).is_none());
-            }
-        }
         let opened = SourcePcp::parse(files).unwrap();
         assert_eq!(opened.version(), expected_version);
+        assert_eq!(
+            opened.info().device_public_key.as_deref(),
+            device_public_key
+        );
         let inputs = opened.pipeline_inputs().unwrap();
         assert_eq!(inputs.left_ir_png, b"synthetic-left-png");
         assert_eq!(inputs.right_ir_png, b"synthetic-right-png");
@@ -577,33 +540,122 @@ fn builder_bridge_carries_fresh_multiframe_normalization_and_rejects_unmapped_ou
             mask_resized: &[8; 8],
         },
     );
-    let mut mapped = migrate(&SourcePcp::parse(files).unwrap(), bio, context()).unwrap();
-    mapped
-        .with_builder_biometrics(|policy| {
-            let orb_pcp::BiometricPolicy::Included { images, .. } = policy else {
+    let source = SourcePcp::parse(files).unwrap();
+    with_build_request(
+        &source,
+        &bio,
+        &context(),
+        OutputKeys::generate().recipients(),
+        |request| {
+            let orb_pcp::BiometricPolicy::Included { images, .. } = &request.biometrics else {
                 panic!("must include")
             };
             let frame = &images.left.as_ref().unwrap().multiframe[0];
-            assert_eq!(frame.image_id, "extra");
+            assert_eq!(frame.image_id, Some("extra"));
             let normalized = frame.normalized.as_ref().unwrap();
             assert_eq!(normalized.image, &[5; 16]);
             assert_eq!(normalized.mask, &[6; 16]);
             assert_eq!(normalized.image_resized, &[7; 8]);
             assert_eq!(normalized.mask_resized, &[8; 8]);
-        })
-        .unwrap();
-    let frame = mapped.biometrics.extra_normalized.remove("extra").unwrap();
-    mapped
-        .biometrics
-        .extra_normalized
-        .insert("unknown".into(), frame);
-    assert_eq!(
-        mapped.with_builder_biometrics(|_| ()).err(),
-        Some(Error::InvalidField("normalized_image_id"))
+        },
+    )
+    .unwrap();
+    // Normalization for an image ID the source does not reference.
+    let mut bio = pipeline();
+    bio.extra_normalized.insert(
+        "unknown".into(),
+        orb_pcp::NormalizedIrisFrame {
+            image: &[5; 16],
+            mask: &[6; 16],
+            image_resized: &[7; 8],
+            mask_resized: &[8; 8],
+        },
     );
     let source = SourcePcp::parse(source_files("2.8")).unwrap();
     assert_eq!(
-        migrate(&source, mapped.biometrics, context()).err(),
+        check_request(&source, &bio, &context()).err(),
         Some(Error::InvalidField("normalized_image_id"))
     );
+}
+
+#[test]
+fn numeric_manifest_versions_are_limited_to_0_2_and_0_3() {
+    for (version, expected) in [
+        ("0.3", Some(SourceVersion::V0_3)),
+        ("0.30", Some(SourceVersion::V0_3)),
+        ("2.8", None),
+        ("2.10", None),
+        ("20e-1", None),
+        ("3", None),
+    ] {
+        let mut files = source_files("2.8");
+        files.insert(
+            "hashes.json".into(),
+            format!("{{\"version\":{version}}}").into_bytes(),
+        );
+        let parsed = SourcePcp::parse(files).map(|source| source.version());
+        match expected {
+            Some(expected) => assert_eq!(parsed, Ok(expected), "{version}"),
+            None => assert_eq!(parsed, Err(Error::UnsupportedVersion), "{version}"),
+        }
+    }
+}
+
+#[test]
+fn multiframe_ids_must_not_collide_with_builder_member_names() {
+    let normalization = || orb_pcp::NormalizedIrisFrame {
+        image: &[5; 16],
+        mask: &[6; 16],
+        image_resized: &[7; 8],
+        mask_resized: &[8; 8],
+    };
+    let at_limit = "x".repeat(100 - "_normalized_image_blinding_factors_resized.bin".len());
+    for (id, normalized, expected) in [
+        (
+            "left_ir",
+            false,
+            Some(Error::InvalidField("duplicate_image_id")),
+        ),
+        (
+            "thumbnail",
+            false,
+            Some(Error::InvalidField("duplicate_image_id")),
+        ),
+        (
+            "left",
+            true,
+            Some(Error::InvalidField("duplicate_image_id")),
+        ),
+        ("left", false, None),
+        (at_limit.as_str(), true, None),
+        (
+            &format!("{at_limit}x"),
+            true,
+            Some(Error::InvalidField("multiframe_image_id")),
+        ),
+        (&format!("{at_limit}x"), false, None),
+    ] {
+        let mut files = source_files("2.8");
+        edit_info(&mut files, |i| {
+            i["left_ir_multiframe_image_ids"] = json!([id])
+        });
+        files.insert(format!("iris/{id}.png"), vec![9]);
+        let mut bio = pipeline();
+        if normalized {
+            bio.extra_normalized.insert(id.to_owned(), normalization());
+        }
+        let source = SourcePcp::parse(files).unwrap();
+        let ctx = context();
+        match expected {
+            Some(error) => assert_eq!(
+                check_request(&source, &bio, &ctx).err(),
+                Some(error),
+                "{id}"
+            ),
+            None => {
+                let new = build_and_open(&source, &bio, &ctx);
+                verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
+            }
+        }
+    }
 }

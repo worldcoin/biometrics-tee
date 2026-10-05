@@ -10,14 +10,15 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# Shared PCP builder.
-orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "2539decfdafc1e8a0093006e05bf9916fa51336d" }
-# Shared capture and migration protobuf definitions.
-orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "9ea51b014ad6f9065ebf93e0580fb3faad8ebc80" }
+base64.workspace = true
+sha2 = "0.10"
+# Shared PCP builder and protobuf definitions, pinned to one revision so both
+# use the same generated types. This revision supports migration builds.
+orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "bfeae5eebd43a7ef7714967e61e28b65210fb2db" }
+orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "bfeae5eebd43a7ef7714967e61e28b65210fb2db" }
 
 [dev-dependencies]
-sha2 = "0.10"
 alkali = { version = "0.3", features = ["use-pkg-config"] }
-rand = "0.8"
 flate2.workspace = true
 tar = "0.4"
+rand = "0.8"

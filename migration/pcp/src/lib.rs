@@ -1,8 +1,9 @@
-//! Map opened legacy PCPs and prepared biometric results into PCP v2.9 content.
+//! Migrate opened legacy PCPs to the shared builder's migration format.
 //!
-//! This is the pure mapping layer, between authenticated extraction and the
-//! shared PCP builder. It does not decrypt, authenticate, run inference, generate
-//! shares, sign or encrypt.
+//! [`SourcePcp::parse`] reads an opened source, [`with_build_request`] turns it and
+//! this run's prepared biometrics into the shared builder's request, and
+//! [`verify_completed_pcp`] checks the opened result. This crate does not decrypt,
+//! authenticate the source, run inference, generate shares, sign or encrypt.
 //! Sensitive types deliberately do not implement `Debug`; never log their JSON.
 
 mod builder;
@@ -12,12 +13,10 @@ mod preservation;
 mod schema;
 mod source;
 
-pub use mapping::{
-    MappedPcp, MigrationContext, PreparedBiometrics, generate_migration_signup_id, migrate,
-};
+pub use builder::{OUTPUT_PCP_VERSION, OutputRecipients, with_build_request};
+pub use mapping::{MigrationContext, PreparedBiometrics, generate_migration_signup_id};
 pub use models::*;
-pub use orb_pcp_defs::v1::Migration;
-pub use preservation::verify_preserved_data;
+pub use preservation::verify_completed_pcp;
 pub use source::{PipelineInputs, SourcePcp, SourceVersion};
 
 /// Decrypted logical artifact paths and bytes, after opening the nested archives.
@@ -41,6 +40,8 @@ pub enum Error {
     InvalidProtobuf(&'static str),
     #[error("invalid or missing field: {0}")]
     InvalidField(&'static str),
+    #[error("source lacks capture metadata the PCP builder requires: {0}")]
+    MissingCaptureField(&'static str),
     #[error("artifact count or size exceeds the mapping limit")]
     SizeLimit,
     #[error("unsafe logical artifact path")]
@@ -51,10 +52,10 @@ pub enum Error {
     UnsupportedArtifact,
     #[error("raw image has no corresponding shared-builder input")]
     UnmappedImage,
-    #[error("prepared biometric metadata does not agree with the payloads")]
-    MetadataMismatch,
     #[error("source PCP preservation check failed: {0}")]
     PreservationMismatch(&'static str),
+    #[error("completed PCP check failed: {0}")]
+    OutputMismatch(&'static str),
 }
 
 fn parse_json<T: serde::de::DeserializeOwned>(
