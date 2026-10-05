@@ -21,15 +21,18 @@ let
       cargoExtraArgs = "--locked --bin ${pname}";
 
       # Crane prepares dependencies for the whole workspace, including di-sandbox's Linux-only
-      # Minijail. Give it Nix's Minijail: the Cargo fallback expects the full upstream
-      # repository around the vendored crate and fails with no makefile.
+      # Minijail and the PCP builder's protoc and libsodium. Give it Nix's Minijail: the Cargo
+      # fallback expects the full upstream repository around the vendored crate and fails with
+      # no makefile.
       nativeBuildInputs = [
         pkgs.clang
         pkgs.pkg-config
+        pkgs.protobuf
       ];
       buildInputs = [
         pkgs.minijail
         pkgs.libcap
+        pkgs.libsodium
       ];
       LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
