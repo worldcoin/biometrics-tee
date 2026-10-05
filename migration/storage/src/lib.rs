@@ -1,5 +1,5 @@
 //! The migration's shared storage: the PCP bucket and the job table, with the row and key
-//! layout the Migration API and the host both use, so neither can drift from the other.
+//! schema the Migration API and the host both use, so neither can drift from the other.
 
 #![deny(
     clippy::all,
@@ -11,10 +11,9 @@
 
 mod bucket;
 mod error;
-pub mod layout;
+pub mod schema;
 mod table;
 
 pub use bucket::PcpBucket;
 pub use error::StorageError;
-pub use layout::{Reason, Status};
-pub use table::JobTable;
+pub use table::{JobRecord, JobTable, NewJob};

@@ -1,35 +1,29 @@
 use std::{net::IpAddr, sync::Arc};
 
-use crate::{
-    enclave::EnclaveClient,
-    readiness::Readiness,
-    store::{BlobStore, JobStore},
-};
+use crate::{enclave::EnclaveClient, queue::JobQueue, readiness::Readiness};
 
 /// Dependencies shared by API request handlers.
 #[derive(Clone)]
 pub struct AppState {
     enclave_client: Arc<dyn EnclaveClient>,
     readiness: Arc<Readiness>,
+    queue: Arc<JobQueue>,
     host_ip: IpAddr,
 }
 
 impl AppState {
-    /// Creates API state from the enclave client, storage and this pod's IP.
+    /// Creates API state; `queue` is the one the worker drains.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         enclave_client: Arc<dyn EnclaveClient>,
-        blob_store: Arc<dyn BlobStore>,
-        job_store: Arc<dyn JobStore>,
+        readiness: Arc<Readiness>,
+        queue: Arc<JobQueue>,
         host_ip: IpAddr,
     ) -> Self {
         Self {
-            readiness: Arc::new(Readiness::new(
-                Arc::clone(&enclave_client),
-                blob_store,
-                job_store,
-            )),
             enclave_client,
+            readiness,
+            queue,
             host_ip,
         }
     }
@@ -44,6 +38,12 @@ impl AppState {
     #[must_use]
     pub fn readiness(&self) -> &Readiness {
         &self.readiness
+    }
+
+    /// The job queue the worker drains.
+    #[must_use]
+    pub fn queue(&self) -> &JobQueue {
+        &self.queue
     }
 
     /// This pod's IP, reported with the attestation.

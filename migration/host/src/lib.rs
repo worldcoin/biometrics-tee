@@ -14,11 +14,14 @@ mod app_state;
 mod test_support;
 
 pub mod config;
+pub mod drain;
 pub mod enclave;
 pub mod error;
+pub mod queue;
 pub mod readiness;
 pub mod routes;
 pub mod server;
 pub mod store;
+pub mod worker;
 
 pub use app_state::AppState;

@@ -5,17 +5,18 @@ use thiserror::Error;
 
 /// S3 rejects presigned URLs that outlive seven days.
 const MAX_PRESIGNED_URL_TTL_SECS: u64 = 7 * 24 * 60 * 60;
-const DEFAULT_PRESIGNED_URL_TTL_SECS: &str = "900";
+const DEFAULT_PRESIGNED_URL_TTL_SECS: &str = "300";
 
 #[derive(Debug, Parser)]
 #[command(name = "migration-api")]
 pub struct Config {
     #[arg(long, env = "HTTP_ADDR", default_value = "0.0.0.0:8080")]
     pub http_addr: SocketAddr,
+    /// Listener for cluster-internal routes; must never be exposed through the gateway.
+    #[arg(long, env = "INTERNAL_HTTP_ADDR", default_value = "0.0.0.0:8081")]
+    pub internal_http_addr: SocketAddr,
     #[arg(long, env = "DYNAMODB_TABLE_NAME")]
     pub dynamodb_table_name: String,
-    #[arg(long, env = "SQS_QUEUE_URL")]
-    pub sqs_queue_url: String,
     #[arg(long, env = "PCP_BUCKET")]
     pub pcp_bucket: String,
     #[arg(
@@ -25,13 +26,17 @@ pub struct Config {
         value_parser = parse_presigned_url_ttl
     )]
     pub presigned_url_ttl: Duration,
+    /// How long after init migrate is accepted (Tᵤ); bounds how long an admitted job stays
+    /// invisible to admission. Must cover the upload URL's validity.
+    #[arg(long, env = "UPLOAD_WINDOW_SECS", default_value_t = 420)]
+    pub upload_window_secs: u64,
+    /// How long after migrate an unfinished job reads as `failed (timeout)`; must cover a full
+    /// host queue, (queue cap + 1) times the job time.
+    #[arg(long, env = "JOB_DEADLINE_SECS", default_value_t = 600)]
+    pub job_deadline_secs: u64,
     /// LocalStack and other S3-compatible endpoints only serve path-style addressing.
     #[arg(long, env = "S3_FORCE_PATH_STYLE", default_value_t = false, action = clap::ArgAction::Set)]
     pub s3_force_path_style: bool,
-    #[arg(long, env = "ENCLAVE_ID")]
-    pub enclave_id: String,
-    #[arg(long, env = "STUB_ATTESTATION", default_value_t = false, action = clap::ArgAction::Set)]
-    pub stub_attestation: bool,
     #[arg(long, env = "PROOF_VERIFICATION_HOST")]
     pub proof_verification_host: String,
     #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 2)]
@@ -46,6 +51,19 @@ pub struct Config {
     pub proof_jwt_kms_key_id: String,
     #[arg(long, env = "PROOF_JWT_SUBJECT", default_value = "tee-migration")]
     pub proof_jwt_subject: String,
+    /// The hosts' headless Service; it resolves to every ready host pod.
+    #[arg(long, env = "HOST_SERVICE")]
+    pub host_service: String,
+    /// The port hosts serve their internal API on.
+    #[arg(long, env = "HOST_PORT", default_value_t = 8000)]
+    pub host_port: u16,
+    /// How often the fleet's load is polled.
+    #[arg(long, env = "CAPACITY_POLL_INTERVAL_SECS", default_value_t = 5)]
+    pub capacity_poll_interval_secs: u64,
+    /// A host takes new jobs while its queue is below this share of its capacity; the rest is
+    /// headroom for jobs admitted but not yet reported.
+    #[arg(long, env = "ADMISSION_THRESHOLD_PERCENT", default_value_t = 70)]
+    pub admission_threshold_percent: usize,
 }
 
 fn parse_presigned_url_ttl(raw: &str) -> Result<Duration, std::num::ParseIntError> {
@@ -62,27 +80,29 @@ pub enum ConfigError {
         "DYNAMODB_TABLE_NAME must be 3-255 ASCII letters, digits, underscores, hyphens, or dots"
     )]
     InvalidDynamodbTableName,
-    #[error("SQS_QUEUE_URL is required")]
-    MissingSqsQueueUrl,
-    #[error("SQS_QUEUE_URL must be an HTTP(S) URL with a queue path")]
-    InvalidSqsQueueUrl,
     #[error("PCP_BUCKET is required and must be 3-63 lowercase letters, digits, hyphens, or dots")]
     InvalidPcpBucket,
     #[error(
         "PRESIGNED_URL_TTL_SECS must be a positive number of seconds, at most {MAX_PRESIGNED_URL_TTL_SECS}"
     )]
     InvalidPresignedUrlTtl,
-    #[error(
-        "the migration enclave cannot attest yet; set STUB_ATTESTATION=true to serve an empty \
-         attestation outside production"
-    )]
-    AttestationUnavailable,
+    #[error("UPLOAD_WINDOW_SECS must be at least PRESIGNED_URL_TTL_SECS")]
+    InvalidUploadWindow,
+    #[error("JOB_DEADLINE_SECS must be at least 1")]
+    InvalidJobDeadline,
+
     #[error("PROOF_VERIFICATION_HOST is required")]
     MissingProofVerificationHost,
     #[error("PROOF_VERIFICATION_HOST must be an HTTP(S) URL")]
     InvalidProofVerificationHost,
     #[error("PROOF_JWT_KMS_KEY_ID is required")]
     MissingProofJwtKmsKeyId,
+    #[error("HOST_SERVICE is required")]
+    MissingHostService,
+    #[error("CAPACITY_POLL_INTERVAL_SECS must be at least 1")]
+    InvalidCapacityPollInterval,
+    #[error("ADMISSION_THRESHOLD_PERCENT must be between 1 and 100")]
+    InvalidAdmissionThreshold,
 }
 
 impl Config {
@@ -99,20 +119,6 @@ impl Config {
         {
             return Err(ConfigError::InvalidDynamodbTableName);
         }
-        if config.sqs_queue_url.is_empty() {
-            return Err(ConfigError::MissingSqsQueueUrl);
-        }
-        let queue_uri: axum::http::Uri = config
-            .sqs_queue_url
-            .parse()
-            .map_err(|_| ConfigError::InvalidSqsQueueUrl)?;
-        if !matches!(queue_uri.scheme_str(), Some("http" | "https"))
-            || queue_uri.authority().is_none()
-            || queue_uri.path() == "/"
-        {
-            return Err(ConfigError::InvalidSqsQueueUrl);
-        }
-
         if config.pcp_bucket.trim().is_empty() {
             return Err(ConfigError::InvalidPcpBucket);
         }
@@ -128,8 +134,11 @@ impl Config {
             return Err(ConfigError::InvalidPresignedUrlTtl);
         }
 
-        if !config.stub_attestation {
-            return Err(ConfigError::AttestationUnavailable);
+        if config.upload_window_secs < config.presigned_url_ttl.as_secs() {
+            return Err(ConfigError::InvalidUploadWindow);
+        }
+        if config.job_deadline_secs == 0 {
+            return Err(ConfigError::InvalidJobDeadline);
         }
 
         let host = config.proof_verification_host.trim();
@@ -146,6 +155,15 @@ impl Config {
         }
         if config.proof_jwt_kms_key_id.trim().is_empty() {
             return Err(ConfigError::MissingProofJwtKmsKeyId);
+        }
+        if config.host_service.trim().is_empty() {
+            return Err(ConfigError::MissingHostService);
+        }
+        if config.capacity_poll_interval_secs == 0 {
+            return Err(ConfigError::InvalidCapacityPollInterval);
+        }
+        if !(1..=100).contains(&config.admission_threshold_percent) {
+            return Err(ConfigError::InvalidAdmissionThreshold);
         }
 
         Ok(config)

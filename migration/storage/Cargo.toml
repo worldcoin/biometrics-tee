@@ -10,6 +10,9 @@ publish.workspace = true
 aws-sdk-dynamodb.workspace = true
 aws-sdk-s3.workspace = true
 bytes.workspace = true
+di-migration-primitives.workspace = true
+hex.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 

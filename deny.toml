@@ -48,10 +48,25 @@ exceptions = [
     { allow = ["Zlib"], name = "zlib-rs", version = "0.6.8" },
 ]
 
+# Minijail's Rust crates inherit the repository's BSD license but omit Cargo metadata.
+[[licenses.clarify]]
+name = "minijail"
+version = "0.2.3"
+expression = "BSD-3-Clause"
+license-files = [{ path = "../../LICENSE", hash = 0x51549d2b }]
+
+[[licenses.clarify]]
+name = "minijail-sys"
+version = "0.0.14"
+expression = "BSD-3-Clause"
+license-files = [{ path = "../../LICENSE", hash = 0x51549d2b }]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# Git dependencies: Minijail, and the shared PCP builder with its Hyrax commitments.
 allow-git = [
+    "https://github.com/google/minijail",
     "https://github.com/worldcoin/orb-software",
     "https://github.com/worldcoin/hyrax-pcs-commit.git",
 ]

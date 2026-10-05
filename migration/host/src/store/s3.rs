@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use di_migration_primitives::JobId;
 use di_migration_storage::PcpBucket;
 
 use super::{BlobStore, StoreError};
@@ -32,7 +33,7 @@ impl BlobStore for S3BlobStore {
         self.bucket.get_pcp(object_key, self.max_pcp_bytes).await
     }
 
-    async fn put_result(&self, job_id: &str, blob: Vec<u8>) -> Result<String, StoreError> {
+    async fn put_result(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError> {
         self.bucket.put_result(job_id, blob).await
     }
 }

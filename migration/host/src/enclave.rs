@@ -1,11 +1,13 @@
 //! Client boundary between the host and enclave.
 
-use std::{fmt::Write as _, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use di_migration_enclave_types::{
-    self as enclave_types, GetEncryptionKeyRequest, HealthRequest, KeyAttestation,
+    self as enclave_types, GetEncryptionKeyRequest, HealthRequest, KeyAttestation, MigrateRequest,
+    MigrateResponse,
 };
+use di_migration_primitives::EnclaveId;
 use pontifex::{Request, client::ConnectionDetails};
 use tokio::time::timeout;
 
@@ -31,20 +33,26 @@ pub trait EnclaveClient: Send + Sync {
 
     /// Returns this boot's channel key and its attestation.
     async fn encryption_key(&self) -> Result<KeyAttestation, Error>;
+
+    /// Migrates one sealed PCP.
+    async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error>;
 }
 
 /// Pontifex-backed enclave client.
 #[derive(Debug, Clone, Copy)]
 pub struct PontifexEnclaveClient {
     connection: ConnectionDetails,
+    migrate_timeout: Duration,
 }
 
 impl PontifexEnclaveClient {
-    /// Creates a client for the provided enclave CID and Pontifex port.
+    /// Creates a client for the provided enclave CID and Pontifex port; a migration that runs
+    /// past `migrate_timeout` fails as a timeout.
     #[must_use]
-    pub const fn new(cid: u32, port: u32) -> Self {
+    pub const fn new(cid: u32, port: u32, migrate_timeout: Duration) -> Self {
         Self {
             connection: ConnectionDetails::new(cid, port),
+            migrate_timeout,
         }
     }
 
@@ -71,21 +79,20 @@ impl EnclaveClient for PontifexEnclaveClient {
         self.call(GetEncryptionKeyRequest, CONTROL_REQUEST_TIMEOUT)
             .await
     }
+
+    async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error> {
+        self.call(request, self.migrate_timeout).await
+    }
 }
 
-/// The boot's identity: hex of the channel key's Pontifex commitment, which the attestation
-/// document carries, so a restarted enclave gets a new one.
+/// The boot's identity: the channel key's Pontifex commitment, which the attestation document
+/// carries, so a restarted enclave gets a new one.
 ///
 /// Not the document's `module_id`: a job is bound to the key its PCP was sealed to, and the
 /// commitment changes exactly with that key and is checkable against the attested `public_key`.
 #[must_use]
-pub fn enclave_id(public_key: &[u8]) -> String {
-    pontifex::channel::public_key_commitment(public_key)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
+pub fn enclave_id(public_key: &[u8]) -> EnclaveId {
+    EnclaveId::from_commitment(pontifex::channel::public_key_commitment(public_key))
 }
 
 #[cfg(test)]
@@ -96,7 +103,7 @@ mod tests {
     #[test]
     fn the_enclave_id_is_the_hex_commitment_of_the_key() {
         assert_eq!(
-            enclave_id(b"key"),
+            enclave_id(b"key").as_str(),
             "77634addf9ae031e3d621410d643d1f13b7d426876627b53d89ea0f7bba71cfb"
         );
     }

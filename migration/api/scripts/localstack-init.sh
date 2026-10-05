@@ -10,7 +10,6 @@ awslocal dynamodb create-table \
   --key-schema AttributeName=migration_id,KeyType=HASH \
   --billing-mode PAY_PER_REQUEST
 
-awslocal sqs create-queue --queue-name di-migration
 
 key_id="$(awslocal kms create-key \
   --key-spec ECC_NIST_P256 \

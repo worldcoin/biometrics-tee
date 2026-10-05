@@ -6,19 +6,9 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use di_migration_primitives::host_api::{ErrorBody, ErrorEnvelope, codes};
 
 use crate::enclave;
-
-/// Machine-readable error codes returned to the API.
-pub mod codes {
-    /// The enclave did not answer in time.
-    pub const ENCLAVE_TIMEOUT: &str = "enclave_timeout";
-    /// The enclave could not be reached.
-    pub const ENCLAVE_UNREACHABLE: &str = "enclave_unreachable";
-    /// An unexpected failure; detail stays in the log.
-    pub const INTERNAL_ERROR: &str = "internal_error";
-}
 
 /// An API failure, with the status and body to return for it.
 #[derive(Debug)]
@@ -31,20 +21,6 @@ pub struct ApiError {
     dependency: Option<&'static str>,
     /// Log-only context; never serialized, since it may name internals.
     detail: Option<String>,
-}
-
-/// The JSON body of every error response.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ErrorEnvelope {
-    allow_retry: bool,
-    error: ErrorBody,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    code: &'static str,
-    message: &'static str,
 }
 
 impl ApiError {
@@ -85,6 +61,40 @@ impl ApiError {
     #[must_use]
     pub const fn allow_retry(&self) -> bool {
         self.allow_retry
+    }
+
+    /// A job request that failed validation; resending it unchanged cannot succeed.
+    #[must_use]
+    pub fn invalid_job(detail: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            codes::INVALID_JOB,
+            "The job request is invalid",
+            false,
+        )
+        .with_detail(detail)
+    }
+
+    /// A job sealed to another boot's key; the PCP can never be opened here, so the app restarts.
+    #[must_use]
+    pub const fn enclave_changed() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            codes::ENCLAVE_CHANGED,
+            "The enclave restarted since the job was assigned",
+            false,
+        )
+    }
+
+    /// The safety cap was hit. Not retried: the job is pinned here and the API fails it.
+    #[must_use]
+    pub const fn host_busy() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            codes::HOST_BUSY,
+            "The host is at capacity",
+            false,
+        )
     }
 
     /// Maps an enclave failure on a control call such as the attestation read.
@@ -137,8 +147,8 @@ impl IntoResponse for ApiError {
         let body = ErrorEnvelope {
             allow_retry: self.allow_retry,
             error: ErrorBody {
-                code: self.code,
-                message: self.message,
+                code: self.code.to_owned(),
+                message: self.message.to_owned(),
             },
         };
         (self.status, Json(body)).into_response()
@@ -150,7 +160,9 @@ mod tests {
     use axum::http::StatusCode;
     use di_migration_enclave_types as enclave_types;
 
-    use super::{ApiError, codes};
+    use di_migration_primitives::host_api::codes;
+
+    use super::ApiError;
     use crate::enclave;
 
     /// Pins the enclave matrix; nothing else fails if one arm is changed alone.

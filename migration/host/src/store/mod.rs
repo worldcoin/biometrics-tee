@@ -6,7 +6,7 @@ mod s3;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use di_migration_storage::Reason;
+use di_migration_primitives::{JobId, Reason};
 pub use di_migration_storage::StorageError as StoreError;
 
 pub use dynamo::DynamoJobStore;
@@ -22,7 +22,7 @@ pub trait BlobStore: Send + Sync {
     async fn get_pcp(&self, object_key: &str) -> Result<Bytes, StoreError>;
 
     /// Writes the migrated PCP once; a result already there is kept. Returns its key.
-    async fn put_result(&self, job_id: &str, blob: Vec<u8>) -> Result<String, StoreError>;
+    async fn put_result(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError>;
 }
 
 /// The job rows the host finishes.
@@ -32,8 +32,8 @@ pub trait JobStore: Send + Sync {
     async fn check_ready(&self) -> Result<(), StoreError>;
 
     /// Marks a `migrating` job `migrated`.
-    async fn mark_migrated(&self, job_id: &str, result_key: &str) -> Result<(), StoreError>;
+    async fn mark_migrated(&self, job_id: &JobId, result_key: &str) -> Result<(), StoreError>;
 
     /// Marks a `migrating` job `failed`.
-    async fn mark_failed(&self, job_id: &str, reason: Reason) -> Result<(), StoreError>;
+    async fn mark_failed(&self, job_id: &JobId, reason: Reason) -> Result<(), StoreError>;
 }
