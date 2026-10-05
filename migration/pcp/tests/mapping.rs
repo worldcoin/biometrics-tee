@@ -107,14 +107,11 @@ fn missing_primary_and_thumbnail_ids_stay_absent_in_the_new_pcp() {
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
     verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
-    let info: Value = serde_json::from_slice(&new.files["info.json"]).unwrap();
-    for field in [
-        "left_ir_image_id",
-        "right_ir_image_id",
-        "thumbnail_image_id",
-    ] {
-        assert!(info.get(field).is_none(), "{field}");
-    }
+    // Read through the shared type, as consumers do.
+    let info: orb_pcp_defs::v1::Info = serde_json::from_slice(&new.files["info.json"]).unwrap();
+    assert_eq!(info.left_ir_image_id, None);
+    assert_eq!(info.right_ir_image_id, None);
+    assert_eq!(info.thumbnail_image_id, None);
 }
 
 #[test]

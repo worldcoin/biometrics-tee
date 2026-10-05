@@ -67,6 +67,14 @@ fn round_trip(version: &str, optional: bool) {
         }
     );
     assert_eq!(
+        info.qr_code.as_deref(),
+        if version == "0.3" {
+            None
+        } else {
+            Some("synthetic-qr")
+        }
+    );
+    assert_eq!(
         info.orb_public_key_certificate.as_deref(),
         if version == "0.3" {
             None
