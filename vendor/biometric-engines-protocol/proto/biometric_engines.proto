@@ -1,0 +1,51 @@
+syntax = "proto3";
+package biometric_engines.v1;
+
+import "face.proto";
+
+message Ready { uint32 protocol_version = 1; }
+
+message Request {
+  uint32 protocol_version = 1;
+  // Must be non-zero; zero is reserved for replies to undecodable requests.
+  uint64 request_id = 2;
+  oneof operation {
+    biometric_engines.face.v1.DeepFaceRequest deep_face = 3;
+    biometric_engines.face.v1.GrayBadgeRequest gray_badge = 4;
+    biometric_engines.face.v1.EmbeddingRequest embedding = 5;
+  }
+}
+
+message Response {
+  uint32 protocol_version = 1;
+  uint64 request_id = 2;
+  oneof outcome {
+    Failure failure = 3;
+    biometric_engines.face.v1.DeepFaceResult deep_face = 4;
+    biometric_engines.face.v1.GrayBadgeResult gray_badge = 5;
+    biometric_engines.face.v1.EmbeddingResult embedding = 6;
+  }
+}
+
+// Failures can occurr either on the protocol layer or during the processing
+// steps which are domain-specific.
+message Failure {
+  oneof kind {
+    ProtocolFailure protocol = 1;
+    biometric_engines.face.v1.Failure face = 2;
+  }
+}
+
+message ProtocolFailure {
+  oneof reason {
+    EmptyReason malformed_message = 1;
+    ByteLimitExceeded message_too_large = 2;
+    EmptyReason unsupported_version = 3;
+    // Missing operation or an operation unknown to this schema.
+    EmptyReason invalid_operation = 4;
+  }
+}
+
+message EmptyReason {}
+
+message ByteLimitExceeded { uint64 limit_bytes = 1; }

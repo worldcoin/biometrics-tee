@@ -1,0 +1,224 @@
+/**
+ * Request structures corresponding to specific product-flows are defined here.
+ *
+ * Each operation request maps to a specific result structure. The set of compatible
+ * image sources is shared between them to allow re-use of similar image handling
+ * across different operations.
+ */
+syntax = "proto3";
+package biometric_engines.face.v1;
+
+/**
+ * DeepFace request that performs a three-way match between provided images.
+ *
+ * The images involved in a DeepFace are playing distinct roles:
+ * - Credential image: Strongly trusted image that is the source of a credential of the user (e.g. Proof of Human).
+ * - Live image: Captured by the authenticator in a live session at the moment of responding to the challenge.
+ * - Challenge image: Image from any source that is challenged to be matched against the other two images.
+ *
+ * The matching scheme is a three-way all-vs-all comparison:
+ * - Credential image compared against live image
+ * - Credential image compared against challenge image
+ * - Live image compared against challenge image
+ */
+message DeepFaceRequest {
+  FaceImage credential = 1;
+  FaceImage live = 2;
+  FaceImage challenge = 3;
+}
+
+// Similarity scores produced by the three comparisons in the three-way matching scheme.
+message DeepFaceResult {
+  optional double similarity_credential_live = 1;
+  optional double similarity_credential_challenge = 2;
+  optional double similarity_live_challenge = 3;
+  optional string debug_report = 4;
+}
+
+/*
+ * GrayBadge request that performs a single match between provided images.
+ *
+ * The images involved in a GrayBadge request are the same as those of DeepFace, minus the credential image.
+ * The matching also simplifies to a single match between the live and challenge images.
+ */
+message GrayBadgeRequest {
+  FaceImage live = 1;
+  FaceImage challenge = 2;
+}
+
+/// Similarity score from match.
+message GrayBadgeResult {
+  optional double similarity_live_challenge = 1;
+  optional string debug_report = 2;
+}
+
+/*
+ * Embedding generation request for the provided image.
+ *
+ * The request takes a singular image as input, performs QA and spoof-check processing, and results in a face-embedding
+ * to be returned.
+ */
+message EmbeddingRequest {
+  FaceImage image = 1;
+}
+
+message EmbeddingResult {
+  string vector = 1;
+  string type = 2;
+  string version = 3;
+  string inference_backend = 4;
+  optional string debug_report = 5;
+}
+
+
+/*
+ * Data model types used in request structures.
+ */
+
+message FaceImage {
+  oneof source {
+    bytes orb = 1;
+    bytes vanilla_selfie = 2;
+    LightGuard light_guard = 3;
+    bytes rtms = 4;
+  }
+}
+
+message LightGuard {
+  bytes illuminated = 1;
+  bytes unilluminated = 2;
+  LightGuardMatchingFrame matching_frame = 3;
+}
+
+enum LightGuardMatchingFrame {
+  LIGHT_GUARD_MATCHING_FRAME_UNSPECIFIED = 0;
+  LIGHT_GUARD_MATCHING_FRAME_ILLUMINATED = 1;
+  LIGHT_GUARD_MATCHING_FRAME_UNILLUMINATED = 2;
+}
+
+
+/*
+ * Failure information in case of request processing failures.
+ *
+ * The failures must convey information to the requesting client in order to provide appropriate feedback.
+ */
+message Failure {
+  FailureCode code = 1;
+  // The location indicates at what point in processing the failure occured.
+  // - Failure to process an image, or an image found to be of low quality etc. will use the `ImageRole` message.
+  // - Failure to perform a comparison will use the `ComparisonRole` message to indicate which of possibly multiple
+  //  comparisons failed.
+  oneof location {
+    ImageRole image = 2;
+    ComparisonRole comparison = 3;
+  }
+  // Required exactly when code is INVALID_REQUEST.
+  InvalidRequestReason invalid_request_reason = 4;
+  // Required exactly when code is VALIDATION_FAILED, with an image location.
+  ValidationFailure validation_failure = 5;
+  optional string debug_report = 6;
+}
+
+enum FailureCode {
+  FAILURE_CODE_UNSPECIFIED = 0;
+  FAILURE_CODE_INVALID_REQUEST = 1;
+  FAILURE_CODE_INVALID_IMAGE = 2;
+  FAILURE_CODE_TEMPLATE_FAILED = 3;
+  FAILURE_CODE_MATCHING_FAILED = 4;
+  FAILURE_CODE_INTERNAL = 5;
+  FAILURE_CODE_VALIDATION_FAILED = 6;
+}
+
+enum ImageRole {
+  IMAGE_ROLE_UNSPECIFIED = 0;
+  IMAGE_ROLE_CREDENTIAL = 1;
+  IMAGE_ROLE_LIVE = 2;
+  IMAGE_ROLE_CHALLENGE = 3;
+  IMAGE_ROLE_EMBEDDING_INPUT = 4;
+}
+
+enum ComparisonRole {
+  COMPARISON_ROLE_UNSPECIFIED = 0;
+  COMPARISON_ROLE_CREDENTIAL_LIVE = 1;
+  COMPARISON_ROLE_CREDENTIAL_CHALLENGE = 2;
+  COMPARISON_ROLE_LIVE_CHALLENGE = 3;
+}
+
+message ValidationFailure {
+  ValidationReason reason = 1;
+  ValidationTarget target = 2;
+}
+
+enum ValidationTarget {
+  VALIDATION_TARGET_UNSPECIFIED = 0;
+  VALIDATION_TARGET_IMAGE = 1;
+  VALIDATION_TARGET_ILLUMINATED_FRAME = 2;
+  VALIDATION_TARGET_UNILLUMINATED_FRAME = 3;
+  VALIDATION_TARGET_LIGHT_GUARD_PAIR = 4;
+}
+
+/* Reasons for why an image can be found invalid for face matching.
+ *
+ * These errors originate in the face processing step and are carried as failure information such that
+ * request generators can use them for feedback or specific code path selectors.
+ */
+enum ValidationReason {
+  VALIDATION_REASON_UNSPECIFIED = 0;
+  VALIDATION_REASON_TOO_MANY_FACES = 1;
+  VALIDATION_REASON_IMAGE_TOO_DARK = 2;
+  VALIDATION_REASON_IMAGE_TOO_BRIGHT = 3;
+  VALIDATION_REASON_ILLUMINATION_VARIANCE = 4;
+  VALIDATION_REASON_FACE_TOO_SMALL = 5;
+  VALIDATION_REASON_FACE_TOO_BIG = 6;
+  VALIDATION_REASON_FACE_RESOLUTION_TOO_LOW = 7;
+  VALIDATION_REASON_FACE_TOO_HIGH = 8;
+  VALIDATION_REASON_FACE_TOO_LOW = 9;
+  VALIDATION_REASON_FACE_TOO_FAR_LEFT = 10;
+  VALIDATION_REASON_FACE_TOO_FAR_RIGHT = 11;
+  VALIDATION_REASON_HEAD_POSE_YAW = 12;
+  VALIDATION_REASON_HEAD_POSE_PITCH_TOO_HIGH = 13;
+  VALIDATION_REASON_HEAD_POSE_PITCH_TOO_LOW = 14;
+  VALIDATION_REASON_HEAD_POSE_ROLL = 15;
+  VALIDATION_REASON_LOW_QUALITY = 16;
+  VALIDATION_REASON_SUNGLASSES_OCCLUSION_DETECTED = 17;
+  VALIDATION_REASON_GLASSES_OCCLUSION_DETECTED = 18;
+  VALIDATION_REASON_MASK_OCCLUSION_DETECTED = 19;
+  VALIDATION_REASON_OTHER_OCCLUSION_DETECTED = 20;
+  VALIDATION_REASON_HAIR_OCCLUSION_DETECTED = 21;
+  VALIDATION_REASON_FAS_OCCLUSION_DETECTED = 22;
+  VALIDATION_REASON_SPOOF_DETECTED = 23;
+  VALIDATION_REASON_DEPTH_SPOOF_DETECTED = 24;
+  VALIDATION_REASON_THERMAL_SPOOF_DETECTED = 25;
+  VALIDATION_REASON_AGE_BELOW_THRESHOLD = 26;
+  VALIDATION_REASON_NO_FACE_DETECTED = 27;
+  VALIDATION_REASON_EYES_CLOSED = 28;
+  VALIDATION_REASON_NON_NEUTRAL_EXPRESSION = 29;
+  VALIDATION_REASON_LANDMARKS_ALIGNMENT = 30;
+  VALIDATION_REASON_FACE_OVEREXPOSED = 31;
+  VALIDATION_REASON_FACE_UNDEREXPOSED = 32;
+  VALIDATION_REASON_SEGMENTATION_OCCLUSION_PROPORTION = 33;
+  VALIDATION_REASON_BRIGHT_ARTIFACTS = 34;
+  VALIDATION_REASON_LIGHT_GUARD_SCORE_TOO_LOW = 35;
+  VALIDATION_REASON_LOW_CONTRAST = 36;
+  VALIDATION_REASON_MESH_EXPRESSION_SCORE = 37;
+  VALIDATION_REASON_HIGH_COLOR_DISTORTION = 38;
+  VALIDATION_REASON_UNEVEN_LIGHTING = 39;
+  VALIDATION_REASON_BLURRY_FACE = 40;
+  VALIDATION_REASON_NOISY_THERMAL_IMAGE = 41;
+}
+
+
+message InvalidRequestReason {
+  oneof reason {
+    EmptyReason missing_image = 1;
+    EmptyReason missing_source = 2;
+    EmptyReason invalid_matching_frame = 3;
+    EmptyReason empty_image = 4;
+    ByteLimitExceeded image_too_large = 5;
+    ByteLimitExceeded total_images_too_large = 6;
+  }
+}
+
+message EmptyReason {}
+
+message ByteLimitExceeded { uint64 limit_bytes = 1; }
