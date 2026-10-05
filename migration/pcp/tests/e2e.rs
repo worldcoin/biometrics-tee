@@ -19,6 +19,20 @@ fn json_file(files: &Files, name: &str) -> Value {
     serde_json::from_slice(&files[name]).unwrap()
 }
 
+/// Migrate one synthetic source package end to end and check the result.
+///
+/// Takes the `version` profile from `profiles.rs`. With `optional` set, it also
+/// includes the optional files that version may carry: iris code shares for 2.0,
+/// face IR and thermal images for 2.5 and later. It parses the source, builds a
+/// signed and encrypted package with the shared builder, then decrypts and
+/// reopens it. The final check runs first, against the original source. The
+/// assertions after it cover what that check does not:
+/// - the signature callback received the digest of the new `hashes.json`;
+/// - each version's expected capture values, written out as literals;
+/// - every `migration.pb` field;
+/// - the fresh face, iris and DI outputs the builder encoded.
+///
+/// Inference outputs are the fixed synthetic values from `pipeline()`.
 fn round_trip(version: &str, optional: bool) {
     let old = legacy_profile(version, optional);
     let source = SourcePcp::parse(old.clone()).unwrap();
