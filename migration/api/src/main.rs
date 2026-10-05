@@ -54,6 +54,10 @@ struct AppState {
     presigned_url_ttl: Duration,
     /// How long after init migrate is accepted.
     upload_window: Duration,
+    /// How long after migrate an unfinished job counts as timed out.
+    job_deadline: Duration,
+    /// The port every host serves its internal API on.
+    host_port: u16,
     verifier: Arc<proof::Verifier>,
     fleet: Arc<Fleet>,
     hosts: HostClient,
@@ -100,6 +104,8 @@ async fn main() -> anyhow::Result<()> {
         bucket,
         presigned_url_ttl: config.presigned_url_ttl,
         upload_window: Duration::from_secs(config.upload_window_secs),
+        job_deadline: Duration::from_secs(config.job_deadline_secs),
+        host_port: config.host_port,
         verifier: Arc::new(verifier),
         fleet,
         hosts,
@@ -334,6 +340,8 @@ mod tests {
             bucket: unavailable_bucket(),
             presigned_url_ttl: Duration::from_secs(300),
             upload_window: Duration::from_secs(420),
+            job_deadline: Duration::from_secs(600),
+            host_port: 9,
             verifier: verifier(proof::Verdict::Accepted),
             fleet: fleet(Vec::new()),
             hosts: HostClient::new().unwrap(),
@@ -690,5 +698,427 @@ mod tests {
             self.seen.lock().unwrap().push((request, self.result));
             self.result
         }
+    }
+
+    /// The stored job the fake table serves, and every write it receives.
+    #[derive(Default)]
+    struct Table {
+        job: Option<serde_json::Value>,
+        writes: Vec<serde_json::Value>,
+    }
+
+    const JOB_ID: &str = "3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a";
+
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// A job row as `DynamoDB` returns it.
+    fn job_row(
+        status: &str,
+        created_at: u64,
+        extra: &[(&str, serde_json::Value)],
+    ) -> serde_json::Value {
+        let mut row = serde_json::json!({
+            "id": {"S": format!("job#{JOB_ID}")},
+            "status": {"S": status},
+            "device_public_key": {"S": "device-key"},
+            "host_ip": {"S": "127.0.0.1"},
+            "enclave_id": {"S": enclave_id().as_str()},
+            "created_at": {"N": created_at.to_string()},
+        });
+        for (key, value) in extra {
+            row[*key] = value.clone();
+        }
+        row
+    }
+
+    /// `DynamoDB` serving the `sub`'s lock and `table.job`, and accepting every transaction.
+    async fn job_dynamodb(table: Arc<Mutex<Table>>) -> SocketAddr {
+        serve(Router::new().route(
+            "/",
+            post(
+                move |headers: axum::http::HeaderMap, body: String| async move {
+                    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    let target = headers["x-amz-target"].to_str().unwrap().to_owned();
+                    let mut table = table.lock().unwrap();
+                    let reply = if target.ends_with("GetItem") {
+                        let id = body["Key"]["id"]["S"].as_str().unwrap();
+                        match (&table.job, id.starts_with("sub#")) {
+                            (None, _) => serde_json::json!({}),
+                            (Some(_), true) => serde_json::json!({"Item": {
+                                "id": {"S": id},
+                                "job_id": {"S": JOB_ID},
+                                "active_until": {"N": "0"},
+                            }}),
+                            (Some(job), false) => serde_json::json!({"Item": job}),
+                        }
+                    } else {
+                        table.writes.push(body);
+                        serde_json::json!({})
+                    };
+                    ([(header::CONTENT_TYPE, AMZ_JSON)], reply.to_string())
+                },
+            ),
+        ))
+        .await
+    }
+
+    /// S3 answering every `HEAD` with `status`.
+    async fn s3(status: StatusCode) -> SocketAddr {
+        serve(Router::new().fallback(move || async move { status })).await
+    }
+
+    fn bucket(endpoint: SocketAddr) -> PcpBucket {
+        let config = aws_sdk_s3::Config::builder()
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .credentials_provider(aws_sdk_s3::config::Credentials::new(
+                "test", "test", None, None, "test",
+            ))
+            .endpoint_url(format!("http://{endpoint}"))
+            .force_path_style(true)
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+            .build();
+        PcpBucket::new(
+            aws_sdk_s3::Client::from_conf(config),
+            "test-bucket".to_owned(),
+        )
+    }
+
+    /// A host whose `/jobs` answers `status` with error `code`, recording each request.
+    async fn jobs_host(
+        status: StatusCode,
+        code: &'static str,
+        seen: Arc<Mutex<Vec<serde_json::Value>>>,
+    ) -> SocketAddr {
+        serve(Router::new().route(
+            "/jobs",
+            post(move |Json(body): Json<serde_json::Value>| async move {
+                seen.lock().unwrap().push(body);
+                (
+                    status,
+                    Json(serde_json::json!({
+                        "allowRetry": false,
+                        "error": {"code": code, "message": ""},
+                    })),
+                )
+            }),
+        ))
+        .await
+    }
+
+    /// State for one stored `job`, an S3 answering uploads with `uploaded`, and a host.
+    async fn migration_state(
+        job: Option<serde_json::Value>,
+        uploaded: StatusCode,
+        host: SocketAddr,
+    ) -> (AppState, Arc<Mutex<Table>>) {
+        let table = Arc::new(Mutex::new(Table {
+            job,
+            writes: Vec::new(),
+        }));
+        let state = AppState {
+            jobs: job_table(&format!(
+                "http://{}",
+                job_dynamodb(Arc::clone(&table)).await
+            )),
+            bucket: bucket(s3(uploaded).await),
+            host_port: host.port(),
+            ..unavailable_state()
+        };
+        (state, table)
+    }
+
+    fn migrations_request(method: &str, device_key: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri("/v1/migrations/test-sub")
+            .header(DEVICE_PUBLIC_KEY_HEADER, device_key)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn migrate_claims_then_dispatches_the_uploaded_job() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let host = jobs_host(StatusCode::ACCEPTED, "", Arc::clone(&seen)).await;
+        let (state, table) =
+            migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
+
+        let response = routes::router(state)
+            .oneshot(migrations_request("POST", "device-key"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = json(response).await;
+        assert_eq!(body["status"], "migrating");
+        let deadline = body["deadline"].as_u64().unwrap();
+        assert!(deadline >= now() + 599, "{deadline}");
+
+        let table = table.lock().unwrap();
+        assert_eq!(table.writes.len(), 1, "only the claim");
+        let claim = &table.writes[0]["TransactItems"][0]["Update"];
+        assert_eq!(
+            claim["ExpressionAttributeValues"][":deadline"]["N"],
+            deadline.to_string()
+        );
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["job_id"], JOB_ID);
+        assert_eq!(seen[0]["object_key"], format!("pcp/{JOB_ID}"));
+        assert_eq!(seen[0]["sub"], "test-sub");
+        assert_eq!(seen[0]["device_public_key"], "device-key");
+        assert_eq!(seen[0]["enclave_id"], enclave_id().as_str());
+    }
+
+    #[tokio::test]
+    async fn migrate_refuses_jobs_it_must_not_start() {
+        let host = jobs_host(StatusCode::ACCEPTED, "", Arc::default()).await;
+        let cases = [
+            (
+                "no job",
+                None,
+                StatusCode::OK,
+                "device-key",
+                StatusCode::NOT_FOUND,
+                "not_found",
+            ),
+            (
+                "another device",
+                Some(job_row("created", now(), &[])),
+                StatusCode::OK,
+                "other-key",
+                StatusCode::FORBIDDEN,
+                "device_key_mismatch",
+            ),
+            (
+                "not uploaded",
+                Some(job_row("created", now(), &[])),
+                StatusCode::NOT_FOUND,
+                "device-key",
+                StatusCode::CONFLICT,
+                "not_uploaded",
+            ),
+            (
+                "upload window passed",
+                Some(job_row("created", now() - 421, &[])),
+                StatusCode::OK,
+                "device-key",
+                StatusCode::CONFLICT,
+                "expired",
+            ),
+            (
+                "already migrated",
+                Some(job_row("migrated", now(), &[])),
+                StatusCode::OK,
+                "device-key",
+                StatusCode::CONFLICT,
+                "invalid_state",
+            ),
+            (
+                "already failed",
+                Some(job_row(
+                    "failed",
+                    now(),
+                    &[("reason", serde_json::json!({"S": "enclave_error"}))],
+                )),
+                StatusCode::OK,
+                "device-key",
+                StatusCode::CONFLICT,
+                "enclave_error",
+            ),
+        ];
+
+        for (case, job, uploaded, device_key, status, code) in cases {
+            let (state, table) = migration_state(job, uploaded, host).await;
+            let response = routes::router(state)
+                .oneshot(migrations_request("POST", device_key))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), status, "{case}");
+            assert_eq!(error_code(response).await, code, "{case}");
+            assert!(table.lock().unwrap().writes.is_empty(), "{case}");
+        }
+    }
+
+    /// A retried migrate reports the running job instead of starting it again.
+    #[tokio::test]
+    async fn a_repeated_migrate_reports_the_running_job() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let host = jobs_host(StatusCode::ACCEPTED, "", Arc::clone(&seen)).await;
+        let deadline = now() + 300;
+        let row = job_row(
+            "migrating",
+            now(),
+            &[("deadline", serde_json::json!({"N": deadline.to_string()}))],
+        );
+        let (state, table) = migration_state(Some(row), StatusCode::OK, host).await;
+
+        let response = routes::router(state)
+            .oneshot(migrations_request("POST", "device-key"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(json(response).await["deadline"], deadline);
+        assert!(table.lock().unwrap().writes.is_empty());
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    /// A host that refuses or is gone fails the job with the matching reason and frees the `sub`.
+    #[tokio::test]
+    async fn a_failed_dispatch_fails_the_job() {
+        let unreachable: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let cases = [
+            (
+                jobs_host(StatusCode::CONFLICT, "enclave_changed", Arc::default()).await,
+                "enclave_changed",
+            ),
+            (
+                jobs_host(StatusCode::SERVICE_UNAVAILABLE, "host_busy", Arc::default()).await,
+                "host_busy",
+            ),
+            (unreachable, "enclave_changed"),
+        ];
+
+        for (host, reason) in cases {
+            let (state, table) =
+                migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
+            let response = routes::router(state)
+                .oneshot(migrations_request("POST", "device-key"))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{reason}");
+            assert_eq!(error_code(response).await, reason);
+            let table = table.lock().unwrap();
+            assert_eq!(table.writes.len(), 2, "claim, then fail_dispatch");
+            let failed = &table.writes[1]["TransactItems"];
+            assert_eq!(
+                failed[0]["Update"]["ExpressionAttributeValues"][":reason"]["S"],
+                reason
+            );
+            assert_eq!(
+                failed[1]["Update"]["ExpressionAttributeValues"][":active_until"]["N"],
+                "0"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn status_resolves_the_job_on_read() {
+        let host: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let past = now() - 1;
+        let cases = [
+            (
+                job_row("created", now(), &[]),
+                serde_json::json!({"status": "created"}),
+            ),
+            (
+                job_row(
+                    "migrating",
+                    now(),
+                    &[("deadline", serde_json::json!({"N": past.to_string()}))],
+                ),
+                serde_json::json!({"status": "failed", "reason": "timeout", "deadline": past}),
+            ),
+            (
+                job_row(
+                    "failed",
+                    now(),
+                    &[("reason", serde_json::json!({"S": "host_busy"}))],
+                ),
+                serde_json::json!({"status": "failed", "reason": "host_busy"}),
+            ),
+        ];
+
+        for (row, expected) in cases {
+            let (state, table) = migration_state(Some(row), StatusCode::OK, host).await;
+            let response = routes::router(state)
+                .oneshot(migrations_request("GET", "device-key"))
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(json(response).await, expected);
+            assert!(table.lock().unwrap().writes.is_empty(), "reads never write");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_migrated_job_carries_a_fresh_download_url() {
+        let host: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let row = job_row(
+            "migrated",
+            now(),
+            &[(
+                "result_key",
+                serde_json::json!({"S": format!("result/{JOB_ID}")}),
+            )],
+        );
+        let (state, _) = migration_state(Some(row), StatusCode::OK, host).await;
+
+        let response = routes::router(state)
+            .oneshot(migrations_request("GET", "device-key"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json(response).await;
+        assert_eq!(body["status"], "migrated");
+        let url = body["download_url"].as_str().unwrap();
+        assert!(
+            url.contains(&format!("/test-bucket/result/{JOB_ID}")),
+            "{url}"
+        );
+        assert!(body["download_expires_at"].as_u64().unwrap() >= now() + 299);
+    }
+
+    #[tokio::test]
+    async fn status_needs_the_job_s_device_key() {
+        let host: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let (state, _) =
+            migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
+
+        let response = routes::router(state)
+            .oneshot(migrations_request("GET", "other-key"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// The client's migrate and status calls match the routes.
+    #[tokio::test]
+    async fn the_client_round_trips_migrate_and_status() {
+        let host = jobs_host(StatusCode::ACCEPTED, "", Arc::default()).await;
+        let (state, _) =
+            migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
+        let api = serve(routes::router(state)).await;
+        let client = migration_api_client::MigrationApiClient::new(
+            &format!("http://{api}").parse().unwrap(),
+        )
+        .unwrap();
+
+        let migrating = client.migrate("device-key", "test-sub").await.unwrap();
+        // The fake table keeps serving the `created` row.
+        let status = client
+            .migration_status("device-key", "test-sub")
+            .await
+            .unwrap();
+
+        assert_eq!(migrating.status, di_migration_primitives::Status::Migrating);
+        assert_eq!(status.status, di_migration_primitives::Status::Created);
+        assert!(matches!(
+            client.migration_status("other-key", "test-sub").await,
+            Err(migration_api_client::Error::Api { code, .. }) if code == "device_key_mismatch"
+        ));
     }
 }

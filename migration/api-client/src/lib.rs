@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use di_migration_primitives::app_api::{
     DEVICE_PUBLIC_KEY_HEADER, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
+    MigrateResponse, MigrationStatus,
 };
 use reqwest::{StatusCode, Url};
 
@@ -29,17 +30,17 @@ pub enum Error {
 #[derive(Debug, Clone)]
 pub struct MigrationApiClient {
     http: reqwest::Client,
-    init_migration_url: Url,
+    /// Routes are appended to its path as segments.
+    base_url: Url,
 }
 
 impl MigrationApiClient {
     pub fn new(base_url: &Url) -> Result<Self, Error> {
-        let init_migration_url =
-            base_url
-                .join("v1/init-migration")
-                .map_err(|_| Error::InvalidBaseUrl {
-                    base_url: base_url.clone(),
-                })?;
+        if base_url.cannot_be_a_base() {
+            return Err(Error::InvalidBaseUrl {
+                base_url: base_url.clone(),
+            });
+        }
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
@@ -48,7 +49,7 @@ impl MigrationApiClient {
 
         Ok(Self {
             http,
-            init_migration_url,
+            base_url: base_url.clone(),
         })
     }
 
@@ -64,7 +65,7 @@ impl MigrationApiClient {
     ) -> Result<InitMigrationResponse, Error> {
         let response = self
             .http
-            .post(self.init_migration_url.clone())
+            .post(self.url(&["v1", "init-migration"]))
             .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
             .json(&InitMigrationRequest {
                 sub: sub.to_owned(),
@@ -75,18 +76,49 @@ impl MigrationApiClient {
             .await
             .map_err(Error::Transport)?;
 
-        let status = response.status();
-        if !status.is_success() {
-            return Err(match response.json::<ErrorEnvelope>().await {
-                Ok(envelope) => Error::Api {
-                    status,
-                    code: envelope.error.code,
-                },
-                Err(_) => Error::UnexpectedStatus { status },
-            });
-        }
+        decode(response).await
+    }
 
-        response.json().await.map_err(Error::Decode)
+    /// Hands the uploaded PCP to its host. A repeated call reports the running job.
+    pub async fn migrate(
+        &self,
+        device_public_key: &str,
+        sub: &str,
+    ) -> Result<MigrateResponse, Error> {
+        let response = self
+            .http
+            .post(self.url(&["v1", "migrations", sub]))
+            .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
+            .send()
+            .await
+            .map_err(Error::Transport)?;
+        decode(response).await
+    }
+
+    /// The `sub`'s latest migration, with a download URL once `migrated`.
+    pub async fn migration_status(
+        &self,
+        device_public_key: &str,
+        sub: &str,
+    ) -> Result<MigrationStatus, Error> {
+        let response = self
+            .http
+            .get(self.url(&["v1", "migrations", sub]))
+            .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
+            .send()
+            .await
+            .map_err(Error::Transport)?;
+        decode(response).await
+    }
+
+    /// The base URL with `segments` appended, each percent-encoded, so a `sub` stays one segment.
+    fn url(&self, segments: &[&str]) -> Url {
+        let mut url = self.base_url.clone();
+        url.path_segments_mut()
+            .expect("checked to be a base URL in new")
+            .pop_if_empty()
+            .extend(segments);
+        url
     }
 
     /// Uploads a PCP to a presigned URL returned by [`Self::init_migration`].
@@ -108,8 +140,37 @@ impl MigrationApiClient {
     }
 }
 
+/// The success body, or the API's error code.
+async fn decode<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(match response.json::<ErrorEnvelope>().await {
+            Ok(envelope) => Error::Api {
+                status,
+                code: envelope.error.code,
+            },
+            Err(_) => Error::UnexpectedStatus { status },
+        });
+    }
+    response.json().await.map_err(Error::Decode)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn routes_extend_the_base_path_and_keep_the_sub_one_segment() {
+        let client = MigrationApiClient::new(&"http://api.test/prefix/".parse().unwrap()).unwrap();
+
+        assert_eq!(
+            client.url(&["v1", "init-migration"]).as_str(),
+            "http://api.test/prefix/v1/init-migration"
+        );
+        assert_eq!(
+            client.url(&["v1", "migrations", "a/b c"]).as_str(),
+            "http://api.test/prefix/v1/migrations/a%2Fb%20c"
+        );
+    }
+
     use axum::{
         Json, Router,
         http::{HeaderMap, StatusCode},
