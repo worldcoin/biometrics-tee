@@ -30,25 +30,17 @@ pub enum Error {
 #[derive(Debug, Clone)]
 pub struct MigrationApiClient {
     http: reqwest::Client,
-    init_migration_url: Url,
-    migrations_url: Url,
+    /// Routes are appended to its path as segments.
+    base_url: Url,
 }
 
 impl MigrationApiClient {
     pub fn new(base_url: &Url) -> Result<Self, Error> {
-        let init_migration_url =
-            base_url
-                .join("v1/init-migration")
-                .map_err(|_| Error::InvalidBaseUrl {
-                    base_url: base_url.clone(),
-                })?;
-        let migrations_url = base_url
-            .join("v1/migrations/")
-            .ok()
-            .filter(|url| !url.cannot_be_a_base())
-            .ok_or_else(|| Error::InvalidBaseUrl {
+        if base_url.cannot_be_a_base() {
+            return Err(Error::InvalidBaseUrl {
                 base_url: base_url.clone(),
-            })?;
+            });
+        }
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
@@ -57,8 +49,7 @@ impl MigrationApiClient {
 
         Ok(Self {
             http,
-            init_migration_url,
-            migrations_url,
+            base_url: base_url.clone(),
         })
     }
 
@@ -74,7 +65,7 @@ impl MigrationApiClient {
     ) -> Result<InitMigrationResponse, Error> {
         let response = self
             .http
-            .post(self.init_migration_url.clone())
+            .post(self.url(&["v1", "init-migration"]))
             .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
             .json(&InitMigrationRequest {
                 sub: sub.to_owned(),
@@ -96,7 +87,7 @@ impl MigrationApiClient {
     ) -> Result<MigrateResponse, Error> {
         let response = self
             .http
-            .post(self.migration_url(sub))
+            .post(self.url(&["v1", "migrations", sub]))
             .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
             .send()
             .await
@@ -112,7 +103,7 @@ impl MigrationApiClient {
     ) -> Result<MigrationStatus, Error> {
         let response = self
             .http
-            .get(self.migration_url(sub))
+            .get(self.url(&["v1", "migrations", sub]))
             .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
             .send()
             .await
@@ -120,13 +111,13 @@ impl MigrationApiClient {
         decode(response).await
     }
 
-    /// `sub` as one percent-encoded path segment.
-    fn migration_url(&self, sub: &str) -> Url {
-        let mut url = self.migrations_url.clone();
+    /// The base URL with `segments` appended, each percent-encoded, so a `sub` stays one segment.
+    fn url(&self, segments: &[&str]) -> Url {
+        let mut url = self.base_url.clone();
         url.path_segments_mut()
-            .expect("checked to be a base URL")
+            .expect("checked to be a base URL in new")
             .pop_if_empty()
-            .push(sub);
+            .extend(segments);
         url
     }
 
@@ -166,6 +157,20 @@ async fn decode<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn routes_extend_the_base_path_and_keep_the_sub_one_segment() {
+        let client = MigrationApiClient::new(&"http://api.test/prefix/".parse().unwrap()).unwrap();
+
+        assert_eq!(
+            client.url(&["v1", "init-migration"]).as_str(),
+            "http://api.test/prefix/v1/init-migration"
+        );
+        assert_eq!(
+            client.url(&["v1", "migrations", "a/b c"]).as_str(),
+            "http://api.test/prefix/v1/migrations/a%2Fb%20c"
+        );
+    }
+
     use axum::{
         Json, Router,
         http::{HeaderMap, StatusCode},
