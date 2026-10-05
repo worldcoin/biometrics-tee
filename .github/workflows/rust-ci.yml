@@ -31,9 +31,9 @@ jobs:
           toolchain: 1.98.1
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # di-sandbox builds Minijail from source.
-      - name: Install Minijail build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libcap-dev clang pkg-config
+      # di-sandbox builds Minijail from source; the vendored worker protocol needs protoc.
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcap-dev clang pkg-config protobuf-compiler
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
@@ -50,9 +50,9 @@ jobs:
           toolchain: 1.98.1
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # di-sandbox builds Minijail from source.
-      - name: Install Minijail build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libcap-dev clang pkg-config
+      # di-sandbox builds Minijail from source; the vendored worker protocol needs protoc.
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcap-dev clang pkg-config protobuf-compiler
       # The sandbox's process tests need root, so they run separately below.
       - name: tests
         run: cargo test --locked --workspace --all-features --exclude di-sandbox --verbose
