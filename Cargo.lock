@@ -2971,7 +2971,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orb-pcp"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=bfeae5eebd43a7ef7714967e61e28b65210fb2db#bfeae5eebd43a7ef7714967e61e28b65210fb2db"
+source = "git+https://github.com/worldcoin/orb-software?rev=b411f5dec7c9b3110f7a8038dec729d4b5153427#b411f5dec7c9b3110f7a8038dec729d4b5153427"
 dependencies = [
  "alkali",
  "data-encoding",
@@ -2989,7 +2989,7 @@ dependencies = [
 [[package]]
 name = "orb-pcp-defs"
 version = "0.0.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=bfeae5eebd43a7ef7714967e61e28b65210fb2db#bfeae5eebd43a7ef7714967e61e28b65210fb2db"
+source = "git+https://github.com/worldcoin/orb-software?rev=b411f5dec7c9b3110f7a8038dec729d4b5153427#b411f5dec7c9b3110f7a8038dec729d4b5153427"
 dependencies = [
  "pbjson",
  "pbjson-build",
@@ -3669,7 +3669,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4167,7 +4167,7 @@ dependencies = [
  "fastrand",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

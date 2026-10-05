@@ -14,8 +14,8 @@ base64.workspace = true
 sha2 = "0.10"
 # Shared PCP builder and protobuf definitions, pinned to one revision so both
 # use the same generated types. This revision supports migration builds.
-orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "bfeae5eebd43a7ef7714967e61e28b65210fb2db" }
-orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "bfeae5eebd43a7ef7714967e61e28b65210fb2db" }
+orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "b411f5dec7c9b3110f7a8038dec729d4b5153427" }
+orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "b411f5dec7c9b3110f7a8038dec729d4b5153427" }
 
 [dev-dependencies]
 alkali = { version = "0.3", features = ["use-pkg-config"] }

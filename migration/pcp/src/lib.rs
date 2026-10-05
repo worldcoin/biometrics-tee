@@ -13,7 +13,7 @@ mod preservation;
 mod schema;
 mod source;
 
-pub use builder::{OUTPUT_PCP_VERSION, OutputRecipients, with_build_request};
+pub use builder::{OUTPUT_VERSION, OutputRecipients, with_build_request};
 pub use mapping::{MigrationContext, PreparedBiometrics, generate_migration_signup_id};
 pub use models::*;
 pub use preservation::verify_completed_pcp;

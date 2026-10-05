@@ -12,8 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::mapping::signup_ids;
 use crate::source::{legacy_artifact, raw_image, required};
 use crate::{
-    Error, Files, Info, MigrationContext, OUTPUT_PCP_VERSION, PreparedBiometrics, SourcePcp,
-    parse_json,
+    Error, Files, Info, MigrationContext, OUTPUT_VERSION, PreparedBiometrics, SourcePcp, parse_json,
 };
 
 /// Check a completed migration package before returning or publishing it.
@@ -29,7 +28,7 @@ use crate::{
 ///   every other capture field of the source after timestamp normalization, and
 ///   has a 32-hex-digit salt exactly for each present salted value.
 /// - `migration.pb` matches the source and the run's `context` and pipeline version.
-/// - `hashes.json` is compact with sorted keys, has `OUTPUT_PCP_VERSION`, and its entries
+/// - `hashes.json` is compact with sorted keys, has `OUTPUT_VERSION`, and its entries
 ///   match the SHA-256 of every emitted member and salted value one to one.
 ///
 /// It does not verify `hashes.sign` against the enclave key, recipient
@@ -135,7 +134,7 @@ fn verify_manifest(info: &Info, files: &Files) -> Result<(), Error> {
         "manifest_not_canonical",
     )?;
     required(files, "hashes.sign")?;
-    if manifest.remove("version").as_deref() != Some(OUTPUT_PCP_VERSION) {
+    if manifest.remove("version").as_deref() != Some(OUTPUT_VERSION.label()) {
         return Err(Error::OutputMismatch("manifest_version"));
     }
     let mut expected = BTreeMap::new();

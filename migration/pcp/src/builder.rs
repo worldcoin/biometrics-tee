@@ -11,9 +11,8 @@ use crate::source::{raw_image, required};
 use crate::{Error, Files, Info, MigrationContext, PreparedBiometrics, SourcePcp};
 
 /// The PCP version of migrated packages: the version the shared builder accepts
-/// migration provenance for. The e2e tests check that the builder writes it.
-pub const OUTPUT_PCP_VERSION: &str = "2.9";
-const OUTPUT_BUILDER_VERSION: orb_pcp::PcpVersion = orb_pcp::PcpVersion::V2_9;
+/// migration provenance for.
+pub const OUTPUT_VERSION: orb_pcp::PcpVersion = orb_pcp::PcpVersion::V2_9;
 
 /// Recipient keys for the new package: the user key encrypts the tiers, the
 /// backend keys encrypt the inner archives and are written to `backend_keys.json`.
@@ -103,7 +102,7 @@ pub fn with_build_request<T>(
     let left_aggregate = refs(info.left_iris_code_aggregate_image_ids.as_deref());
     let right_aggregate = refs(info.right_iris_code_aggregate_image_ids.as_deref());
     let request = orb_pcp::BuildRequest {
-        version: OUTPUT_BUILDER_VERSION,
+        version: OUTPUT_VERSION,
         timestamp: context.migrated_ts,
         info: package_info(info, &signup_id, certificate.as_deref())?,
         user_public_key: recipients.user_public_key,

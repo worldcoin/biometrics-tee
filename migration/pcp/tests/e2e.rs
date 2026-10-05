@@ -28,8 +28,6 @@ fn round_trip(version: &str, optional: bool) {
     // reference is still the original source, not a copy from the new package.
     verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
 
-    let manifest = json_file(&new.files, "hashes.json");
-    assert_eq!(manifest["version"], OUTPUT_PCP_VERSION);
     assert_eq!(
         new.signed_digest,
         <[u8; 32]>::from(Sha256::digest(&new.files["hashes.json"]))

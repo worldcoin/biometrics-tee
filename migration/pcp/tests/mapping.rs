@@ -221,7 +221,7 @@ fn malformed_fields_versions_and_duplicates_are_rejected_without_payloads() {
     }
     for version in [
         // Migrated packages cannot be migrated again.
-        OUTPUT_PCP_VERSION,
+        OUTPUT_VERSION.label(),
         "3.0",
         "2.99",
         "0.1",
