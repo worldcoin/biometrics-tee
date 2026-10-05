@@ -70,7 +70,8 @@ fn enclave_id() -> EnclaveId {
     EnclaveId::from_commitment([7; 32])
 }
 
-/// An idle host that attests as [`enclave_id`] and records the jobs it is given.
+/// A mock host: reports an empty queue, attests as [`enclave_id`] and records the jobs it is
+/// given without running them; the test finishes them itself.
 async fn host(jobs: Arc<Mutex<Vec<JobRequest>>>) -> SocketAddr {
     serve(
         Router::new()
