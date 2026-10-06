@@ -5,7 +5,7 @@ use std::{collections::HashMap, net::IpAddr, time::Duration};
 use aws_sdk_dynamodb::{
     Client,
     error::DisplayErrorContext,
-    operation::{transact_write_items::TransactWriteItemsError, update_item::UpdateItemError},
+    operation::transact_write_items::TransactWriteItemsError,
     types::{AttributeValue, Put, TransactWriteItem, Update},
 };
 use tokio::time::timeout;
@@ -40,48 +40,42 @@ impl JobTable {
         Self { client, table_name }
     }
 
-    /// Moves a `migrating` row to `status`, setting `extra` alongside. A row in any other state
-    /// was already resolved, e.g. timed out, so it is left alone.
+    /// Moves a `migrating` row to `status`, setting `extra` alongside, and releases its `sub`'s
+    /// lock so the app can init again. A row past its deadline already reads as `timeout`, and
+    /// one in any other state was resolved elsewhere, so both are left alone.
     async fn finish(
         &self,
         job_id: &JobId,
+        sub: &str,
         status: Status,
         extra: (&'static str, String),
+        now: u64,
     ) -> Result<(), StorageError> {
-        const OPERATION: &str = "DynamoDB UpdateItem";
-        let result = timeout(
-            WRITE_TIMEOUT,
-            self.client
-                .update_item()
-                .table_name(&self.table_name)
-                .key(attributes::ID, AttributeValue::S(row_id(job_id)))
-                .update_expression("SET #status = :status, #extra = :extra")
-                .condition_expression("#status = :migrating")
-                .expression_attribute_names("#status", attributes::STATUS)
-                .expression_attribute_names("#extra", extra.0)
-                .expression_attribute_values(":status", string(status.as_str()))
-                .expression_attribute_values(":extra", AttributeValue::S(extra.1))
-                .expression_attribute_values(":migrating", string(Status::Migrating.as_str()))
-                .send(),
-        )
-        .await
-        .map_err(|_| StorageError::Timeout {
-            operation: OPERATION,
-        })?;
+        const OPERATION: &str = "DynamoDB TransactWriteItems";
+        let job_row = Update::builder()
+            .table_name(&self.table_name)
+            .key(attributes::ID, string(&row_id(job_id)))
+            .update_expression("SET #status = :status, #extra = :extra")
+            .condition_expression("#status = :migrating AND #deadline >= :now")
+            .expression_attribute_names("#status", attributes::STATUS)
+            .expression_attribute_names("#extra", extra.0)
+            .expression_attribute_names("#deadline", attributes::DEADLINE)
+            .expression_attribute_values(":status", string(status.as_str()))
+            .expression_attribute_values(":extra", AttributeValue::S(extra.1))
+            .expression_attribute_values(":migrating", string(Status::Migrating.as_str()))
+            .expression_attribute_values(":now", number(now))
+            .build()
+            .map_err(|error| failed(OPERATION, &error))?;
 
-        match result {
-            Ok(_) => Ok(()),
-            Err(error)
-                if error
-                    .as_service_error()
-                    .is_some_and(UpdateItemError::is_conditional_check_failed_exception) =>
-            {
-                Err(StorageError::NotMigrating)
-            }
-            Err(error) => Err(StorageError::Failed {
-                operation: OPERATION,
-                detail: DisplayErrorContext(&error).to_string(),
-            }),
+        match self
+            .transact([
+                TransactWriteItem::builder().update(job_row).build(),
+                self.retarget_lock(sub, job_id, 0, None)?,
+            ])
+            .await?
+        {
+            Transaction::Committed => Ok(()),
+            Transaction::Rejected(_) => Err(StorageError::NotMigrating),
         }
     }
 }
@@ -116,34 +110,48 @@ impl JobTable {
         Ok(())
     }
 
-    /// Marks a `migrating` job `migrated` with its result key.
+    /// Marks a `migrating` job `migrated` with its result key, and frees its `sub`.
     ///
     /// # Errors
     ///
-    /// [`StorageError::NotMigrating`] when the row was resolved elsewhere, or the update failed.
+    /// [`StorageError::NotMigrating`] when the row was resolved elsewhere or is past its
+    /// deadline at `now`, or the write failed.
     pub async fn mark_migrated(
         &self,
         job_id: &JobId,
+        sub: &str,
         result_key: &str,
+        now: u64,
     ) -> Result<(), StorageError> {
         self.finish(
             job_id,
+            sub,
             Status::Migrated,
             (attributes::RESULT_KEY, result_key.to_owned()),
+            now,
         )
         .await
     }
 
-    /// Marks a `migrating` job `failed` with its reason.
+    /// Marks a `migrating` job `failed` with its reason, and frees its `sub`.
     ///
     /// # Errors
     ///
-    /// [`StorageError::NotMigrating`] when the row was resolved elsewhere, or the update failed.
-    pub async fn mark_failed(&self, job_id: &JobId, reason: Reason) -> Result<(), StorageError> {
+    /// [`StorageError::NotMigrating`] when the row was resolved elsewhere or is past its
+    /// deadline at `now`, or the write failed.
+    pub async fn mark_failed(
+        &self,
+        job_id: &JobId,
+        sub: &str,
+        reason: Reason,
+        now: u64,
+    ) -> Result<(), StorageError> {
         self.finish(
             job_id,
+            sub,
             Status::Failed,
             (attributes::REASON, reason.as_str().to_owned()),
+            now,
         )
         .await
     }
@@ -583,13 +591,18 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_migrated(&id(), "result/abc")
+            .mark_migrated(&id(), "sub", "result/abc", 100)
             .await
             .expect("should update");
 
-        let request = seen.lock().expect("lock should hold")[0].clone();
+        let items = seen.lock().expect("lock should hold")[0]["TransactItems"].clone();
+        let request = &items[0]["Update"];
         assert_eq!(request["Key"]["id"]["S"], format!("job#{ID}"));
-        assert_eq!(request["ConditionExpression"], "#status = :migrating");
+        assert_eq!(
+            request["ConditionExpression"],
+            "#status = :migrating AND #deadline >= :now"
+        );
+        assert_eq!(request["ExpressionAttributeValues"][":now"]["N"], "100");
         assert_eq!(
             request["ExpressionAttributeValues"][":status"]["S"],
             "migrated"
@@ -599,6 +612,11 @@ mod tests {
             "result/abc"
         );
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "result_key");
+        let lock = &items[1]["Update"];
+        assert_eq!(
+            lock["ExpressionAttributeValues"][":active_until"]["N"], "0",
+            "the sub is free again"
+        );
     }
 
     #[tokio::test]
@@ -606,11 +624,12 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_failed(&id(), Reason::EnclaveError)
+            .mark_failed(&id(), "sub", Reason::EnclaveError, 100)
             .await
             .expect("should update");
 
-        let request = seen.lock().expect("lock should hold")[0].clone();
+        let request =
+            seen.lock().expect("lock should hold")[0]["TransactItems"][0]["Update"].clone();
         assert_eq!(
             request["ExpressionAttributeValues"][":status"]["S"],
             "failed"
@@ -622,17 +641,17 @@ mod tests {
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "reason");
     }
 
-    /// A job resolved elsewhere first, e.g. timed out, is not overwritten.
+    /// A job resolved elsewhere first, or past its deadline, is not overwritten.
     #[tokio::test]
     async fn a_job_no_longer_migrating_is_left_alone() {
         let (store, _) = fake(
             StatusCode::BAD_REQUEST,
-            r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"The conditional request failed"}"#,
+            r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"canceled","CancellationReasons":[{"Code":"ConditionalCheckFailed"},{"Code":"None"}]}"#,
         )
         .await;
 
         let error = store
-            .mark_migrated(&id(), "result/abc")
+            .mark_migrated(&id(), "sub", "result/abc", 100)
             .await
             .expect_err("should skip");
 

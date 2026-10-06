@@ -330,7 +330,7 @@ async fn a_migration_runs_from_init_to_download() {
         .await
         .expect("the host writes the result");
     JobTable::new(resources.dynamodb.clone(), resources.table.clone())
-        .mark_migrated(&job.job_id, &result_key)
+        .mark_migrated(&job.job_id, &sub, &result_key, job.deadline - 1)
         .await
         .expect("the host marks the job migrated");
 
@@ -349,6 +349,12 @@ async fn a_migration_runs_from_init_to_download() {
         client.migration_status("other-device", &sub).await,
         Err(Error::Api { code, .. }) if code == "device_key_mismatch"
     ));
+
+    // The finished job frees the sub, so the app can start another migration at once.
+    client
+        .init_migration(DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+        .await
+        .expect("a finished migration no longer blocks init");
 
     resources.delete().await;
 }

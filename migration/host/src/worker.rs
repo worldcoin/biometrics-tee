@@ -1,6 +1,9 @@
 //! The single worker: one job at a time from fetch to recorded outcome.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use di_migration_enclave_types::MigrateRequest;
 use di_migration_primitives::{Reason, host_api::JobRequest};
@@ -45,18 +48,23 @@ impl Worker {
         }
     }
 
-    /// Runs `job` and records its outcome.
+    /// Runs `job` and records its outcome. A job whose deadline passed while it waited already
+    /// reads as `timeout`, so it is skipped rather than spending enclave time.
     pub async fn handle(&self, job: &JobRequest) {
+        if unix_now() > job.deadline {
+            tracing::warn!(job_id = %job.job_id, "job passed its deadline in the queue; skipped");
+            return;
+        }
         let recorded = match self.migrate(job).await {
-            Ok(result_key) => self.job_store.mark_migrated(&job.job_id, &result_key).await,
-            Err(reason) => self.job_store.mark_failed(&job.job_id, reason).await,
+            Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
+            Err(reason) => self.job_store.mark_failed(job, reason).await,
         };
 
         match recorded {
             Ok(()) => {}
             Err(StoreError::NotMigrating) => tracing::warn!(
                 job_id = %job.job_id,
-                "job was resolved elsewhere first, e.g. it timed out; outcome not recorded"
+                "job was resolved elsewhere first or passed its deadline; outcome not recorded"
             ),
             // The row stays `migrating` and reads as `timeout` once its deadline passes.
             Err(error) => tracing::error!(
@@ -104,6 +112,13 @@ impl Worker {
                 Reason::S3Error
             })
     }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
 }
 
 #[cfg(test)]
@@ -187,6 +202,21 @@ mod tests {
     }
 
     /// A job that timed out first keeps its `failed` row; the late result is not recorded.
+    /// A job that waited past its deadline is neither run nor recorded.
+    #[tokio::test]
+    async fn a_job_past_its_deadline_is_skipped() {
+        let mut expired = job(1);
+        expired.deadline = 1;
+        let store = Arc::new(MemoryStore::with_pcp(&expired, b"sealed"));
+
+        worker(Arc::new(StubEnclave::default()), &store)
+            .handle(&expired)
+            .await;
+
+        // Running it would record an outcome either way.
+        assert!(store.outcome(&expired.job_id).is_none());
+    }
+
     #[tokio::test]
     async fn a_job_resolved_elsewhere_is_not_overwritten() {
         let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed").resolved_elsewhere());
