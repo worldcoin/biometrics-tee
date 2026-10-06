@@ -141,14 +141,11 @@ async fn init_migration(
         .presign_upload(&job.job_id, state.presigned_url_ttl)
         .await
         .map_err(|error| ApiError::storage("s3", error.to_string()))?;
-    state
-        .jobs
-        .create_job(&job)
-        .await
-        .map_err(|error| match error {
-            StorageError::ActiveJob => ApiError::migration_in_progress(),
-            error => ApiError::storage("dynamodb", error.to_string()),
-        })?;
+    match state.jobs.create_job(&job).await {
+        Ok(()) => {}
+        Err(StorageError::ActiveJob) => replace_unclaimed_job(&state, &job).await?,
+        Err(error) => return Err(ApiError::storage("dynamodb", error.to_string())),
+    }
 
     Ok(Json(InitMigrationResponse {
         enclave_id: attestation.enclave_id,
@@ -157,6 +154,30 @@ async fn init_migration(
         upload_url,
         migrate_by: job.active_until,
     }))
+}
+
+/// Starts over for an app that holds an unclaimed job, e.g. it lost the init response or never
+/// uploaded; nothing was queued for that job yet. Any other active job stays in progress.
+async fn replace_unclaimed_job(state: &AppState, job: &NewJob) -> Result<(), ApiError> {
+    let current = state
+        .jobs
+        .latest_job(&job.sub)
+        .await
+        .map_err(|error| ApiError::storage("dynamodb", error.to_string()))?;
+    let Some(current) = current.filter(|current| {
+        current.status == Status::Created && current.device_public_key == job.device_public_key
+    }) else {
+        return Err(ApiError::migration_in_progress());
+    };
+    state
+        .jobs
+        .replace_job(job, &current.job_id)
+        .await
+        .map_err(|error| match error {
+            // Claimed or replaced concurrently.
+            StorageError::ActiveJob => ApiError::migration_in_progress(),
+            error => ApiError::storage("dynamodb", error.to_string()),
+        })
 }
 
 /// Hands the uploaded PCP's job to its host. The claim commits `migrating` first, so a retried

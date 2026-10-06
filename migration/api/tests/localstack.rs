@@ -278,16 +278,22 @@ async fn a_migration_runs_from_init_to_download() {
     let sub = format!("sub-{}", JobId::new());
 
     // Init pins the job to the host's enclave and hands out an upload URL.
-    let init = client
+    let lost = client
         .init_migration(DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("init should succeed");
-    assert_eq!(init.enclave_id, enclave_id());
-    assert_eq!(init.enclave_public_key, "enclave-key");
     assert!(matches!(
-        client.init_migration(DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID).await,
+        client.init_migration("other-device", &sub, "YQ==", CHALLENGE_ID).await,
         Err(Error::Api { code, .. }) if code == "migration_in_progress"
     ));
+    // The same device, e.g. after losing that response, starts over with a new job.
+    let init = client
+        .init_migration(DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+        .await
+        .expect("a repeated init replaces the unclaimed job");
+    assert_ne!(init.upload_url, lost.upload_url);
+    assert_eq!(init.enclave_id, enclave_id());
+    assert_eq!(init.enclave_public_key, "enclave-key");
 
     // Migrate waits for the upload.
     assert!(matches!(
@@ -303,6 +309,10 @@ async fn a_migration_runs_from_init_to_download() {
         .await
         .expect("migrate should dispatch");
     assert_eq!(migrating.status, Status::Migrating);
+    assert!(matches!(
+        client.init_migration(DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID).await,
+        Err(Error::Api { code, .. }) if code == "migration_in_progress"
+    ));
     let job = {
         let jobs = jobs.lock().expect("lock");
         assert_eq!(jobs.len(), 1, "the job reaches its host once");
