@@ -1,21 +1,31 @@
 use biometric_engines_protocol::{
     PROTOCOL_VERSION, Request, Response,
-    iris::{invalid_request_reason::Reason, *},
+    face::EmbeddingResult,
+    migration::{invalid_request_reason::Reason, *},
     protobuf,
     request::Operation,
     response::Outcome,
 };
 
-fn request(left: usize, right: usize) -> Request {
+fn request(face: usize, left: usize, right: usize) -> Request {
     Request::new(
         7,
-        Operation::IrisMigration(MigrationRequest {
-            left: Some(IrImage { png: vec![1; left] }),
-            right: Some(IrImage {
-                png: vec![2; right],
-            }),
+        Operation::Migration(MigrationRequest {
+            face: vec![1; face],
+            left_iris: vec![2; left],
+            right_iris: vec![3; right],
         }),
     )
+}
+
+fn face_embedding() -> EmbeddingResult {
+    EmbeddingResult {
+        vector: "face-vector".into(),
+        r#type: "face".into(),
+        version: "2.0.0".into(),
+        inference_backend: "face-engine".into(),
+        debug_report: None,
+    }
 }
 
 fn eye() -> EyeResult {
@@ -31,12 +41,13 @@ fn eye() -> EyeResult {
 
 fn result(left: EyeResult) -> MigrationResult {
     MigrationResult {
-        left: Some(left),
-        right: Some(eye()),
+        face_embedding: Some(face_embedding()),
+        left_iris: Some(left),
+        right_iris: Some(eye()),
         iris_code_version: "v2.1".into(),
-        model_version: "deep-identifier-1.0.0".into(),
-        embedding_version: "1".into(),
-        inference_backend: "tract".into(),
+        iris_model_version: "deep-identifier-1.0.0".into(),
+        iris_embedding_version: "1".into(),
+        iris_inference_backend: "iris-engine".into(),
     }
 }
 
@@ -47,8 +58,8 @@ fn decode(outcome: Outcome) -> Result<Response, biometric_engines_protocol::Fail
 #[test]
 fn requests_roundtrip_and_enforce_the_per_image_limit() {
     for request in [
-        request(MAX_IMAGE_BYTES, MAX_IMAGE_BYTES),
-        Request::new(7, Operation::IrisMigration(MigrationRequest::default())),
+        request(MAX_IMAGE_BYTES, MAX_IMAGE_BYTES, MAX_IMAGE_BYTES),
+        Request::new(7, Operation::Migration(MigrationRequest::default())),
     ] {
         assert_eq!(
             protobuf::decode_request(&protobuf::encode_request(&request)).unwrap(),
@@ -56,9 +67,11 @@ fn requests_roundtrip_and_enforce_the_per_image_limit() {
         );
     }
 
-    for (request, eye) in [
-        (request(MAX_IMAGE_BYTES + 1, 1), EyeSide::Left),
-        (request(1, MAX_IMAGE_BYTES + 1), EyeSide::Right),
+    let over = MAX_IMAGE_BYTES + 1;
+    for (request, role) in [
+        (request(over, 1, 1), ImageRole::Face),
+        (request(1, over, 1), ImageRole::LeftIris),
+        (request(1, 1, over), ImageRole::RightIris),
     ] {
         let rejected = protobuf::decode_request(&protobuf::encode_request(&request)).unwrap_err();
         assert_eq!(rejected.request_id, 7);
@@ -67,7 +80,7 @@ fn requests_roundtrip_and_enforce_the_per_image_limit() {
             Failure::invalid(Reason::ImageTooLarge(ByteLimitExceeded {
                 limit_bytes: MAX_IMAGE_BYTES as u64,
             }))
-            .at_eye(eye)
+            .at_image(role)
             .into()
         );
     }
@@ -75,7 +88,7 @@ fn requests_roundtrip_and_enforce_the_per_image_limit() {
     // Requests of other versions are left for the worker to reject as unsupported.
     let request = Request {
         protocol_version: PROTOCOL_VERSION + 1,
-        ..request(MAX_IMAGE_BYTES + 1, 1)
+        ..request(over, 1, 1)
     };
     assert_eq!(
         protobuf::decode_request(&protobuf::encode_request(&request)).unwrap(),
@@ -84,8 +97,8 @@ fn requests_roundtrip_and_enforce_the_per_image_limit() {
 }
 
 #[test]
-fn results_require_both_eyes_with_exact_code_and_embedding_shapes() {
-    let valid = Outcome::IrisMigration(Box::new(result(eye())));
+fn results_require_every_part_with_exact_shapes() {
+    let valid = Outcome::Migration(Box::new(result(eye())));
     assert_eq!(decode(valid.clone()).unwrap().outcome, Some(valid));
 
     let invalid_eyes = [
@@ -123,35 +136,58 @@ fn results_require_both_eyes_with_exact_code_and_embedding_shapes() {
         },
     ];
     for eye in invalid_eyes {
-        assert!(decode(Outcome::IrisMigration(Box::new(result(eye)))).is_err());
+        assert!(decode(Outcome::Migration(Box::new(result(eye)))).is_err());
     }
-    let missing_eye = MigrationResult {
-        right: None,
-        ..result(eye())
-    };
-    assert!(decode(Outcome::IrisMigration(Box::new(missing_eye))).is_err());
+
+    let incomplete = [
+        MigrationResult {
+            right_iris: None,
+            ..result(eye())
+        },
+        MigrationResult {
+            face_embedding: None,
+            ..result(eye())
+        },
+        MigrationResult {
+            face_embedding: Some(EmbeddingResult {
+                vector: String::new(),
+                ..face_embedding()
+            }),
+            ..result(eye())
+        },
+        MigrationResult {
+            face_embedding: Some(EmbeddingResult {
+                vector: "x"
+                    .repeat(biometric_engines_protocol::face::MAX_ENCODED_EMBEDDING_BYTES + 1),
+                ..face_embedding()
+            }),
+            ..result(eye())
+        },
+    ];
+    for result in incomplete {
+        assert!(decode(Outcome::Migration(Box::new(result))).is_err());
+    }
 }
 
 #[test]
-fn failures_require_a_known_code_an_eye_and_matching_reason() {
+fn failures_require_a_known_code_an_image_and_matching_reason() {
     let mut valid = vec![Failure::new(FailureCode::Internal)];
-    for eye in [EyeSide::Left, EyeSide::Right] {
+    for role in [ImageRole::Face, ImageRole::LeftIris, ImageRole::RightIris] {
         for code in [
             FailureCode::InvalidImage,
             FailureCode::QualityRejected,
             FailureCode::SpoofDetected,
             FailureCode::Internal,
         ] {
-            valid.push(Failure::new(code).at_eye(eye));
+            valid.push(Failure::new(code).at_image(role));
         }
         for reason in [
             Reason::MissingImage(EmptyReason {}),
-            Reason::EmptyImage(EmptyReason {}),
             Reason::ImageTooLarge(ByteLimitExceeded {
                 limit_bytes: MAX_IMAGE_BYTES as u64,
             }),
         ] {
-            valid.push(Failure::invalid(reason).at_eye(eye));
+            valid.push(Failure::invalid(reason).at_image(role));
         }
     }
     for failure in valid {
@@ -165,20 +201,20 @@ fn failures_require_a_known_code_an_eye_and_matching_reason() {
             code: 99,
             ..Failure::default()
         }
-        .at_eye(EyeSide::Left),
+        .at_image(ImageRole::Face),
         Failure::new(FailureCode::QualityRejected),
         Failure {
-            eye: 99,
+            image: 99,
             ..Failure::new(FailureCode::SpoofDetected)
         },
-        Failure::new(FailureCode::InvalidRequest).at_eye(EyeSide::Left),
+        Failure::new(FailureCode::InvalidRequest).at_image(ImageRole::LeftIris),
         Failure {
             invalid_request_reason: Some(InvalidRequestReason::default()),
-            ..Failure::new(FailureCode::InvalidRequest).at_eye(EyeSide::Left)
+            ..Failure::new(FailureCode::InvalidRequest).at_image(ImageRole::LeftIris)
         },
         Failure {
             invalid_request_reason: Some(InvalidRequestReason {
-                reason: Some(Reason::EmptyImage(EmptyReason {})),
+                reason: Some(Reason::MissingImage(EmptyReason {})),
             }),
             ..Failure::new(FailureCode::Internal)
         },
@@ -190,23 +226,26 @@ fn failures_require_a_known_code_an_eye_and_matching_reason() {
 
 #[test]
 fn debug_never_exposes_images_codes_or_embeddings() {
-    let request = request(3, 3);
-    assert!(!format!("{request:?}").contains("[1, 1, 1]"));
+    let request = request(3, 3, 3);
+    let debug = format!("{request:?}");
+    for bytes in ["[1, 1, 1]", "[2, 2, 2]", "[3, 3, 3]"] {
+        assert!(!debug.contains(bytes), "{bytes}");
+    }
 
     let eye = EyeResult {
         iris_code: "sensitive-code".into(),
         ..eye()
     };
-    let response = Response::new(1, Outcome::IrisMigration(Box::new(result(eye))));
+    let response = Response::new(1, Outcome::Migration(Box::new(result(eye))));
     let debug = format!("{response:?}");
     assert!(debug.contains("deep-identifier-1.0.0"));
-    for secret in ["sensitive-code", "BBBB", "248, 248", "0.5"] {
+    for secret in ["sensitive-code", "BBBB", "248, 248", "0.5", "face-vector"] {
         assert!(!debug.contains(secret), "{secret}");
     }
 
     let debug = format!(
         "{:?}",
-        Failure::new(FailureCode::SpoofDetected).at_eye(EyeSide::Right)
+        Failure::new(FailureCode::SpoofDetected).at_image(ImageRole::Face)
     );
-    assert!(debug.contains("SpoofDetected") && debug.contains("Right"));
+    assert!(debug.contains("SpoofDetected") && debug.contains("Face"));
 }

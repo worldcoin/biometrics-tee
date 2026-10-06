@@ -1,7 +1,7 @@
-//! Public generated iris messages and small construction helpers.
-pub use crate::generated::iris::v1::*;
+//! Public generated migration messages and small construction helpers.
+pub use crate::generated::migration::v1::*;
 
-/// Per encoded IR image: 16 MiB.
+/// Per encoded image: 16 MiB.
 pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Base64 length of a packed v2.1 iris or mask code: 16 x 200 x 2 x 2 bits, 1,600 bytes.
 pub const ENCODED_CODE_LEN: usize = 2136;
@@ -13,23 +13,21 @@ pub const I4_RANGE: std::ops::RangeInclusive<i8> = -8..=7;
 /// Checks each encoded image of `request` against [`MAX_IMAGE_BYTES`].
 ///
 /// # Errors
-/// Returns an `ImageTooLarge` failure located at the eye of the first oversized image.
+/// Returns an `ImageTooLarge` failure located at the first oversized image.
 pub fn check_image_limits(request: &MigrationRequest) -> Result<(), Failure> {
-    for (image, eye) in [
-        (&request.left, EyeSide::Left),
-        (&request.right, EyeSide::Right),
+    for (image, role) in [
+        (&request.face, ImageRole::Face),
+        (&request.left_iris, ImageRole::LeftIris),
+        (&request.right_iris, ImageRole::RightIris),
     ] {
-        if image
-            .as_ref()
-            .is_some_and(|image| image.png.len() > MAX_IMAGE_BYTES)
-        {
+        if image.len() > MAX_IMAGE_BYTES {
             return Err(
                 Failure::invalid(invalid_request_reason::Reason::ImageTooLarge(
                     ByteLimitExceeded {
                         limit_bytes: MAX_IMAGE_BYTES as u64,
                     },
                 ))
-                .at_eye(eye),
+                .at_image(role),
             );
         }
     }
@@ -57,10 +55,10 @@ impl Failure {
         }
     }
 
-    /// Indicate for which eye the failure occurred.
+    /// Indicate for which image the failure occurred.
     #[must_use]
-    pub fn at_eye(mut self, eye: EyeSide) -> Self {
-        self.eye = eye as i32;
+    pub fn at_image(mut self, role: ImageRole) -> Self {
+        self.image = role as i32;
         self
     }
 }
@@ -77,15 +75,15 @@ impl std::fmt::Debug for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Failure")
             .field("code", &crate::enum_debug::<FailureCode>(self.code))
-            .field("eye", &crate::enum_debug::<EyeSide>(self.eye))
+            .field("image", &crate::enum_debug::<ImageRole>(self.image))
             .field("invalid_request_reason", &self.invalid_request_reason)
             .finish()
     }
 }
 
-impl std::fmt::Debug for IrImage {
+impl std::fmt::Debug for MigrationRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IrImage").finish_non_exhaustive()
+        f.debug_struct("MigrationRequest").finish_non_exhaustive()
     }
 }
 

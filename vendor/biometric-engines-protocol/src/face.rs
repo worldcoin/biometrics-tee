@@ -28,7 +28,7 @@ pub fn check_image_limits(operation: &Operation) -> Result<(), Failure> {
             (request.challenge.as_ref(), ImageRole::Challenge),
         ],
         Operation::Embedding(request) => &[(request.image.as_ref(), ImageRole::EmbeddingInput)],
-        Operation::IrisMigration(_) => &[],
+        Operation::Migration(_) => &[],
     };
 
     let mut total = 0;

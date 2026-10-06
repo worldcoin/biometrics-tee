@@ -5,7 +5,7 @@
 
 pub mod face;
 pub mod framing;
-pub mod iris;
+pub mod migration;
 pub mod protobuf;
 
 #[allow(
@@ -21,9 +21,12 @@ mod generated {
             include!(concat!(env!("OUT_DIR"), "/biometric_engines.face.v1.rs"));
         }
     }
-    pub mod iris {
+    pub mod migration {
         pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/biometric_engines.iris.v1.rs"));
+            include!(concat!(
+                env!("OUT_DIR"),
+                "/biometric_engines.migration.v1.rs"
+            ));
         }
     }
     pub mod v1 {
@@ -71,10 +74,10 @@ impl From<face::Failure> for Failure {
     }
 }
 
-impl From<iris::Failure> for Failure {
-    fn from(value: iris::Failure) -> Self {
+impl From<migration::Failure> for Failure {
+    fn from(value: migration::Failure) -> Self {
         Self {
-            kind: Some(failure::Kind::Iris(value)),
+            kind: Some(failure::Kind::Migration(value)),
         }
     }
 }

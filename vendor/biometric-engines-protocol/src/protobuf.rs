@@ -6,7 +6,7 @@ use crate::{
         failure::Location,
     },
     failure::Kind,
-    framing, iris,
+    framing, migration,
     protocol_failure::Reason,
     request::Operation,
     response::Outcome,
@@ -47,7 +47,7 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
 }
 
 /// Decodes the protobuf structure and enforces [`face::check_image_limits`] or
-/// [`iris::check_image_limits`] for requests of the current protocol version.
+/// [`migration::check_image_limits`] for requests of the current protocol version.
 ///
 /// # Errors
 /// Rejects oversized or malformed protobuf bytes with request ID zero, and requests
@@ -62,8 +62,8 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request, RejectedRequest> {
     match &request.operation {
         Some(operation) if request.protocol_version == PROTOCOL_VERSION => {
             let limits = match operation {
-                Operation::IrisMigration(request) => {
-                    iris::check_image_limits(request).map_err(Failure::from)
+                Operation::Migration(request) => {
+                    migration::check_image_limits(request).map_err(Failure::from)
                 }
                 operation => face::check_image_limits(operation).map_err(Failure::from),
             };
@@ -86,8 +86,8 @@ pub fn encode_response(response: &Response) -> Vec<u8> {
 /// Decodes and validates a response for consumers that need checked worker results.
 ///
 /// # Errors
-/// Rejects malformed envelopes, absent/nonfinite scores, oversized face embeddings, iris
-/// results with a missing eye or misshaped codes or embeddings, and incomplete or
+/// Rejects malformed envelopes, absent/nonfinite scores, oversized face embeddings,
+/// migration results with a missing part or misshaped codes or embeddings, and incomplete or
 /// unrecognized failure details. No domain-type conversion is performed.
 pub fn decode_response(bytes: &[u8]) -> Result<Response, Failure> {
     check_size(bytes)?;
@@ -107,13 +107,13 @@ pub fn decode_response(bytes: &[u8]) -> Result<Response, Failure> {
                 return Err(malformed());
             }
         }
-        Outcome::IrisMigration(result) => check_iris_result(result)?,
+        Outcome::Migration(result) => check_migration_result(result)?,
         Outcome::Failure(failure) => match failure.kind.as_ref().ok_or_else(malformed)? {
             Kind::Protocol(failure) => {
                 failure.reason.as_ref().ok_or_else(malformed)?;
             }
             Kind::Face(failure) => validate_face_failure(failure)?,
-            Kind::Iris(failure) => validate_iris_failure(failure)?,
+            Kind::Migration(failure) => validate_migration_failure(failure)?,
         },
     }
     Ok(response)
@@ -158,26 +158,32 @@ fn validate_face_failure(failure: &face::Failure) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Checks that both eyes are present with v2.1-sized codes and [`iris::EMBEDDING_SIZE`]
-/// embeddings: int4 values in [`iris::I4_RANGE`] and finite f32 values.
-fn check_iris_result(result: &iris::MigrationResult) -> Result<(), Failure> {
-    for eye in [&result.left, &result.right] {
+/// Checks that the face embedding is present and bounded like [`Outcome::Embedding`], and
+/// that both eyes carry v2.1-sized codes and [`migration::EMBEDDING_SIZE`] embeddings: int4
+/// values in [`migration::I4_RANGE`] and finite f32 values.
+fn check_migration_result(result: &migration::MigrationResult) -> Result<(), Failure> {
+    let face = result.face_embedding.as_ref().ok_or_else(malformed)?;
+    if face.vector.is_empty() || face.vector.len() > face::MAX_ENCODED_EMBEDDING_BYTES {
+        return Err(malformed());
+    }
+    for eye in [&result.left_iris, &result.right_iris] {
         let eye = eye.as_ref().ok_or_else(malformed)?;
         let codes_valid = [&eye.iris_code, &eye.mask_code]
             .iter()
-            .all(|code| code.len() == iris::ENCODED_CODE_LEN);
+            .all(|code| code.len() == migration::ENCODED_CODE_LEN);
         let i4_valid = [&eye.embedding, &eye.mirror_embedding]
             .iter()
             .all(|vector| {
-                vector.len() == iris::EMBEDDING_SIZE
+                vector.len() == migration::EMBEDDING_SIZE
                     && vector
                         .iter()
-                        .all(|&value| iris::I4_RANGE.contains(&value.cast_signed()))
+                        .all(|&value| migration::I4_RANGE.contains(&value.cast_signed()))
             });
         let f32_valid = [&eye.embedding_f32, &eye.mirror_embedding_f32]
             .iter()
             .all(|vector| {
-                vector.len() == iris::EMBEDDING_SIZE && vector.iter().all(|value| value.is_finite())
+                vector.len() == migration::EMBEDDING_SIZE
+                    && vector.iter().all(|value| value.is_finite())
             });
         if !(codes_valid && i4_valid && f32_valid) {
             return Err(malformed());
@@ -186,12 +192,13 @@ fn check_iris_result(result: &iris::MigrationResult) -> Result<(), Failure> {
     Ok(())
 }
 
-fn validate_iris_failure(failure: &iris::Failure) -> Result<(), Failure> {
-    let code = iris::FailureCode::try_from(failure.code).map_err(|_| malformed())?;
-    let eye = iris::EyeSide::try_from(failure.eye).map_err(|_| malformed())?;
-    if code == iris::FailureCode::Unspecified
-        || (code != iris::FailureCode::Internal && eye == iris::EyeSide::Unspecified)
-        || (code == iris::FailureCode::InvalidRequest) != failure.invalid_request_reason.is_some()
+fn validate_migration_failure(failure: &migration::Failure) -> Result<(), Failure> {
+    let code = migration::FailureCode::try_from(failure.code).map_err(|_| malformed())?;
+    let image = migration::ImageRole::try_from(failure.image).map_err(|_| malformed())?;
+    if code == migration::FailureCode::Unspecified
+        || (code != migration::FailureCode::Internal && image == migration::ImageRole::Unspecified)
+        || (code == migration::FailureCode::InvalidRequest)
+            != failure.invalid_request_reason.is_some()
     {
         return Err(malformed());
     }

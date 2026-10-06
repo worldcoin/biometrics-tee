@@ -1,4 +1,4 @@
-# Vendored from worldcoin/biometric-engines@fc8bf8e6ff63d71a2a1905adb9d9cc6be8ad9d26 (private repository).
+# Vendored from worldcoin/biometric-engines@6d686a59473ead00e28faa350905e652b488e393 (private repository).
 # Replace with the published crate once a release carries what the enclave needs.
 [package]
 name = "biometric-engines-protocol"

@@ -77,26 +77,29 @@ Limits used for face domain messages, any violation leads to a failure response:
 Image limits are enforced by `protobuf::decode_request` on the decoded request, without re-encoding.
 Clients can run the same check with `face::check_image_limits` before encoding a request.
 
-## Iris domain
+## DeepIdentifier migration
 
-Processing operations specific to the iris domain are defined in [iris.proto](proto/iris.proto).
+The migration operation is defined in [migration.proto](proto/migration.proto).
 
-|Operation      |Input                         |Successful outcome                                   |
-|:--------------|:-----------------------------|:----------------------------------------------------|
-|`IrisMigration`|Left and right IR PNG captures|Per eye: iris and mask code, DeepIdentifier embedding|
+|Operation  |Input                                        |Successful outcome                                                  |
+|:----------|:--------------------------------------------|:-------------------------------------------------------------------|
+|`Migration`|Orb RGB face image, left and right IR captures|Face embedding; per eye: iris and mask code, DeepIdentifier embedding|
 
-`IrisMigration` re-processes the archived captures of an Orb signup for the DeepIdentifier migration.
-Each eye runs capture QA, the full iris pipeline with its validators, and presentation attack detection; a failure on either eye fails the request.
+`Migration` re-processes the archived images of an Orb signup for the DeepIdentifier migration.
+The face image runs the Orb credential face pipeline, including its spoof checks.
+Each iris capture runs capture QA, the full iris pipeline with its validators, and presentation attack detection.
+Any failure fails the request.
 
-Per eye, the result carries:
+The result carries:
 
-- Iris and mask code as base64 of the packed v2.1 template, byte-identical to the Orb's `iris_codes.json` entries.
-- The int4-quantized embedding and its mirror, one value in `[-8, 7]` per byte, plus their f32 values before quantization.
+- The face embedding, in the same shape as the PCP's `face_embeddings.json` entries.
+- Per eye, iris and mask code as base64 of the packed v2.1 template, byte-identical to the Orb's `iris_codes.json` entries.
+- Per eye, the int4-quantized DeepIdentifier embedding and its mirror, one value in `[-8, 7]` per byte, plus their f32 values before quantization.
 
-`protobuf::decode_response` rejects results without both eyes, codes that are not 2,136 base64 characters, and embeddings that are not 512 values in range.
+`protobuf::decode_response` rejects results missing any part, face embeddings that are empty or over 4 KiB, codes that are not 2,136 base64 characters, and iris embeddings that are not 512 values in range.
 Shares are not part of the result; the consumer derives them.
 
-Limits: maximum 16 MiB per IR image, reported as `ImageTooLarge` at the offending eye.
+Limits: maximum 16 MiB per image, reported as `ImageTooLarge` at the offending image.
 
 ## Failures
 
@@ -115,8 +118,8 @@ The `location` field on a failure indicates which image role or comparison role 
 
 Helpers to construct `Failure` structures are defined in [face.rs](src/face.rs).
 
-### Iris failures
+### Migration failures
 
-Iris failures carry the outcome class only, never scores or thresholds: invalid request, invalid image, quality rejected (capture QA or validators), spoof detected, or internal.
-Every failure except `INTERNAL` names the eye it occurred for.
-Helpers are defined in [iris.rs](src/iris.rs).
+Migration failures carry the outcome class only, never scores or thresholds: invalid request, invalid image, quality rejected, spoof detected, or internal.
+Every failure except `INTERNAL` names the image it occurred for: face, left iris or right iris.
+Helpers are defined in [migration.rs](src/migration.rs).
