@@ -22,10 +22,12 @@ let
 
       # Crane prepares dependencies for the whole workspace, including di-sandbox's Linux-only
       # Minijail. Give it Nix's Minijail: the Cargo fallback expects the full upstream
-      # repository around the vendored crate and fails with no makefile.
+      # repository around the vendored crate and fails with no makefile. The worker protocol
+      # generates its messages with protoc.
       nativeBuildInputs = [
         pkgs.clang
         pkgs.pkg-config
+        pkgs.protobuf
       ];
       buildInputs = [
         pkgs.minijail

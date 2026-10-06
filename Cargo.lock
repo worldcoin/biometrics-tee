@@ -1295,10 +1295,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "di-dev-enclave-types",
+ "di-sandbox",
+ "di-worker-protocol",
+ "libc",
  "pontifex",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "vsock",
 ]
 
 [[package]]

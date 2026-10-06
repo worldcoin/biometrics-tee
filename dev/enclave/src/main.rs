@@ -1,23 +1,14 @@
-use std::sync::Arc;
+#[cfg(target_os = "linux")]
+mod runtime;
 
-use di_dev_enclave::{server, state::EnclaveState};
-use di_dev_enclave_types::PONTIFEX_PORT;
-use tracing_subscriber::EnvFilter;
+/// Starts the Linux enclave runtime.
+#[cfg(target_os = "linux")]
+fn main() -> anyhow::Result<()> {
+    runtime::run()
+}
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
-    let state = Arc::new(EnclaveState);
-
-    tracing::info!(port = PONTIFEX_PORT, "starting enclave Pontifex server");
-
-    // Err exits non-zero so the carrier restarts the enclave rather than idling without a server.
-    server::start(state, PONTIFEX_PORT)
-        .await
-        .inspect_err(|error| {
-            tracing::error!(%error, "enclave Pontifex server stopped");
-        })
+/// Refuses an unsandboxed fallback on unsupported platforms.
+#[cfg(not(target_os = "linux"))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("di-dev-enclave requires x86_64 Linux with Minijail and vsock")
 }
