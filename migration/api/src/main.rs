@@ -196,7 +196,7 @@ mod tests {
     };
     use di_migration_primitives::{
         EnclaveId,
-        app_api::DEVICE_PUBLIC_KEY_HEADER,
+        app_api::DEVICE_KEY_THUMBPRINT,
         host_api::{AttestationResponse, Capacity},
     };
     use di_migration_storage::{JobTable, PcpBucket};
@@ -385,7 +385,7 @@ mod tests {
             .uri("/v1/init-migration")
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(key) = device_key {
-            request = request.header(DEVICE_PUBLIC_KEY_HEADER, key);
+            request = request.header(DEVICE_KEY_THUMBPRINT, key);
         }
         request
             .body(Body::from(
@@ -883,7 +883,7 @@ mod tests {
         Request::builder()
             .method(method)
             .uri("/v1/migrations/test-sub")
-            .header(DEVICE_PUBLIC_KEY_HEADER, device_key)
+            .header(DEVICE_KEY_THUMBPRINT, device_key)
             .body(Body::empty())
             .unwrap()
     }

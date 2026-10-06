@@ -8,7 +8,7 @@ pub use crate::host_api::{ErrorBody, ErrorEnvelope};
 
 /// The caller's device public key, set by the auth proxy in front of the API once it has
 /// verified the device.
-pub const DEVICE_PUBLIC_KEY_HEADER: &str = "x-device-public-key";
+pub const DEVICE_KEY_THUMBPRINT: &str = "x-attested-key-thumbprint";
 
 /// `POST /v1/init-migration`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use di_migration_primitives::app_api::{
-    DEVICE_PUBLIC_KEY_HEADER, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
+    DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
     MigrateResponse, MigrationStatus,
 };
 use reqwest::{StatusCode, Url};
@@ -66,7 +66,7 @@ impl MigrationApiClient {
         let response = self
             .http
             .post(self.url(&["v1", "init-migration"]))
-            .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
+            .header(DEVICE_KEY_THUMBPRINT, device_public_key)
             .json(&InitMigrationRequest {
                 sub: sub.to_owned(),
                 proof: proof.to_owned(),
@@ -88,7 +88,7 @@ impl MigrationApiClient {
         let response = self
             .http
             .post(self.url(&["v1", "migrations", sub]))
-            .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
+            .header(DEVICE_KEY_THUMBPRINT, device_public_key)
             .send()
             .await
             .map_err(Error::Transport)?;
@@ -104,7 +104,7 @@ impl MigrationApiClient {
         let response = self
             .http
             .get(self.url(&["v1", "migrations", sub]))
-            .header(DEVICE_PUBLIC_KEY_HEADER, device_public_key)
+            .header(DEVICE_KEY_THUMBPRINT, device_public_key)
             .send()
             .await
             .map_err(Error::Transport)?;
@@ -197,7 +197,7 @@ mod tests {
             "/v1/init-migration",
             post(
                 |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
-                    assert_eq!(headers["x-device-public-key"], "device-key");
+                    assert_eq!(headers["x-attested-key-thumbprint"], "device-key");
                     assert_eq!(body["sub"], "test-sub");
                     assert_eq!(body["proof"], "cHJvb2Y=");
                     assert_eq!(body["challenge_id"], "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31");
