@@ -24,12 +24,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::router;
-    use crate::state::EnclaveState;
 
     #[test]
     fn router_registers_enclave_operations() {
-        let _router = router(Arc::new(
-            EnclaveState::boot().expect("should generate a key"),
-        ));
+        let _router = router(Arc::new(crate::test_support::state()));
     }
 }
