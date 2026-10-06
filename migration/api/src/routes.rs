@@ -135,6 +135,12 @@ async fn init_migration(
         active_until: now + state.upload_window.as_secs(),
         expires_at: now + JOB_RETENTION.as_secs(),
     };
+    // Presign before taking the lock, so a failure here leaves nothing that blocks a retry.
+    let upload_url = state
+        .bucket
+        .presign_upload(&job.job_id, state.presigned_url_ttl)
+        .await
+        .map_err(|error| ApiError::storage("s3", error.to_string()))?;
     state
         .jobs
         .create_job(&job)
@@ -143,12 +149,6 @@ async fn init_migration(
             StorageError::ActiveJob => ApiError::migration_in_progress(),
             error => ApiError::storage("dynamodb", error.to_string()),
         })?;
-
-    let upload_url = state
-        .bucket
-        .presign_upload(&job.job_id, state.presigned_url_ttl)
-        .await
-        .map_err(|error| ApiError::storage("s3", error.to_string()))?;
 
     Ok(Json(InitMigrationResponse {
         enclave_id: attestation.enclave_id,
