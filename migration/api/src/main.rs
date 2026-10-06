@@ -257,15 +257,35 @@ mod tests {
     }
 
     /// `DynamoDB` that refuses the lock because the `sub` has an active job.
-    async fn dynamodb_with_active_job() -> SocketAddr {
+    /// `DynamoDB` where the `sub` already holds the job `current`: a plain create is refused,
+    /// reads serve `current`, and a replacement is accepted and recorded.
+    async fn dynamodb_with_active_job(
+        current: serde_json::Value,
+        replacements: Arc<Mutex<Vec<serde_json::Value>>>,
+    ) -> SocketAddr {
         serve(Router::new().route(
             "/",
-            post(|| async {
-                (
-                    StatusCode::BAD_REQUEST,
-                    [(header::CONTENT_TYPE, AMZ_JSON)],
-                    r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"canceled","CancellationReasons":[{"Code":"None"},{"Code":"ConditionalCheckFailed"}]}"#,
-                )
+            post(move |headers: axum::http::HeaderMap, body: String| async move {
+                let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let target = headers["x-amz-target"].to_str().unwrap();
+                if target.ends_with("GetItem") {
+                    let id = body["Key"]["id"]["S"].as_str().unwrap();
+                    let item = if id.starts_with("sub#") {
+                        serde_json::json!({"id": {"S": id}, "job_id": {"S": JOB_ID}, "active_until": {"N": "0"}})
+                    } else {
+                        current.clone()
+                    };
+                    return (StatusCode::OK, [(header::CONTENT_TYPE, AMZ_JSON)], serde_json::json!({"Item": item}).to_string());
+                }
+                if body["TransactItems"].as_array().unwrap().len() == 2 {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        [(header::CONTENT_TYPE, AMZ_JSON)],
+                        r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"canceled","CancellationReasons":[{"Code":"None"},{"Code":"ConditionalCheckFailed"}]}"#.to_owned(),
+                    );
+                }
+                replacements.lock().unwrap().push(body);
+                (StatusCode::OK, [(header::CONTENT_TYPE, AMZ_JSON)], "{}".to_owned())
             }),
         ))
         .await
@@ -467,13 +487,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_init_for_the_sub_is_in_progress() {
-        let state = state(vec![host(0, 4).await], dynamodb_with_active_job().await).await;
+    async fn a_second_init_for_a_running_or_foreign_job_is_in_progress() {
+        let mut foreign = job_row("created", now(), &[]);
+        foreign["device_public_key"] = serde_json::json!({"S": "other-device"});
+        for current in [job_row("migrating", now(), &[]), foreign] {
+            let replacements = Arc::new(Mutex::new(Vec::new()));
+            let dynamodb = dynamodb_with_active_job(current, Arc::clone(&replacements)).await;
+            let state = state(vec![host(0, 4).await], dynamodb).await;
+
+            let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert_eq!(error_code(response).await, "migration_in_progress");
+            assert!(replacements.lock().unwrap().is_empty());
+        }
+    }
+
+    /// An app that lost its init response, or never uploaded, starts over with a new job.
+    #[tokio::test]
+    async fn a_second_init_replaces_the_device_s_unclaimed_job() {
+        let replacements = Arc::new(Mutex::new(Vec::new()));
+        let dynamodb =
+            dynamodb_with_active_job(job_row("created", now(), &[]), Arc::clone(&replacements))
+                .await;
+        let state = state(vec![host(0, 4).await], dynamodb).await;
 
         let response = routes::router(state).oneshot(valid_init()).await.unwrap();
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert_eq!(error_code(response).await, "migration_in_progress");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(json(response).await["upload_url"].is_string());
+        let replacements = replacements.lock().unwrap();
+        assert_eq!(replacements.len(), 1);
+        let lock = &replacements[0]["TransactItems"][1]["Put"];
+        assert_eq!(lock["ExpressionAttributeValues"][":previous"]["S"], JOB_ID);
     }
 
     /// The host was polled but stops answering before init asks it to attest.
