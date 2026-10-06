@@ -15,7 +15,7 @@ members = [
     "migration/cli",
     "migration/proof",
     "sandbox",
-    "vendor/biometric-engines-protocol",
+    "worker-protocol",
 ]
 resolver = "3"
 
@@ -32,7 +32,6 @@ publish = false
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
-biometric-engines-protocol = { path = "vendor/biometric-engines-protocol" }
 aws-config = "1"
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
@@ -45,6 +44,7 @@ di-dev-enclave-types = { path = "dev/enclave-types" }
 di-migration-enclave-types = { path = "migration/enclave-types" }
 di-migration-primitives = { path = "migration/primitives" }
 di-migration-storage = { path = "migration/storage" }
+di-worker-protocol = { path = "worker-protocol" }
 flate2 = "1.1"
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 http-body-util = "0.1"

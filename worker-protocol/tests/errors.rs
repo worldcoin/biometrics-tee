@@ -1,4 +1,4 @@
-use biometric_engines_protocol::{Failure, face, protobuf};
+use di_worker_protocol::{Failure, migration, protobuf};
 use std::error::Error;
 
 #[test]
@@ -11,7 +11,7 @@ fn failure_and_decode_errors_work_with_standard_rust_error_handling() {
     fn assert_error<T: Error + Send + Sync + 'static>() {}
 
     assert_error::<Failure>();
-    assert_error::<face::Failure>();
+    assert_error::<migration::Failure>();
     assert_error::<protobuf::RejectedRequest>();
 
     let error = decode().unwrap_err();

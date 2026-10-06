@@ -1,9 +1,7 @@
-//! Generated protobuf contracts, transport framing, and bounded codecs.
-//! Request decoding enforces byte limits only; semantic request invariants are checked
-//! by the worker.
+//! Wire-compatible subset of upstream `biometric-engines-protocol`: the envelope and the
+//! `DeepIdentifier` migration operation, transport framing, and bounded codecs.
 #![warn(clippy::pedantic)]
 
-pub mod face;
 pub mod framing;
 pub mod migration;
 pub mod protobuf;
@@ -16,11 +14,6 @@ pub mod protobuf;
     reason = "prost-generated code"
 )]
 mod generated {
-    pub mod face {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/biometric_engines.face.v1.rs"));
-        }
-    }
     pub mod migration {
         pub mod v1 {
             include!(concat!(
@@ -62,14 +55,6 @@ impl Response {
             protocol_version: PROTOCOL_VERSION,
             request_id,
             outcome: Some(outcome),
-        }
-    }
-}
-
-impl From<face::Failure> for Failure {
-    fn from(value: face::Failure) -> Self {
-        Self {
-            kind: Some(failure::Kind::Face(value)),
         }
     }
 }

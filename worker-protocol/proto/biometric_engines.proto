@@ -1,7 +1,8 @@
+// Subset of the upstream envelope: the migration operation only. Field numbers must match
+// upstream; operations and failure kinds absent here are skipped as unknown fields.
 syntax = "proto3";
 package biometric_engines.v1;
 
-import "face.proto";
 import "migration.proto";
 
 message Ready { uint32 protocol_version = 1; }
@@ -11,9 +12,6 @@ message Request {
   // Must be non-zero; zero is reserved for replies to undecodable requests.
   uint64 request_id = 2;
   oneof operation {
-    biometric_engines.face.v1.DeepFaceRequest deep_face = 3;
-    biometric_engines.face.v1.GrayBadgeRequest gray_badge = 4;
-    biometric_engines.face.v1.EmbeddingRequest embedding = 5;
     biometric_engines.migration.v1.MigrationRequest migration = 6;
   }
 }
@@ -23,19 +21,13 @@ message Response {
   uint64 request_id = 2;
   oneof outcome {
     Failure failure = 3;
-    biometric_engines.face.v1.DeepFaceResult deep_face = 4;
-    biometric_engines.face.v1.GrayBadgeResult gray_badge = 5;
-    biometric_engines.face.v1.EmbeddingResult embedding = 6;
     biometric_engines.migration.v1.MigrationResult migration = 7;
   }
 }
 
-// Failures can occurr either on the protocol layer or during the processing
-// steps which are domain-specific.
 message Failure {
   oneof kind {
     ProtocolFailure protocol = 1;
-    biometric_engines.face.v1.Failure face = 2;
     biometric_engines.migration.v1.Failure migration = 3;
   }
 }

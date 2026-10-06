@@ -5,6 +5,8 @@ pub use crate::generated::migration::v1::*;
 pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Base64 length of a packed v2.1 iris or mask code: 16 x 200 x 2 x 2 bits, 1,600 bytes.
 pub const ENCODED_CODE_LEN: usize = 2136;
+/// Maximum encoded face embedding vector length: 4 KiB, as for face-domain embeddings.
+pub const MAX_ENCODED_FACE_EMBEDDING_BYTES: usize = 4 * 1024;
 /// `DeepIdentifier` embedding dimension.
 pub const EMBEDDING_SIZE: usize = 512;
 /// Value range of an int4-quantized embedding element.
@@ -84,6 +86,16 @@ impl std::fmt::Debug for Failure {
 impl std::fmt::Debug for MigrationRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MigrationRequest").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for FaceEmbedding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FaceEmbedding")
+            .field("r#type", &self.r#type)
+            .field("version", &self.version)
+            .field("inference_backend", &self.inference_backend)
+            .finish_non_exhaustive()
     }
 }
 

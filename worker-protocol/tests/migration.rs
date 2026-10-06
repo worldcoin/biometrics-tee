@@ -1,6 +1,5 @@
-use biometric_engines_protocol::{
+use di_worker_protocol::{
     PROTOCOL_VERSION, Request, Response,
-    face::EmbeddingResult,
     migration::{invalid_request_reason::Reason, *},
     protobuf,
     request::Operation,
@@ -18,13 +17,12 @@ fn request(face: usize, left: usize, right: usize) -> Request {
     )
 }
 
-fn face_embedding() -> EmbeddingResult {
-    EmbeddingResult {
+fn face_embedding() -> FaceEmbedding {
+    FaceEmbedding {
         vector: "face-vector".into(),
         r#type: "face".into(),
         version: "2.0.0".into(),
         inference_backend: "face-engine".into(),
-        debug_report: None,
     }
 }
 
@@ -51,7 +49,7 @@ fn result(left: EyeResult) -> MigrationResult {
     }
 }
 
-fn decode(outcome: Outcome) -> Result<Response, biometric_engines_protocol::Failure> {
+fn decode(outcome: Outcome) -> Result<Response, di_worker_protocol::Failure> {
     protobuf::decode_response(&protobuf::encode_response(&Response::new(1, outcome)))
 }
 
@@ -149,16 +147,15 @@ fn results_require_every_part_with_exact_shapes() {
             ..result(eye())
         },
         MigrationResult {
-            face_embedding: Some(EmbeddingResult {
+            face_embedding: Some(FaceEmbedding {
                 vector: String::new(),
                 ..face_embedding()
             }),
             ..result(eye())
         },
         MigrationResult {
-            face_embedding: Some(EmbeddingResult {
-                vector: "x"
-                    .repeat(biometric_engines_protocol::face::MAX_ENCODED_EMBEDDING_BYTES + 1),
+            face_embedding: Some(FaceEmbedding {
+                vector: "x".repeat(MAX_ENCODED_FACE_EMBEDDING_BYTES + 1),
                 ..face_embedding()
             }),
             ..result(eye())

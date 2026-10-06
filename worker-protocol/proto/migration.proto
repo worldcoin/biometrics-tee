@@ -7,8 +7,6 @@
 syntax = "proto3";
 package biometric_engines.migration.v1;
 
-import "face.proto";
-
 /*
  * Migration request for one signup. Every image is required and encoded as stored in the PCP.
  *
@@ -25,14 +23,21 @@ message MigrationRequest {
 }
 
 message MigrationResult {
-  // Same shape as the PCP's `face_embeddings.json` entries.
-  biometric_engines.face.v1.EmbeddingResult face_embedding = 1;
+  FaceEmbedding face_embedding = 1;
   EyeResult left_iris = 2;
   EyeResult right_iris = 3;
   string iris_code_version = 4;
   string iris_model_version = 5;
   string iris_embedding_version = 6;
   string iris_inference_backend = 7;
+}
+
+// Same fields as the PCP's `face_embeddings.json` entries.
+message FaceEmbedding {
+  string vector = 1;
+  string type = 2;
+  string version = 3;
+  string inference_backend = 4;
 }
 
 message EyeResult {
