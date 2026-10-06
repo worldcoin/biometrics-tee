@@ -6,8 +6,9 @@ use crate::{
         failure::Location,
     },
     failure::Kind,
-    framing,
+    framing, migration,
     protocol_failure::Reason,
+    request::Operation,
     response::Outcome,
 };
 use prost::Message;
@@ -45,12 +46,12 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
     request.encode_to_vec()
 }
 
-/// Decodes the protobuf structure and enforces [`face::check_image_limits`] for requests of
-/// the current protocol version.
+/// Decodes the protobuf structure and enforces [`face::check_image_limits`] or
+/// [`migration::check_image_limits`] for requests of the current protocol version.
 ///
 /// # Errors
 /// Rejects oversized or malformed protobuf bytes with request ID zero, and requests
-/// exceeding the face image limits with their decoded request ID.
+/// exceeding the image limits with their decoded request ID.
 pub fn decode_request(bytes: &[u8]) -> Result<Request, RejectedRequest> {
     let request = check_size(bytes)
         .and_then(|()| Request::decode(bytes).map_err(|_| malformed()))
@@ -60,9 +61,15 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request, RejectedRequest> {
         })?;
     match &request.operation {
         Some(operation) if request.protocol_version == PROTOCOL_VERSION => {
-            face::check_image_limits(operation).map_err(|failure| RejectedRequest {
+            let limits = match operation {
+                Operation::Migration(request) => {
+                    migration::check_image_limits(request).map_err(Failure::from)
+                }
+                operation => face::check_image_limits(operation).map_err(Failure::from),
+            };
+            limits.map_err(|failure| RejectedRequest {
                 request_id: request.request_id,
-                failure: failure.into(),
+                failure,
             })?;
         }
         _ => {}
@@ -79,8 +86,9 @@ pub fn encode_response(response: &Response) -> Vec<u8> {
 /// Decodes and validates a response for consumers that need checked worker results.
 ///
 /// # Errors
-/// Rejects malformed envelopes, absent/nonfinite scores, oversized embeddings, and
-/// incomplete or unrecognized failure details. No domain-type conversion is performed.
+/// Rejects malformed envelopes, absent/nonfinite scores, oversized face embeddings,
+/// migration results with a missing part or misshaped codes or embeddings, and incomplete or
+/// unrecognized failure details. No domain-type conversion is performed.
 pub fn decode_response(bytes: &[u8]) -> Result<Response, Failure> {
     check_size(bytes)?;
     let response = Response::decode(bytes).map_err(|_| malformed())?;
@@ -99,11 +107,13 @@ pub fn decode_response(bytes: &[u8]) -> Result<Response, Failure> {
                 return Err(malformed());
             }
         }
+        Outcome::Migration(result) => check_migration_result(result)?,
         Outcome::Failure(failure) => match failure.kind.as_ref().ok_or_else(malformed)? {
             Kind::Protocol(failure) => {
                 failure.reason.as_ref().ok_or_else(malformed)?;
             }
             Kind::Face(failure) => validate_face_failure(failure)?,
+            Kind::Migration(failure) => validate_migration_failure(failure)?,
         },
     }
     Ok(response)
@@ -144,6 +154,56 @@ fn validate_face_failure(failure: &face::Failure) -> Result<(), Failure> {
         {
             return Err(malformed());
         }
+    }
+    Ok(())
+}
+
+/// Checks that the face embedding is present and bounded like [`Outcome::Embedding`], and
+/// that both eyes carry v2.1-sized codes and [`migration::EMBEDDING_SIZE`] embeddings: int4
+/// values in [`migration::I4_RANGE`] and finite f32 values.
+fn check_migration_result(result: &migration::MigrationResult) -> Result<(), Failure> {
+    let face = result.face_embedding.as_ref().ok_or_else(malformed)?;
+    if face.vector.is_empty() || face.vector.len() > face::MAX_ENCODED_EMBEDDING_BYTES {
+        return Err(malformed());
+    }
+    for eye in [&result.left_iris, &result.right_iris] {
+        let eye = eye.as_ref().ok_or_else(malformed)?;
+        let codes_valid = [&eye.iris_code, &eye.mask_code]
+            .iter()
+            .all(|code| code.len() == migration::ENCODED_CODE_LEN);
+        let i4_valid = [&eye.embedding, &eye.mirror_embedding]
+            .iter()
+            .all(|vector| {
+                vector.len() == migration::EMBEDDING_SIZE
+                    && vector
+                        .iter()
+                        .all(|&value| migration::I4_RANGE.contains(&value.cast_signed()))
+            });
+        let f32_valid = [&eye.embedding_f32, &eye.mirror_embedding_f32]
+            .iter()
+            .all(|vector| {
+                vector.len() == migration::EMBEDDING_SIZE
+                    && vector.iter().all(|value| value.is_finite())
+            });
+        if !(codes_valid && i4_valid && f32_valid) {
+            return Err(malformed());
+        }
+    }
+    Ok(())
+}
+
+fn validate_migration_failure(failure: &migration::Failure) -> Result<(), Failure> {
+    let code = migration::FailureCode::try_from(failure.code).map_err(|_| malformed())?;
+    let image = migration::ImageRole::try_from(failure.image).map_err(|_| malformed())?;
+    if code == migration::FailureCode::Unspecified
+        || (code != migration::FailureCode::Internal && image == migration::ImageRole::Unspecified)
+        || (code == migration::FailureCode::InvalidRequest)
+            != failure.invalid_request_reason.is_some()
+    {
+        return Err(malformed());
+    }
+    if let Some(reason) = &failure.invalid_request_reason {
+        reason.reason.as_ref().ok_or_else(malformed)?;
     }
     Ok(())
 }
