@@ -4,13 +4,14 @@ use di_migration_enclave_types::{self as enclave_types, GetEncryptionKeyRequest,
 
 use crate::state::EnclaveState;
 
-/// Returns the full key with an empty document: the mock has no NSM to attest its commitment.
+/// Returns the full key and the cached document attesting its commitment; the app checks both
+/// before sealing a PCP.
 pub async fn handler(
     state: Arc<EnclaveState>,
     _: GetEncryptionKeyRequest,
 ) -> Result<KeyAttestation, enclave_types::Error> {
     Ok(KeyAttestation {
-        document: Vec::new(),
+        document: state.channel_key_attestation().await,
         public_key: state.channel().public_key(),
     })
 }
@@ -20,11 +21,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::{GetEncryptionKeyRequest, handler};
-    use crate::state::EnclaveState;
 
     #[tokio::test]
     async fn returns_this_boots_full_key() {
-        let state = Arc::new(EnclaveState::boot().expect("should generate a key"));
+        let state = Arc::new(crate::test_support::state());
 
         let response = handler(Arc::clone(&state), GetEncryptionKeyRequest)
             .await
@@ -32,5 +32,6 @@ mod tests {
 
         assert_eq!(response.public_key.len(), 1216);
         assert_eq!(response.public_key, state.channel().public_key());
+        assert_eq!(response.document, state.channel_key_attestation().await);
     }
 }
