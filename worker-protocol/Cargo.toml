@@ -1,0 +1,16 @@
+# Wire-compatible subset of biometric-engines-protocol from worldcoin/biometric-engines@53ae19e1dc206dc03a4d4b5ac9ed35125044b37f
+# (private repository): the envelope and the migration operation only.
+# Replace with a published crate once one carries the migration operation.
+[package]
+name = "di-worker-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+prost = "0.14.3"
+thiserror.workspace = true
+
+[build-dependencies]
+prost-build = "0.14.3"

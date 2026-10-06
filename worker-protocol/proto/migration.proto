@@ -1,0 +1,97 @@
+/**
+ * DeepIdentifier migration of an Orb signup.
+ *
+ * Re-processes the archived face RGB image and both IR iris captures of a signup into a
+ * current face embedding, the legacy iris codes and the DeepIdentifier iris embeddings.
+ */
+syntax = "proto3";
+package biometric_engines.migration.v1;
+
+/*
+ * Migration request for one signup. Every image is required and encoded as stored in the PCP.
+ *
+ * The face image runs the Orb credential face pipeline, including its spoof checks. Each iris
+ * capture runs capture QA, the full iris pipeline with its validators, and presentation attack
+ * detection. Any failure fails the whole request.
+ */
+message MigrationRequest {
+  // Orb RGB face image.
+  bytes face = 1;
+  // IR captures, PNG-encoded (`left_ir.png`, `right_ir.png`).
+  bytes left_iris = 2;
+  bytes right_iris = 3;
+}
+
+message MigrationResult {
+  FaceEmbedding face_embedding = 1;
+  EyeResult left_iris = 2;
+  EyeResult right_iris = 3;
+  string iris_code_version = 4;
+  string iris_model_version = 5;
+  string iris_embedding_version = 6;
+  string iris_inference_backend = 7;
+}
+
+// Same fields as the PCP's `face_embeddings.json` entries.
+message FaceEmbedding {
+  string vector = 1;
+  string type = 2;
+  string version = 3;
+  string inference_backend = 4;
+}
+
+message EyeResult {
+  // Base64 of the packed template, byte-identical to the Orb's `iris_codes.json` entries.
+  string iris_code = 1;
+  string mask_code = 2;
+  // Int4-quantized DeepIdentifier embedding and its mirror, one value in [-8, 7] per byte.
+  bytes embedding = 3;
+  bytes mirror_embedding = 4;
+  // L2-normalized f32 embedding and its mirror before quantization.
+  repeated float embedding_f32 = 5;
+  repeated float mirror_embedding_f32 = 6;
+}
+
+
+/*
+ * Failure information in case of request processing failures.
+ *
+ * Failures carry the outcome class only, never scores or thresholds.
+ */
+message Failure {
+  FailureCode code = 1;
+  // Required for every code except INTERNAL.
+  ImageRole image = 2;
+  // Required exactly when code is INVALID_REQUEST.
+  InvalidRequestReason invalid_request_reason = 3;
+}
+
+enum FailureCode {
+  FAILURE_CODE_UNSPECIFIED = 0;
+  FAILURE_CODE_INVALID_REQUEST = 1;
+  // The image cannot be decoded.
+  FAILURE_CODE_INVALID_IMAGE = 2;
+  // A quality check or validator rejected the image.
+  FAILURE_CODE_QUALITY_REJECTED = 3;
+  // A spoof or presentation attack check flagged the image.
+  FAILURE_CODE_SPOOF_DETECTED = 4;
+  FAILURE_CODE_INTERNAL = 5;
+}
+
+enum ImageRole {
+  IMAGE_ROLE_UNSPECIFIED = 0;
+  IMAGE_ROLE_FACE = 1;
+  IMAGE_ROLE_LEFT_IRIS = 2;
+  IMAGE_ROLE_RIGHT_IRIS = 3;
+}
+
+message InvalidRequestReason {
+  oneof reason {
+    EmptyReason missing_image = 1;
+    ByteLimitExceeded image_too_large = 2;
+  }
+}
+
+message EmptyReason {}
+
+message ByteLimitExceeded { uint64 limit_bytes = 1; }

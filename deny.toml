@@ -32,6 +32,8 @@ exceptions = [
     { allow = ["MPL-2.0"], name = "option-ext", version = "0.2.0" },
     # The AWS SDK reaches foldhash through hashbrown; Zlib is permissive and OSI approved.
     { allow = ["Zlib"], name = "foldhash", version = "0.2.0" },
+    # The worker protocol's prost-build reaches the older foldhash through petgraph.
+    { allow = ["Zlib"], name = "foldhash", version = "0.1.5" },
 ]
 
 # Minijail's Rust crates inherit the repository's BSD license but omit Cargo metadata.

@@ -1,0 +1,47 @@
+// Subset of the upstream envelope: the migration operation only. Field numbers must match
+// upstream; operations and failure kinds absent here are skipped as unknown fields.
+syntax = "proto3";
+package biometric_engines.v1;
+
+import "migration.proto";
+
+message Ready { uint32 protocol_version = 1; }
+
+message Request {
+  uint32 protocol_version = 1;
+  // Must be non-zero; zero is reserved for replies to undecodable requests.
+  uint64 request_id = 2;
+  oneof operation {
+    biometric_engines.migration.v1.MigrationRequest migration = 6;
+  }
+}
+
+message Response {
+  uint32 protocol_version = 1;
+  uint64 request_id = 2;
+  oneof outcome {
+    Failure failure = 3;
+    biometric_engines.migration.v1.MigrationResult migration = 7;
+  }
+}
+
+message Failure {
+  oneof kind {
+    ProtocolFailure protocol = 1;
+    biometric_engines.migration.v1.Failure migration = 3;
+  }
+}
+
+message ProtocolFailure {
+  oneof reason {
+    EmptyReason malformed_message = 1;
+    ByteLimitExceeded message_too_large = 2;
+    EmptyReason unsupported_version = 3;
+    // Missing operation or an operation unknown to this schema.
+    EmptyReason invalid_operation = 4;
+  }
+}
+
+message EmptyReason {}
+
+message ByteLimitExceeded { uint64 limit_bytes = 1; }
