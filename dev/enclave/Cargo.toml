@@ -17,3 +17,9 @@ pontifex = { workspace = true, features = ["server"] }
 tokio = { workspace = true, features = ["macros"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+di-sandbox.workspace = true
+di-worker-protocol.workspace = true
+libc.workspace = true
+vsock.workspace = true

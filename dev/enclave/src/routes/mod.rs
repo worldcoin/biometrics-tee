@@ -19,13 +19,11 @@ pub(crate) fn router(state: Arc<EnclaveState>) -> Router<Arc<EnclaveState>> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::router;
-    use crate::state::EnclaveState;
+    use crate::state::tests::state;
 
     #[test]
     fn router_registers_enclave_operations() {
-        let _router = router(Arc::new(EnclaveState));
+        let _router = router(state());
     }
 }

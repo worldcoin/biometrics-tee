@@ -24,12 +24,10 @@ pub async fn handler(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use di_dev_enclave_types::{self as enclave_types, MigrateRequest};
 
     use super::handler;
-    use crate::state::EnclaveState;
+    use crate::state::tests::state;
 
     fn request(bytes: usize) -> MigrateRequest {
         MigrateRequest {
@@ -39,18 +37,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_pcp_comes_back_unchanged() {
-        let state = Arc::new(EnclaveState);
-
-        let response = handler(state, request(32)).await.expect("should echo");
+        let response = handler(state(), request(32)).await.expect("should echo");
 
         assert_eq!(response.pcp, vec![7u8; 32]);
     }
 
     #[tokio::test]
     async fn an_empty_pcp_is_rejected() {
-        let state = Arc::new(EnclaveState);
-
-        let error = handler(state, request(0)).await.expect_err("should reject");
+        let error = handler(state(), request(0))
+            .await
+            .expect_err("should reject");
 
         assert_eq!(error, enclave_types::Error::EmptyPcp);
     }
