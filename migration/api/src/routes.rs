@@ -203,6 +203,7 @@ async fn migrate(
         sub: sub.to_owned(),
         device_public_key: job.device_public_key,
         enclave_id: job.enclave_id,
+        deadline,
     };
     let Err(error) = state.hosts.submit(host, &request).await else {
         return Ok(accepted(deadline));

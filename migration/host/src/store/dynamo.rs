@@ -1,5 +1,7 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use async_trait::async_trait;
-use di_migration_primitives::{JobId, Reason};
+use di_migration_primitives::{Reason, host_api::JobRequest};
 use di_migration_storage::JobTable;
 
 use super::{JobStore, StoreError};
@@ -24,11 +26,22 @@ impl JobStore for DynamoJobStore {
         self.table.check_ready().await
     }
 
-    async fn mark_migrated(&self, job_id: &JobId, result_key: &str) -> Result<(), StoreError> {
-        self.table.mark_migrated(job_id, result_key).await
+    async fn mark_migrated(&self, job: &JobRequest, result_key: &str) -> Result<(), StoreError> {
+        self.table
+            .mark_migrated(&job.job_id, &job.sub, result_key, unix_now())
+            .await
     }
 
-    async fn mark_failed(&self, job_id: &JobId, reason: Reason) -> Result<(), StoreError> {
-        self.table.mark_failed(job_id, reason).await
+    async fn mark_failed(&self, job: &JobRequest, reason: Reason) -> Result<(), StoreError> {
+        self.table
+            .mark_failed(&job.job_id, &job.sub, reason, unix_now())
+            .await
     }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
 }
