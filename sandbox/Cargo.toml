@@ -10,22 +10,20 @@ publish.workspace = true
 test-worker = []
 
 [dependencies]
-hex.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
-tempfile.workspace = true
+sandbox-bundle.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util"] }
 tracing.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 minijail.workspace = true
-tokio-vsock.workspace = true
 
 [[bin]]
 name = "sandbox-test-worker"
