@@ -10,11 +10,11 @@ members = [
     "migration/host",
     "migration/primitives",
     "migration/storage",
+    "migration/shares",
     "migration/api",
     "migration/api-client",
     "migration/cli",
     "migration/proof",
-    "migration/shares",
     "sandbox",
     "worker-protocol",
 ]
