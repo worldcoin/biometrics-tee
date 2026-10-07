@@ -11,7 +11,7 @@ use axum::{
 use di_migration_primitives::{
     JobId, Reason, Status,
     app_api::{
-        DEVICE_PUBLIC_KEY_HEADER, InitMigrationRequest, InitMigrationResponse, MigrateResponse,
+        DEVICE_KEY_THUMBPRINT, InitMigrationRequest, InitMigrationResponse, MigrateResponse,
         MigrationStatus,
     },
     host_api::JobRequest,
@@ -332,7 +332,7 @@ fn valid_sub(sub: &str) -> Result<&str, ApiError> {
 
 /// The device key the auth proxy forwards; the API does not verify devices itself.
 fn device_public_key(headers: &HeaderMap) -> Option<String> {
-    let key = headers.get(DEVICE_PUBLIC_KEY_HEADER)?.to_str().ok()?.trim();
+    let key = headers.get(DEVICE_KEY_THUMBPRINT)?.to_str().ok()?.trim();
     (!key.is_empty() && key.len() <= MAX_DEVICE_KEY_LEN).then(|| key.to_owned())
 }
 
