@@ -184,10 +184,15 @@ mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::{Arc, Mutex},
-        time::Duration,
+        time::{Duration, UNIX_EPOCH},
     };
 
     use async_trait::async_trait;
+    use attested_request::{
+        Platform,
+        sign::Signer,
+        test_util::{SoftwareSigner, TestClaims, TestIssuer, test_key},
+    };
     use axum::{
         Json, Router,
         body::Body,
@@ -207,6 +212,19 @@ mod tests {
 
     const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
     const AMZ_JSON: &str = "application/x-amz-json-1.0";
+
+    fn test_signer() -> SoftwareSigner {
+        SoftwareSigner::new(test_key("migration-api-test"), Platform::Android)
+    }
+
+    fn test_integrity_token(signer: &SoftwareSigner) -> String {
+        TestIssuer::new("https://attestation.example").mint(&TestClaims::valid(
+            "migration-api",
+            signer.platform(),
+            signer.verifying_key(),
+            UNIX_EPOCH + Duration::from_secs(1_790_000_000),
+        ))
+    }
 
     async fn serve(router: Router) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -609,12 +627,22 @@ mod tests {
         };
         let api = serve(routes::router(state)).await;
 
-        let response =
-            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
-                .unwrap()
-                .init_migration("device-key", "test-sub", "0xa100ff00deadbeef", CHALLENGE_ID)
-                .await
-                .unwrap();
+        let signer = test_signer();
+        let token = test_integrity_token(&signer);
+        let response = migration_api_client::MigrationApiClient::new(
+            &format!("http://{api}").parse().unwrap(),
+        )
+        .unwrap()
+        .init_migration(
+            &token,
+            &signer,
+            "device-key",
+            "test-sub",
+            "0xa100ff00deadbeef",
+            CHALLENGE_ID,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(response.enclave_id, enclave_id());
         let seen = mock.seen.lock().unwrap().clone();

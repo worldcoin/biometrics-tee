@@ -7,13 +7,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use clap::{Args, Parser, Subcommand};
-use di_migration_client::{
-    MigrationApiClient,
-    sealing::{EnclaveVerifier, PcpOpener},
+use attested_request::{
+    Platform,
+    test_util::{SoftwareSigner, test_key},
 };
-use di_migration_primitives::Status;
-use pontifex::PcrConfig;
+use clap::{Parser, Subcommand};
+use migration_api_client::MigrationApiClient;
 use reqwest::Url;
 
 /// How often a running migration is polled.
@@ -41,40 +40,18 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Starts a migration and prints the enclave id, attestation and upload URL.
-    InitMigration(InitArgs),
-    /// Runs a whole migration as the app does: verifies the enclave, seals and uploads the PCP,
-    /// waits for the job, and opens the migrated PCP into `--out`.
-    Migrate {
-        #[command(flatten)]
-        init: InitArgs,
+    InitMigration {
+        /// Attestation Gateway integrity token (JWT) whose `cnf.jwk` matches the signer.
+        #[arg(long, env = "INTEGRITY_TOKEN")]
+        integrity_token: String,
 
-        /// The PCP to migrate.
-        #[arg(long)]
-        pcp: PathBuf,
+        /// Seed for the local software signer (must match the key attested in the token).
+        #[arg(long, env = "DEVICE_SIGNER_SEED", default_value = "migration-cli")]
+        device_signer_seed: String,
 
-        /// Where the migrated PCP is written, readable by the owner only.
-        #[arg(long)]
-        out: PathBuf,
-
-        /// PCR JSON of the enclave build to trust, as `scripts/build-enclaves.sh` writes it.
-        #[arg(
-            long,
-            env = "ENCLAVE_PCRS",
-            required_unless_present = "insecure_skip_measurements"
-        )]
-        pcrs: Option<PathBuf>,
-
-        /// Trusts any genuine Nitro enclave whatever it runs; only for debug-mode enclaves.
-        #[arg(long, conflicts_with = "pcrs")]
-        insecure_skip_measurements: bool,
-    },
-}
-
-#[derive(Args)]
-struct InitArgs {
-    /// The device public key; in production the auth proxy sets it after verifying the device.
-    #[arg(long, env = "DEVICE_PUBLIC_KEY")]
-    device_public_key: String,
+        /// The device public key; in production the auth proxy sets it after verifying the device.
+        #[arg(long, env = "DEVICE_PUBLIC_KEY")]
+        device_public_key: String,
 
     /// Subject of the user being migrated.
     #[arg(long, env = "SUB")]
@@ -111,13 +88,25 @@ async fn main() -> ExitCode {
 
 async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String> {
     match command {
-        Command::InitMigration(init) => {
+        Command::InitMigration {
+            integrity_token,
+            device_signer_seed,
+            device_public_key,
+            sub,
+            proof,
+            challenge_id,
+            upload,
+        } => {
+            let signer =
+                SoftwareSigner::new(test_key(&device_signer_seed), Platform::Android);
             let response = client
                 .init_migration(
-                    &init.device_public_key,
-                    &init.sub,
-                    &init.proof,
-                    &init.challenge_id,
+                    &integrity_token,
+                    &signer,
+                    &device_public_key,
+                    &sub,
+                    &proof,
+                    &challenge_id,
                 )
                 .await
                 .map_err(|error| format!("init-migration failed: {error}"))?;
