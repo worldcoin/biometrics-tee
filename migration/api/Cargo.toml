@@ -28,7 +28,7 @@ di-migration-primitives.workspace = true
 di-migration-storage.workspace = true
 
 [dev-dependencies]
-attested-request = { git = "https://github.com/worldcoin/attested-proxy", rev = "f5d9695968c8376fd092bbdee9ad6dba274b58fb", features = ["test-util"] }
+attested-request = { version = "0.1.1", features = ["test-util"] }
 http-body-util.workspace = true
 di-migration-client.workspace = true
 serde_json.workspace = true

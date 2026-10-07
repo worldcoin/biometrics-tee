@@ -143,7 +143,8 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "attested-request"
 version = "0.1.1"
-source = "git+https://github.com/worldcoin/attested-proxy?rev=f5d9695968c8376fd092bbdee9ad6dba274b58fb#f5d9695968c8376fd092bbdee9ad6dba274b58fb"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac74dae2f24ebc640d3f42278f33d477071f4a6dc8ac4996387eca65d4a70a48"
 dependencies = [
  "base64 0.22.1",
  "ciborium",

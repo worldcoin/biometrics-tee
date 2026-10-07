@@ -11,7 +11,7 @@ name = "migration-cli"
 path = "src/main.rs"
 
 [dependencies]
-attested-request = { git = "https://github.com/worldcoin/attested-proxy", rev = "f5d9695968c8376fd092bbdee9ad6dba274b58fb", features = ["test-util"] }
+attested-request = { version = "0.1.1", features = ["test-util"] }
 clap = { workspace = true, features = ["derive", "env"] }
 di-migration-primitives.workspace = true
 hex.workspace = true
