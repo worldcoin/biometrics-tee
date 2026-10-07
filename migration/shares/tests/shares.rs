@@ -21,7 +21,7 @@ fn matches_upstream_shares_and_recipient_order() {
             .secret_share(&mut expected_rng)
             .unwrap()
             .map(|share| share.to_vec());
-        assert_eq!(actual.shares, expected);
+        assert_eq!(actual, expected);
     }
 }
 
@@ -31,7 +31,7 @@ fn every_pair_of_recipients_reconstructs_each_embedding() {
     let parties = [PartyID::ID0, PartyID::ID1, PartyID::ID2];
     for offset in [0, 1, 4, 5] {
         let expected = embedding(offset);
-        let vectors = generate(&expected, &mut rng).unwrap().shares;
+        let vectors = generate(&expected, &mut rng).unwrap();
         assert!(vectors.iter().all(|share| share.len() == IRIS_VECTOR_SIZE));
         for (a, b) in [(0, 1), (0, 2), (1, 2)] {
             let weights = [
@@ -63,7 +63,7 @@ fn repeated_embeddings_receive_fresh_shares() {
     let first = generate(&input, &mut rng).unwrap();
     let second = generate(&input, &mut rng).unwrap();
     for recipient in 0..3 {
-        assert_ne!(first.shares[recipient], second.shares[recipient]);
+        assert_ne!(first[recipient], second[recipient]);
     }
 }
 
@@ -83,7 +83,7 @@ fn invalid_inputs_are_rejected_before_consuming_randomness() {
     for invalid in malformed {
         let mut rng = StdRng::seed_from_u64(99);
         let mut untouched = rng.clone();
-        let error = generate(&invalid, &mut rng).err().unwrap();
+        let error = generate(&invalid, &mut rng).unwrap_err();
         match error {
             Error::InvalidLength { actual } => {
                 assert_eq!(actual, invalid.len());

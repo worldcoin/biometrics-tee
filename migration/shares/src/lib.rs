@@ -7,14 +7,6 @@
 use ampc_secret_sharing::iris_vector::{IRIS_VECTOR_SIZE, IrisVector};
 use rand::{CryptoRng, Rng};
 
-/// Three recipient shares of one quantized embedding.
-/// Same-index shares belong to the same recipient across embeddings and eyes.
-/// Sensitive share contents deliberately do not implement `Debug`.
-pub struct EmbeddingShares {
-    /// Shares in recipient order, each containing 512 values.
-    pub shares: [Vec<u16>; 3],
-}
-
 /// Sharing failures without embedding values. The caller supplies eye and mirror context.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -43,13 +35,14 @@ pub enum Error {
 /// each original or mirrored embedding, advancing the RNG across calls.
 /// Seed the RNG from fresh entropy in production.
 ///
+/// Returns three 512-element vectors in recipient order. Same-index shares
+/// belong to the same recipient across embeddings and eyes. The returned values
+/// are sensitive; callers must keep them out of logs.
+///
 /// # Errors
 /// Rejects lengths other than 512 and signed values outside `[-8, 7]`.
 /// Propagates failures from the underlying sharing operation.
-pub fn generate<R: Rng + CryptoRng>(
-    embedding: &[u8],
-    rng: &mut R,
-) -> Result<EmbeddingShares, Error> {
+pub fn generate<R: Rng + CryptoRng>(embedding: &[u8], rng: &mut R) -> Result<[Vec<u16>; 3], Error> {
     let bytes: &[u8; IRIS_VECTOR_SIZE] =
         embedding.try_into().map_err(|_| Error::InvalidLength {
             actual: embedding.len(),
@@ -63,7 +56,5 @@ pub fn generate<R: Rng + CryptoRng>(
         .map_err(|source| Error::Sharing {
             source: source.into(),
         })?;
-    Ok(EmbeddingShares {
-        shares: shares.map(|share| share.to_vec()),
-    })
+    Ok(shares.map(|share| share.to_vec()))
 }
