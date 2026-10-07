@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use attested_request::{
     base::CanonicalRequest,
-    sign::{Signer, SignError, sign_request},
+    sign::{SignError, Signer, sign_request},
 };
 use di_migration_primitives::app_api::{
     DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
@@ -16,6 +16,8 @@ use reqwest::{StatusCode, Url, header::CONTENT_TYPE};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_CANONICAL_SCHEME: &str = "https";
+const DEFAULT_CANONICAL_AUTHORITY: &str = "di-migration-api-attested-stage.worldcoin.dev";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,6 +46,10 @@ pub struct MigrationApiClient {
     http: reqwest::Client,
     /// Routes are appended to its path as segments.
     base_url: Url,
+    /// `@scheme` of the signed request. The dialed URL's scheme when unset.
+    canonical_scheme: Option<String>,
+    /// `@authority` of the signed request. The dialed URL's authority when unset.
+    canonical_authority: Option<String>,
 }
 
 impl MigrationApiClient {
@@ -62,7 +68,22 @@ impl MigrationApiClient {
         Ok(Self {
             http,
             base_url: base_url.clone(),
+            canonical_scheme: Some(DEFAULT_CANONICAL_SCHEME.to_owned()),
+            canonical_authority: Some(DEFAULT_CANONICAL_AUTHORITY.to_owned()),
         })
+    }
+
+    /// Signs `@scheme` and `@authority` as the public origin, while still sending to [`Self::new`]'s URL.
+    ///
+    /// The attested proxy checks those components against its configuration, not against a port-forward.
+    pub fn with_canonical_target(
+        mut self,
+        scheme: impl Into<String>,
+        authority: impl Into<String>,
+    ) -> Self {
+        self.canonical_scheme = Some(scheme.into());
+        self.canonical_authority = Some(authority.into());
+        self
     }
 
     /// Starts a migration for `sub` as the device with `device_public_key`, with a
@@ -91,15 +112,17 @@ impl MigrationApiClient {
         .map_err(Error::Encode)?;
 
         let url = self.url(&["v1", "init-migration"]);
-        let canonical = CanonicalRequest::new(
-            "POST",
-            url.scheme(),
-            url.authority(),
-            url.path(),
-            url.query(),
-            &body,
-        )
-        .map_err(|error| Error::CanonicalRequest(error.to_string()))?;
+        let scheme = self
+            .canonical_scheme
+            .clone()
+            .unwrap_or_else(|| url.scheme().to_owned());
+        let authority = self
+            .canonical_authority
+            .clone()
+            .unwrap_or_else(|| url.authority().to_owned());
+        let canonical =
+            CanonicalRequest::new("POST", &scheme, &authority, url.path(), url.query(), &body)
+                .map_err(|error| Error::CanonicalRequest(error.to_string()))?;
 
         // Hardware signers block; callers that need a free executor should wrap this call.
         let signed = sign_request(&canonical, integrity_token, signer)
@@ -276,25 +299,23 @@ mod tests {
     async fn init_migration_returns_the_decoded_response() {
         let (url, server) = serve(Router::new().route(
             "/v1/init-migration",
-            post(
-                |headers: HeaderMap, body: axum::body::Bytes| async move {
-                    assert_eq!(headers["x-attested-key-thumbprint"], "device-key");
-                    assert!(!headers["integrity-token"].is_empty());
-                    assert!(!headers["signature-input"].is_empty());
-                    assert!(!headers["signature"].is_empty());
-                    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                    assert_eq!(body["sub"], "test-sub");
-                    assert_eq!(body["proof"], "cHJvb2Y=");
-                    assert_eq!(body["challenge_id"], "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31");
-                    Json(serde_json::json!({
-                        "enclave_id": "ab".repeat(32),
-                        "attestation": "",
-                        "enclave_public_key": "key",
-                        "upload_url": "http://s3.test/pcp/1",
-                        "migrate_by": 1,
-                    }))
-                },
-            ),
+            post(|headers: HeaderMap, body: axum::body::Bytes| async move {
+                assert_eq!(headers["x-attested-key-thumbprint"], "device-key");
+                assert!(!headers["integrity-token"].is_empty());
+                assert!(!headers["signature-input"].is_empty());
+                assert!(!headers["signature"].is_empty());
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["sub"], "test-sub");
+                assert_eq!(body["proof"], "cHJvb2Y=");
+                assert_eq!(body["challenge_id"], "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31");
+                Json(serde_json::json!({
+                    "enclave_id": "ab".repeat(32),
+                    "attestation": "",
+                    "enclave_public_key": "key",
+                    "upload_url": "http://s3.test/pcp/1",
+                    "migrate_by": 1,
+                }))
+            }),
         ))
         .await;
 

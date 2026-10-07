@@ -97,8 +97,7 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
             challenge_id,
             upload,
         } => {
-            let signer =
-                SoftwareSigner::new(test_key(&device_signer_seed), Platform::Android);
+            let signer = SoftwareSigner::new(test_key(&device_signer_seed), Platform::Android);
             let response = client
                 .init_migration(
                     &integrity_token,
