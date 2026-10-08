@@ -164,7 +164,7 @@ pub struct NewJob {
     pub job_id: JobId,
     /// The account the ownership proof was verified for.
     pub sub: String,
-    /// The app's attested device key; later calls must be signed by it.
+    /// The RFC 7638 thumbprint of the app's attested device key; later calls must be signed by it.
     pub device_public_key: String,
     /// The host the job is pinned to.
     pub host_ip: IpAddr,

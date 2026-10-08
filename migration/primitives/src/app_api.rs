@@ -36,6 +36,15 @@ pub struct InitMigrationResponse {
     pub migrate_by: u64,
 }
 
+/// `POST /v1/migrations/{sub}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrateRequest {
+    /// The attested device key's `cnf.jwk`, serialized exactly as the app gives it to the orb.
+    /// The enclave seals this string into the new PCP verbatim; its thumbprint must be the one
+    /// the migration was started with.
+    pub device_public_key: String,
+}
+
 /// `202` body of `POST /v1/migrations/{sub}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateResponse {

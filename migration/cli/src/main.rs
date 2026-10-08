@@ -13,7 +13,7 @@ use attested_request::{
 };
 use clap::{Args, Parser, Subcommand};
 use di_migration_client::{
-    MigrationApiClient,
+    MigrationApiClient, device_jwk,
     sealing::{EnclaveVerifier, PcpOpener},
 };
 use di_migration_primitives::Status;
@@ -203,7 +203,11 @@ async fn start(
         .await
         .map_err(|error| format!("upload failed: {error}"))?;
     client
-        .migrate(&init.device_public_key, &init.sub)
+        .migrate(
+            &init.device_public_key,
+            &device_jwk(test_key(&init.device_signer_seed).verifying_key()),
+            &init.sub,
+        )
         .await
         .map_err(|error| format!("migrate failed: {error}"))?;
     Ok(opener)
