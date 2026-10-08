@@ -12,7 +12,7 @@ use crate::{
     queue::{Admission, Full},
 };
 
-/// Validates and queues a job the API committed as `migrating`; the worker records its outcome.
+/// Validates and queues a job the API committed as `migrating`; the job runner records its outcome.
 pub async fn handler(
     State(state): State<AppState>,
     request: Result<Json<JobRequest>, JsonRejection>,

@@ -1,4 +1,4 @@
-//! Storage the host reads jobs from and writes results to, behind traits so the worker and
+//! Storage the host reads jobs from and writes results to, behind traits so the job runner and
 //! readiness can be tested without AWS.
 
 mod dynamo;

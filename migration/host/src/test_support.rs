@@ -104,7 +104,7 @@ impl EnclaveClient for CountingEnclave {
     }
 }
 
-/// Answers every readiness check; the job paths are unused until the worker lands.
+/// Answers every readiness check; the job paths are unused until the job runner lands.
 pub struct HealthyStore;
 
 #[async_trait]
@@ -194,7 +194,7 @@ struct Memory {
     last_error: Option<StoreError>,
 }
 
-/// S3 and the job table in memory, with switches for the failures the worker must handle.
+/// S3 and the job table in memory, with switches for the failures the job runner must handle.
 #[derive(Default)]
 pub struct MemoryStore {
     memory: Mutex<Memory>,

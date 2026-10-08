@@ -24,11 +24,11 @@ use di_migration_enclave_primitives::{KeyAttestation, MigrateRequest, MigrateRes
 use di_migration_host::{
     AppState,
     enclave::{self, EnclaveClient, Error},
+    job_runner::JobRunner,
     queue::JobQueue,
     readiness::Readiness,
     routes,
     store::{BlobStore, DynamoJobStore, JobStore, S3BlobStore, StoreError},
-    worker::Worker,
 };
 use di_migration_primitives::{JobId, Reason, host_api::JobRequest};
 use di_migration_storage::{JobTable, NewJob, PcpBucket, schema::pcp_key};
@@ -181,13 +181,13 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         blob_store.clone(),
         job_store.clone(),
     ));
-    let worker = Worker::new(
+    let job_runner = JobRunner::new(
         Arc::clone(&queue),
         Arc::clone(&enclave_client),
         blob_store,
         job_store.clone(),
     );
-    let runner = tokio::spawn(worker.run());
+    let runner = tokio::spawn(job_runner.run());
     let state = AppState::new(
         enclave_client,
         Arc::clone(&readiness),

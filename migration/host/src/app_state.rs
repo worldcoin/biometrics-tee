@@ -12,7 +12,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Creates API state; `queue` is the one the worker drains.
+    /// Creates API state; `queue` is the one the job runner drains.
     #[must_use]
     pub const fn new(
         enclave_client: Arc<dyn EnclaveClient>,
@@ -40,7 +40,7 @@ impl AppState {
         &self.readiness
     }
 
-    /// The job queue the worker drains.
+    /// The job queue the job runner drains.
     #[must_use]
     pub fn queue(&self) -> &JobQueue {
         &self.queue
