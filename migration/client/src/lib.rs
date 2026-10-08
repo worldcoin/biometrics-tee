@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use attested_request::{
     base::CanonicalRequest,
-    sign::{SignError, Signer, sign_request},
+    sign::{Signer, sign_request},
 };
 use di_migration_primitives::app_api::{
     DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
@@ -29,9 +29,9 @@ pub enum Error {
     #[error("failed to encode the request body: {0}")]
     Encode(#[source] serde_json::Error),
     #[error("failed to build the canonical request: {0}")]
-    CanonicalRequest(String),
+    CanonicalRequest(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("failed to sign the request: {0}")]
-    Sign(String),
+    Sign(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("request to the migration API failed: {0}")]
     Transport(#[source] reqwest::Error),
     #[error("migration API answered {status}")]
@@ -84,7 +84,7 @@ impl MigrationApiClient {
         challenge_id: &str,
     ) -> Result<InitMigrationResponse, Error>
     where
-        S::Error: std::error::Error + 'static,
+        S::Error: std::error::Error + Send + Sync + 'static,
     {
         let body = serde_json::to_vec(&InitMigrationRequest {
             sub: sub.to_owned(),
@@ -234,22 +234,12 @@ where
     for (name, value) in signed.headers() {
         request.headers_mut().insert(
             HeaderName::from_bytes(name.as_bytes()).expect("attested-request header names"),
-            HeaderValue::from_str(value).map_err(|error| Error::Sign(error.to_string()))?,
+            HeaderValue::from_str(value).map_err(|error| Error::Sign(error.into()))?,
         );
     }
     Ok(request)
 }
 
-fn sign_error_string<E: std::error::Error + 'static>(error: SignError<E>) -> String {
-    let mut message = error.to_string();
-    let mut source = std::error::Error::source(&error);
-    while let Some(cause) = source {
-        message.push_str(": ");
-        message.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    message
-}
 
 /// The success body, or the API's error code.
 async fn decode<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {

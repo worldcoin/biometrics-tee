@@ -80,7 +80,10 @@ struct InitArgs {
     #[arg(long, env = "INTEGRITY_TOKEN")]
     integrity_token: String,
 
-    /// Seed for the local software signer (must match the key attested in the token).
+    /// Seed for a local software signer whose public key must match `cnf.jwk` in the token.
+    ///
+    /// Only for environments whose proxy trusts a test JWKS (as stage does). The real Attestation
+    /// Gateway will never attest a key derived from a public seed.
     #[arg(long, env = "DEVICE_SIGNER_SEED", default_value = "migration-cli")]
     device_signer_seed: String,
 
