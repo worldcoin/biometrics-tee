@@ -68,18 +68,23 @@ impl EnclaveVerifier {
         )
         .map_err(SealingError::Attestation)?;
 
-        // The API routes the job by enclave_id; a wrong one sends the PCP to a boot that can't open it.
-        let attested =
-            EnclaveId::from_commitment(pontifex::channel::public_key_commitment(&public_key));
-        if attested != init.enclave_id {
-            return Err(SealingError::EnclaveIdMismatch {
-                claimed: init.enclave_id.as_str().to_owned(),
-                attested: attested.as_str().to_owned(),
-            });
-        }
+        check_enclave_id(&init.enclave_id, &public_key)?;
 
         Ok(EnclaveChannel(consumer))
     }
+}
+
+/// The API routes the job by `enclave_id`; a wrong one sends the PCP to a boot that can't open it.
+fn check_enclave_id(claimed: &EnclaveId, attested_key: &[u8]) -> Result<(), SealingError> {
+    let attested =
+        EnclaveId::from_commitment(pontifex::channel::public_key_commitment(attested_key));
+    if &attested != claimed {
+        return Err(SealingError::EnclaveIdMismatch {
+            claimed: claimed.as_str().to_owned(),
+            attested: attested.as_str().to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// A channel to one verified enclave boot.
@@ -130,7 +135,7 @@ mod tests {
     use di_migration_primitives::{EnclaveId, app_api::InitMigrationResponse};
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
 
-    use super::{EnclaveChannel, EnclaveVerifier, SealingError};
+    use super::{EnclaveChannel, EnclaveVerifier, SealingError, check_enclave_id};
 
     fn domain() -> ChannelDomain {
         ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN)
@@ -216,5 +221,42 @@ mod tests {
             ),
             "{error}"
         );
+    }
+
+    #[test]
+    fn an_enclave_id_of_another_boot_is_rejected() {
+        let attested = ChannelEnclave::generate(domain()).expect("should generate");
+        let other = ChannelEnclave::generate(domain()).expect("should generate");
+        let claimed = EnclaveId::from_commitment(other.public_key_commitment());
+
+        assert!(
+            check_enclave_id(&init(&attested, b"doc").enclave_id, &attested.public_key()).is_ok()
+        );
+        let error = check_enclave_id(&claimed, &attested.public_key())
+            .expect_err("another boot's enclave_id");
+
+        assert!(
+            matches!(error, SealingError::EnclaveIdMismatch { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_reply_with_an_unknown_payload_version_is_rejected() {
+        let enclave = ChannelEnclave::generate(domain()).expect("should generate");
+        let channel = EnclaveChannel(
+            ChannelConsumer::from_unverified_public_key(domain(), &enclave.public_key())
+                .expect("valid key"),
+        );
+        let (blob, opener) = channel.seal(b"old pcp").expect("should seal");
+
+        // An enclave build that replies with a payload version this client does not know.
+        let (_, sealer) = enclave.open(&blob).expect("sealed to this enclave");
+        let reply = sealer
+            .seal(&[pcp_payload::PCP_PAYLOAD_VERSION + 1, 0x42])
+            .expect("should seal");
+        let error = opener.open(&reply).expect_err("an unknown payload");
+
+        assert!(matches!(error, SealingError::UnknownPayload), "{error}");
     }
 }
