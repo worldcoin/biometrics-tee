@@ -27,7 +27,7 @@ use di_migration_primitives::{
     host_api::{AttestationResponse, Capacity, JobAccepted, JobRequest},
 };
 use di_migration_storage::{JobTable, PcpBucket};
-use migration_api_client::{Error, MigrationApiClient};
+use migration_client::{Error, MigrationClient};
 
 const DEVICE_KEY: &str = "device-key";
 const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
@@ -274,7 +274,7 @@ async fn a_migration_runs_from_init_to_download() {
         proof_verification().await,
     )
     .await;
-    let client = MigrationApiClient::new(&base_url.parse().expect("url")).expect("client");
+    let client = MigrationClient::new(&base_url.parse().expect("url")).expect("client");
     let sub = format!("sub-{}", JobId::new());
 
     // Init pins the job to the host's enclave and hands out an upload URL.

@@ -1,4 +1,4 @@
-//! Client for the migration API.
+//! Client for a migration: the API, its presigned S3 URLs, and the sealed channel to the enclave.
 
 pub mod sealing;
 
@@ -30,13 +30,13 @@ pub enum Error {
 }
 
 #[derive(Debug, Clone)]
-pub struct MigrationApiClient {
+pub struct MigrationClient {
     http: reqwest::Client,
     /// Routes are appended to its path as segments.
     base_url: Url,
 }
 
-impl MigrationApiClient {
+impl MigrationClient {
     pub fn new(base_url: &Url) -> Result<Self, Error> {
         if base_url.cannot_be_a_base() {
             return Err(Error::InvalidBaseUrl {
@@ -178,7 +178,7 @@ async fn decode<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> 
 mod tests {
     #[test]
     fn routes_extend_the_base_path_and_keep_the_sub_one_segment() {
-        let client = MigrationApiClient::new(&"http://api.test/prefix/".parse().unwrap()).unwrap();
+        let client = MigrationClient::new(&"http://api.test/prefix/".parse().unwrap()).unwrap();
 
         assert_eq!(
             client.url(&["v1", "init-migration"]).as_str(),
@@ -196,7 +196,7 @@ mod tests {
         routing::post,
     };
 
-    use super::{Error, MigrationApiClient};
+    use super::{Error, MigrationClient};
 
     async fn serve(router: Router) -> (reqwest::Url, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -232,7 +232,7 @@ mod tests {
         ))
         .await;
 
-        let response = MigrationApiClient::new(&url)
+        let response = MigrationClient::new(&url)
             .unwrap()
             .init_migration(
                 "device-key",
@@ -256,7 +256,7 @@ mod tests {
         ))
         .await;
 
-        let error = MigrationApiClient::new(&url)
+        let error = MigrationClient::new(&url)
             .unwrap()
             .init_migration(
                 "device-key",

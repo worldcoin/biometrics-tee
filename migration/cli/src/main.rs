@@ -9,8 +9,8 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use di_migration_primitives::Status;
-use migration_api_client::{
-    MigrationApiClient,
+use migration_client::{
+    MigrationClient,
     sealing::{EnclaveVerifier, PcpOpener},
 };
 use pontifex::PcrConfig;
@@ -92,7 +92,7 @@ struct InitArgs {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let client = match MigrationApiClient::new(&cli.api_url) {
+    let client = match MigrationClient::new(&cli.api_url) {
         Ok(client) => client,
         Err(error) => {
             eprintln!("{error}");
@@ -109,7 +109,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String> {
+async fn run(client: &MigrationClient, command: Command) -> Result<(), String> {
     match command {
         Command::InitMigration(init) => {
             let response = client
@@ -161,7 +161,7 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
 
 /// Inits, verifies the enclave, uploads the sealed PCP and starts the job.
 async fn start(
-    client: &MigrationApiClient,
+    client: &MigrationClient,
     init: &InitArgs,
     verifier: &EnclaveVerifier,
     pcp: &[u8],
@@ -193,7 +193,7 @@ async fn start(
 }
 
 /// Polls until the job ends, returning the download URL of the migrated PCP.
-async fn wait(client: &MigrationApiClient, init: &InitArgs) -> Result<String, String> {
+async fn wait(client: &MigrationClient, init: &InitArgs) -> Result<String, String> {
     loop {
         let status = client
             .migration_status(&init.device_public_key, &init.sub)
