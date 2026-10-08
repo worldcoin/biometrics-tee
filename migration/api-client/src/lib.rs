@@ -1,5 +1,7 @@
 //! Client for the migration API.
 
+pub mod sealing;
+
 use std::time::Duration;
 
 use di_migration_primitives::app_api::{
@@ -121,7 +123,24 @@ impl MigrationApiClient {
         url
     }
 
-    /// Uploads a PCP to a presigned URL returned by [`Self::init_migration`].
+    /// Downloads the sealed migrated PCP from a presigned URL in [`MigrationStatus`].
+    pub async fn download_pcp(&self, download_url: &str) -> Result<Vec<u8>, Error> {
+        let response = self
+            .http
+            .get(download_url)
+            .send()
+            .await
+            .map_err(Error::Transport)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::UnexpectedStatus { status });
+        }
+        let blob = response.bytes().await.map_err(Error::Transport)?;
+        Ok(blob.to_vec())
+    }
+
+    /// Uploads a sealed PCP to a presigned URL returned by [`Self::init_migration`].
     pub async fn upload_pcp(&self, upload_url: &str, pcp: Vec<u8>) -> Result<(), Error> {
         let response = self
             .http
