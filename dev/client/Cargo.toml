@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
-di-dev-api-types.workspace = true
+di-dev-api-primitives.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
 

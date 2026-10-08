@@ -8,7 +8,7 @@ use di_dev_enclave::{
     server,
     state::EnclaveState,
 };
-use di_dev_enclave_types::PONTIFEX_PORT;
+use di_dev_enclave_primitives::PONTIFEX_PORT;
 use di_sandbox::{ConnectionConfig, ConnectionError, SandboxConfig, Worker};
 use tracing_subscriber::EnvFilter;
 

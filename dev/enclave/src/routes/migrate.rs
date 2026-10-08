@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use di_dev_enclave_types::{self as enclave_types, MigrateRequest, MigrateResponse};
+use di_dev_enclave_primitives::{self as enclave_primitives, MigrateRequest, MigrateResponse};
 
 use crate::state::EnclaveState;
 
@@ -8,12 +8,12 @@ use crate::state::EnclaveState;
 pub async fn handler(
     _: Arc<EnclaveState>,
     request: MigrateRequest,
-) -> Result<MigrateResponse, enclave_types::Error> {
+) -> Result<MigrateResponse, enclave_primitives::Error> {
     let bytes = request.pcp.len();
 
     if bytes == 0 {
         tracing::warn!("migrate request carried no PCP");
-        return Err(enclave_types::Error::EmptyPcp);
+        return Err(enclave_primitives::Error::EmptyPcp);
     }
 
     tracing::info!(bytes, "echoing PCP");
@@ -24,7 +24,7 @@ pub async fn handler(
 
 #[cfg(test)]
 mod tests {
-    use di_dev_enclave_types::{self as enclave_types, MigrateRequest};
+    use di_dev_enclave_primitives::{self as enclave_primitives, MigrateRequest};
 
     use super::handler;
     use crate::state::tests::state;
@@ -48,6 +48,6 @@ mod tests {
             .await
             .expect_err("should reject");
 
-        assert_eq!(error, enclave_types::Error::EmptyPcp);
+        assert_eq!(error, enclave_primitives::Error::EmptyPcp);
     }
 }

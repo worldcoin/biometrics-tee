@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use di_dev_enclave_types::{self as enclave_types, HealthRequest};
+use di_dev_enclave_primitives::{self as enclave_primitives, HealthRequest};
 
 use crate::state::EnclaveState;
 
@@ -8,7 +8,7 @@ use crate::state::EnclaveState;
 pub async fn handler(
     state: Arc<EnclaveState>,
     _: HealthRequest,
-) -> Result<(), enclave_types::Error> {
+) -> Result<(), enclave_primitives::Error> {
     state.check_worker();
     Ok(())
 }
@@ -17,7 +17,7 @@ pub async fn handler(
 mod tests {
     use std::sync::{Arc, atomic::Ordering};
 
-    use di_dev_enclave_types::HealthRequest;
+    use di_dev_enclave_primitives::HealthRequest;
 
     use super::handler;
     use crate::state::{EnclaveState, tests::FakeWorker};

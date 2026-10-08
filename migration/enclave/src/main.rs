@@ -6,7 +6,7 @@ use di_migration_enclave::{
     rng, server,
     state::EnclaveState,
 };
-use di_migration_enclave_types::PONTIFEX_PORT;
+use di_migration_enclave_primitives::PONTIFEX_PORT;
 use pontifex::SecureModule;
 use tracing_subscriber::EnvFilter;
 

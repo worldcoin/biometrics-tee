@@ -3,9 +3,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use di_migration_enclave_types::{
-    self as enclave_types, GetEncryptionKeyRequest, HealthRequest, KeyAttestation, MigrateRequest,
-    MigrateResponse,
+use di_migration_enclave_primitives::{
+    self as enclave_primitives, GetEncryptionKeyRequest, HealthRequest, KeyAttestation,
+    MigrateRequest, MigrateResponse,
 };
 use di_migration_primitives::EnclaveId;
 use pontifex::{Request, client::ConnectionDetails};
@@ -20,7 +20,7 @@ pub enum Error {
     /// The Pontifex connection or wire operation failed.
     Transport(String),
     /// The enclave returned a structured operation error.
-    Operation(enclave_types::Error),
+    Operation(enclave_primitives::Error),
     /// The enclave did not answer within the request deadline.
     Timeout,
 }
@@ -59,7 +59,7 @@ impl PontifexEnclaveClient {
     /// Sends `request` under `deadline`, flattening the timeout, transport and operation layers.
     async fn call<R, T>(&self, request: R, deadline: Duration) -> Result<T, Error>
     where
-        R: Request<Response = Result<T, enclave_types::Error>> + Sync,
+        R: Request<Response = Result<T, enclave_primitives::Error>> + Sync,
     {
         timeout(deadline, pontifex::client::send(self.connection, &request))
             .await

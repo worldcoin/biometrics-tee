@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-di-dev-enclave-types.workspace = true
+di-dev-enclave-primitives.workspace = true
 pontifex = { workspace = true, features = ["server"] }
 tokio = { workspace = true, features = ["macros"] }
 tracing.workspace = true

@@ -12,7 +12,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use di_migration_enclave_types::{KeyAttestation, MigrateRequest, MigrateResponse};
+use di_migration_enclave_primitives::{KeyAttestation, MigrateRequest, MigrateResponse};
 use di_migration_primitives::{JobId, Reason, host_api::JobRequest};
 use di_migration_storage::StorageError;
 use tokio::sync::Notify;

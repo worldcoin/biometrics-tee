@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use di_dev_enclave_types::PONTIFEX_PORT;
+use di_dev_enclave_primitives::PONTIFEX_PORT;
 use di_dev_host::{AppState, enclave::PontifexEnclaveClient};
 
 /// The enclave's CID, which `nitro-cli` assigns at boot, so it cannot be a constant.

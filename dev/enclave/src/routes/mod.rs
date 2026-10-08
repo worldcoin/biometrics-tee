@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use di_dev_enclave_types::{HealthRequest, MigrateRequest};
+use di_dev_enclave_primitives::{HealthRequest, MigrateRequest};
 use pontifex::Router;
 
 mod health;

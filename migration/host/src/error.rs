@@ -158,7 +158,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
-    use di_migration_enclave_types as enclave_types;
+    use di_migration_enclave_primitives as enclave_primitives;
 
     use di_migration_primitives::host_api::codes;
 
@@ -180,7 +180,7 @@ mod tests {
                 codes::ENCLAVE_UNREACHABLE,
             ),
             (
-                enclave::Error::Operation(enclave_types::Error::Internal),
+                enclave::Error::Operation(enclave_primitives::Error::Internal),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL_ERROR,
             ),

@@ -15,8 +15,8 @@ anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 bytes.workspace = true
-di-dev-api-types.workspace = true
-di-dev-enclave-types.workspace = true
+di-dev-api-primitives.workspace = true
+di-dev-enclave-primitives.workspace = true
 flate2.workspace = true
 pontifex = { workspace = true, features = ["client"] }
 telemetry-batteries = { workspace = true, features = ["axum"] }

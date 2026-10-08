@@ -5,7 +5,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use di_migration_enclave_types::{self as enclave_types, MigrateRequest};
+use di_migration_enclave_primitives::{self as enclave_primitives, MigrateRequest};
 use di_migration_primitives::{Reason, host_api::JobRequest};
 
 use crate::{
@@ -98,11 +98,12 @@ impl Worker {
                 let reason = match &error {
                     enclave::Error::Timeout => Reason::Timeout,
                     // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
-                    enclave::Error::Operation(enclave_types::Error::RequestNotOpened) => {
+                    enclave::Error::Operation(enclave_primitives::Error::RequestNotOpened) => {
                         Reason::EnclaveChanged
                     }
                     enclave::Error::Operation(
-                        enclave_types::Error::InvalidInput | enclave_types::Error::Internal,
+                        enclave_primitives::Error::InvalidInput
+                        | enclave_primitives::Error::Internal,
                     )
                     | enclave::Error::Transport(_) => Reason::EnclaveError,
                 };
@@ -135,7 +136,7 @@ fn unix_now() -> u64 {
 mod tests {
     use std::{num::NonZeroUsize, sync::Arc};
 
-    use di_migration_enclave_types as enclave_types;
+    use di_migration_enclave_primitives as enclave_primitives;
     use di_migration_primitives::Reason;
 
     use super::Worker;
@@ -200,21 +201,21 @@ mod tests {
             ),
             (
                 Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_types::Error::RequestNotOpened,
+                    enclave_primitives::Error::RequestNotOpened,
                 ))),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
                 Reason::EnclaveChanged,
             ),
             (
                 Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_types::Error::InvalidInput,
+                    enclave_primitives::Error::InvalidInput,
                 ))),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
                 Reason::EnclaveError,
             ),
             (
                 Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_types::Error::Internal,
+                    enclave_primitives::Error::Internal,
                 ))),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
                 Reason::EnclaveError,

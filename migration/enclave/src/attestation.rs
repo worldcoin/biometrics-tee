@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use di_migration_enclave_types as enclave_types;
+use di_migration_enclave_primitives as enclave_primitives;
 use pontifex::{AttestationDoc, SecureModule};
 use tokio::{sync::Mutex, task::JoinHandle, time::Instant};
 
@@ -19,8 +19,8 @@ pub trait Attestor: Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`enclave_types::Error::Internal`] when the module rejects the request.
-    fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_types::Error>;
+    /// [`enclave_primitives::Error::Internal`] when the module rejects the request.
+    fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error>;
 }
 
 /// [`Attestor`] backed by the real Nitro Secure Module.
@@ -28,17 +28,17 @@ pub trait Attestor: Send + Sync {
 pub struct NsmAttestor;
 
 impl Attestor for NsmAttestor {
-    fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_types::Error> {
+    fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error> {
         let secure_module = SecureModule::try_global().ok_or_else(|| {
             tracing::error!("Nitro Secure Module is not initialized");
-            enclave_types::Error::Internal
+            enclave_primitives::Error::Internal
         })?;
 
         secure_module
             .raw_attest(None::<Vec<u8>>, None::<Vec<u8>>, Some(public_key.to_vec()))
             .map_err(|error| {
                 tracing::error!(?error, dependency = "nsm", "failed to attest public key");
-                enclave_types::Error::Internal
+                enclave_primitives::Error::Internal
             })
     }
 }
@@ -71,7 +71,7 @@ impl AttestedKey {
         attestor: Arc<dyn Attestor>,
         public_key: Vec<u8>,
         max_age: Duration,
-    ) -> Result<Self, enclave_types::Error> {
+    ) -> Result<Self, enclave_primitives::Error> {
         let document = attestor.attest_public_key(&public_key)?;
 
         Ok(Self {
