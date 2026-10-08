@@ -117,7 +117,7 @@ impl MigrationApiClient {
         sub: &str,
     ) -> Result<MigrateResponse, Error>
     where
-        S::Error: std::error::Error + 'static,
+        S::Error: std::error::Error + Send + Sync + 'static,
     {
         let request = sign(
             self.http
@@ -143,7 +143,7 @@ impl MigrationApiClient {
         sub: &str,
     ) -> Result<MigrationStatus, Error>
     where
-        S::Error: std::error::Error + 'static,
+        S::Error: std::error::Error + Send + Sync + 'static,
     {
         let request = sign(
             self.http
@@ -210,7 +210,7 @@ fn sign<S: Signer>(
     signer: &S,
 ) -> Result<Request, Error>
 where
-    S::Error: std::error::Error + 'static,
+    S::Error: std::error::Error + Send + Sync + 'static,
 {
     let mut request = request.build().map_err(Error::Transport)?;
     let signed = {
@@ -227,9 +227,9 @@ where
             url.query(),
             body,
         )
-        .map_err(|error| Error::CanonicalRequest(error.to_string()))?;
+        .map_err(|error| Error::CanonicalRequest(Box::new(error)))?;
         sign_request(&canonical, integrity_token, signer)
-            .map_err(|error| Error::Sign(sign_error_string(error)))?
+            .map_err(|error| Error::Sign(error.into()))?
     };
     for (name, value) in signed.headers() {
         request.headers_mut().insert(
