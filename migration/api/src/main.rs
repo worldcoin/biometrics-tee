@@ -609,13 +609,12 @@ mod tests {
         };
         let api = serve(routes::router(state)).await;
 
-        let response = migration_api_client::MigrationApiClient::new(
-            &format!("http://{api}").parse().unwrap(),
-        )
-        .unwrap()
-        .init_migration("device-key", "test-sub", "0xa100ff00deadbeef", CHALLENGE_ID)
-        .await
-        .unwrap();
+        let response =
+            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
+                .unwrap()
+                .init_migration("device-key", "test-sub", "0xa100ff00deadbeef", CHALLENGE_ID)
+                .await
+                .unwrap();
 
         assert_eq!(response.enclave_id, enclave_id());
         let seen = mock.seen.lock().unwrap().clone();
@@ -1148,10 +1147,9 @@ mod tests {
         let (state, _) =
             migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
         let api = serve(routes::router(state)).await;
-        let client = migration_api_client::MigrationApiClient::new(
-            &format!("http://{api}").parse().unwrap(),
-        )
-        .unwrap();
+        let client =
+            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
+                .unwrap();
 
         let migrating = client.migrate("device-key", "test-sub").await.unwrap();
         // The fake table keeps serving the `created` row.
@@ -1164,7 +1162,7 @@ mod tests {
         assert_eq!(status.status, di_migration_primitives::Status::Created);
         assert!(matches!(
             client.migration_status("other-key", "test-sub").await,
-            Err(migration_api_client::Error::Api { code, .. }) if code == "device_key_mismatch"
+            Err(di_migration_client::Error::Api { code, .. }) if code == "device_key_mismatch"
         ));
     }
 }

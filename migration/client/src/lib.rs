@@ -1,4 +1,4 @@
-//! Client for the migration API.
+//! The app side of DI migration: the migration API client and the sealed channel to the enclave.
 
 pub mod sealing;
 

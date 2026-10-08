@@ -8,11 +8,11 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand};
-use di_migration_primitives::Status;
-use migration_api_client::{
+use di_migration_client::{
     MigrationApiClient,
     sealing::{EnclaveVerifier, PcpOpener},
 };
+use di_migration_primitives::Status;
 use pontifex::PcrConfig;
 use reqwest::Url;
 

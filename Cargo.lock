@@ -1357,6 +1357,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "di-migration-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "di-migration-enclave-primitives",
+ "di-migration-primitives",
+ "pontifex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "di-migration-enclave"
 version = "0.1.0"
 dependencies = [
@@ -2439,11 +2456,11 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "clap",
+ "di-migration-client",
  "di-migration-primitives",
  "di-migration-storage",
  "fastrand",
  "http-body-util",
- "migration-api-client",
  "proof",
  "reqwest 0.12.28",
  "serde",
@@ -2456,30 +2473,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "migration-api-client"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "di-migration-enclave-primitives",
- "di-migration-primitives",
- "pontifex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "zeroize",
-]
-
-[[package]]
 name = "migration-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "di-migration-client",
  "di-migration-primitives",
  "hex",
- "migration-api-client",
  "pontifex",
  "reqwest 0.12.28",
  "serde_json",
