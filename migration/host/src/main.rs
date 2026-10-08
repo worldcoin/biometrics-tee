@@ -7,10 +7,10 @@ use di_migration_host::{
     AppState,
     config::Config,
     enclave::PontifexEnclaveClient,
+    job_runner::JobRunner,
     queue::JobQueue,
     readiness::Readiness,
     store::{DynamoJobStore, S3BlobStore},
-    worker::Worker,
 };
 use di_migration_storage::{JobTable, PcpBucket};
 
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
         blob_store.clone(),
         job_store.clone(),
     ));
-    let worker = Worker::new(
+    let job_runner = JobRunner::new(
         Arc::clone(&queue),
         enclave_client.clone(),
         blob_store,
@@ -70,5 +70,5 @@ async fn main() -> anyhow::Result<()> {
     );
     let state = AppState::new(enclave_client, readiness, queue, config.host_ip);
 
-    di_migration_host::server::start(config.port, state, worker, drain_timeout).await
+    di_migration_host::server::start(config.port, state, job_runner, drain_timeout).await
 }

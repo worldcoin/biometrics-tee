@@ -1,4 +1,4 @@
-//! The single worker: one job at a time from fetch to recorded outcome.
+//! The single job runner: one job at a time from fetch to recorded outcome.
 
 use std::{
     sync::Arc,
@@ -15,15 +15,15 @@ use crate::{
 };
 
 /// Everything a job touches.
-pub struct Worker {
+pub struct JobRunner {
     queue: Arc<JobQueue>,
     enclave_client: Arc<dyn EnclaveClient>,
     blob_store: Arc<dyn BlobStore>,
     job_store: Arc<dyn JobStore>,
 }
 
-impl Worker {
-    /// Creates a worker draining `queue`.
+impl JobRunner {
+    /// Creates a job runner draining `queue`.
     #[must_use]
     pub fn new(
         queue: Arc<JobQueue>,
@@ -139,7 +139,7 @@ mod tests {
     use di_migration_enclave_primitives as enclave_primitives;
     use di_migration_primitives::Reason;
 
-    use super::Worker;
+    use super::JobRunner;
     use crate::{
         enclave,
         queue::JobQueue,
@@ -151,8 +151,8 @@ mod tests {
         di_migration_storage::schema::result_key(&job(n).job_id)
     }
 
-    fn worker(enclave: Arc<dyn enclave::EnclaveClient>, store: &Arc<MemoryStore>) -> Worker {
-        Worker::new(
+    fn job_runner(enclave: Arc<dyn enclave::EnclaveClient>, store: &Arc<MemoryStore>) -> JobRunner {
+        JobRunner::new(
             Arc::new(JobQueue::new(NonZeroUsize::new(4).expect("non-zero"))),
             enclave,
             store.clone(),
@@ -164,7 +164,7 @@ mod tests {
     async fn a_migrated_blob_is_stored_and_the_job_marked_migrated() {
         let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed"));
 
-        worker(Arc::new(StubEnclave::default()), &store)
+        job_runner(Arc::new(StubEnclave::default()), &store)
             .handle(&job(1))
             .await;
 
@@ -228,7 +228,7 @@ mod tests {
         ];
 
         for (enclave, store, reason) in cases {
-            worker(enclave, &store).handle(&job(1)).await;
+            job_runner(enclave, &store).handle(&job(1)).await;
 
             assert_eq!(store.outcome(&job(1).job_id), Some(Outcome::Failed(reason)));
         }
@@ -242,7 +242,7 @@ mod tests {
         expired.deadline = 1;
         let store = Arc::new(MemoryStore::with_pcp(&expired, b"sealed"));
 
-        worker(Arc::new(StubEnclave::default()), &store)
+        job_runner(Arc::new(StubEnclave::default()), &store)
             .handle(&expired)
             .await;
 
@@ -254,7 +254,7 @@ mod tests {
     async fn a_job_resolved_elsewhere_is_not_overwritten() {
         let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed").resolved_elsewhere());
 
-        worker(Arc::new(StubEnclave::default()), &store)
+        job_runner(Arc::new(StubEnclave::default()), &store)
             .handle(&job(1))
             .await;
 
@@ -268,7 +268,7 @@ mod tests {
         let (enclave, entered, release) = GatedEnclave::new();
         let queue = Arc::new(JobQueue::new(NonZeroUsize::new(4).expect("non-zero")));
         let runner = tokio::spawn(
-            Worker::new(
+            JobRunner::new(
                 Arc::clone(&queue),
                 Arc::new(enclave),
                 store.clone(),

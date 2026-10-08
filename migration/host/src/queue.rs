@@ -30,7 +30,7 @@ struct State {
     known: HashSet<JobId>,
 }
 
-/// Jobs the API dispatched, waiting for or held by the single worker.
+/// Jobs the API dispatched, waiting for or held by the single job runner.
 pub struct JobQueue {
     state: Mutex<State>,
     ready: Notify,
@@ -64,7 +64,7 @@ impl JobQueue {
         state.known.insert(job.job_id.clone());
         state.waiting.push_back(job);
         drop(state);
-        // `notify_one` stores a permit, so a worker that is not waiting yet still wakes.
+        // `notify_one` stores a permit, so a job runner that is not waiting yet still wakes.
         self.ready.notify_one();
         Ok(Admission::Queued)
     }
