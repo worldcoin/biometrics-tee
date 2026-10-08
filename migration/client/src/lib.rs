@@ -94,31 +94,15 @@ impl MigrationApiClient {
         .map_err(Error::Encode)?;
 
         let url = self.url(&["v1", "init-migration"]);
-        let canonical = CanonicalRequest::new(
-            "POST",
-            url.scheme(),
-            url.authority(),
-            url.path(),
-            url.query(),
-            &body,
-        )
-        .map_err(|error| Error::CanonicalRequest(Box::new(error)))?;
-
-        // Hardware signers block; callers that need a free executor should wrap this call.
-        let signed = sign_request(&canonical, integrity_token, signer)
-            .map_err(|error| Error::Sign(Box::new(error)))?;
-
-        let mut request = self
+        let request = self
             .http
             .post(url)
             .header(DEVICE_KEY_THUMBPRINT, device_public_key)
             .header(CONTENT_TYPE, "application/json")
             .body(body);
-        for (name, value) in signed.headers() {
-            request = request.header(name, value);
-        }
 
-        let response = request.send().await.map_err(Error::Transport)?;
+        let signed = sign(request, integrity_token, signer)?;
+        let response = self.http.execute(signed).await.map_err(Error::Transport)?;
         decode(response).await
     }
 
