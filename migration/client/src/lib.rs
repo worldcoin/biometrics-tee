@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use attested_request::{
     base::CanonicalRequest,
-    sign::{SignError, Signer, sign_request},
+    sign::{Signer, sign_request},
 };
 use di_migration_primitives::app_api::{
     DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
@@ -81,7 +81,7 @@ impl MigrationApiClient {
         challenge_id: &str,
     ) -> Result<InitMigrationResponse, Error>
     where
-        S::Error: std::error::Error + 'static,
+        S::Error: std::error::Error + Send + Sync + 'static,
     {
         let body = serde_json::to_vec(&InitMigrationRequest {
             sub: sub.to_owned(),
@@ -99,11 +99,11 @@ impl MigrationApiClient {
             url.query(),
             &body,
         )
-        .map_err(|error| Error::CanonicalRequest(error.to_string()))?;
+        .map_err(|error| Error::CanonicalRequest(Box::new(error)))?;
 
         // Hardware signers block; callers that need a free executor should wrap this call.
         let signed = sign_request(&canonical, integrity_token, signer)
-            .map_err(|error| Error::Sign(sign_error_string(error)))?;
+            .map_err(|error| Error::Sign(Box::new(error)))?;
 
         let mut request = self
             .http
@@ -195,17 +195,6 @@ impl MigrationApiClient {
             Err(Error::UnexpectedStatus { status })
         }
     }
-}
-
-fn sign_error_string<E: std::error::Error + 'static>(error: SignError<E>) -> String {
-    let mut message = error.to_string();
-    let mut source = std::error::Error::source(&error);
-    while let Some(cause) = source {
-        message.push_str(": ");
-        message.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    message
 }
 
 /// The success body, or the API's error code.
