@@ -54,7 +54,10 @@ impl EnclaveVerifier {
     /// # Errors
     ///
     /// [`SealingError`] when the response is malformed or the enclave is not trusted.
-    pub fn verify(&self, init: &InitMigrationResponse) -> Result<EnclaveChannel, SealingError> {
+    pub fn attested_channel(
+        &self,
+        init: &InitMigrationResponse,
+    ) -> Result<EnclaveChannel, SealingError> {
         let document = decode(&init.attestation, "attestation")?;
         let public_key = decode(&init.enclave_public_key, "enclave_public_key")?;
         let (consumer, _) = ChannelConsumer::from_attestation(
@@ -186,7 +189,7 @@ mod tests {
         let enclave = ChannelEnclave::generate(domain()).expect("should generate");
 
         let error = EnclaveVerifier::dangerously_skip_measurements()
-            .verify(&init(&enclave, b"not a COSE document"))
+            .attested_channel(&init(&enclave, b"not a COSE document"))
             .err()
             .expect("a forged attestation");
 
@@ -200,7 +203,7 @@ mod tests {
         response.enclave_public_key = "not base64!".to_owned();
 
         let error = EnclaveVerifier::dangerously_skip_measurements()
-            .verify(&response)
+            .attested_channel(&response)
             .err()
             .expect("malformed key");
 

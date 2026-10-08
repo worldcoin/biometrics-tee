@@ -176,7 +176,7 @@ async fn start(
         .await
         .map_err(|error| format!("init-migration failed: {error}"))?;
     let (blob, opener) = verifier
-        .verify(&response)
+        .attested_channel(&response)
         .and_then(|channel| channel.seal(pcp))
         .map_err(|error| error.to_string())?;
     eprintln!("enclave {} verified", response.enclave_id.as_str());
