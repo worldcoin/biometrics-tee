@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Context;
 use aws_config::BehaviorVersion;
 use std::sync::Arc;
-use telemetry_batteries::tracing::middleware::TraceLayer;
+use telemetry_batteries::{LogFormat, TelemetryConfig, tracing::middleware::TraceLayer};
 use tokio::net::TcpListener;
 
 use di_migration_storage::{JobTable, PcpBucket};
@@ -18,6 +18,17 @@ use crate::{
     fleet::{DnsResolver, Fleet},
     host_client::HostClient,
 };
+
+/// Stdout is scraped into Datadog; default to JSON unless `TELEMETRY_LOG_FORMAT` overrides it.
+fn init_telemetry() -> anyhow::Result<telemetry_batteries::TelemetryGuard> {
+    let mut config = TelemetryConfig::from_env()
+        .map_err(|error| anyhow::anyhow!("failed to load telemetry config: {error:?}"))?;
+    if config.log_format.is_none() {
+        config.log_format = Some(LogFormat::DatadogJson);
+    }
+    telemetry_batteries::init_with_config(config)
+        .map_err(|error| anyhow::anyhow!("failed to initialize telemetry: {error:?}"))
+}
 
 fn verifier(
     config: &config::Config,
@@ -65,8 +76,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _telemetry = telemetry_batteries::init()
-        .map_err(|error| anyhow::anyhow!("failed to initialize telemetry: {error:?}"))?;
+    let _telemetry = init_telemetry()?;
     let config = config::Config::from_env()?;
     let aws_config = tokio::time::timeout(
         Duration::from_secs(5),
