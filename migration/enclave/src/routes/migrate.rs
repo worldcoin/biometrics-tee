@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use di_migration_enclave_types::{
-    self as enclave_types, MigrateRequest, MigrateResponse, pcp_payload,
+use di_migration_enclave_primitives::{
+    self as enclave_primitives, MigrateRequest, MigrateResponse, pcp_payload,
 };
 
 use crate::state::EnclaveState;
@@ -12,24 +12,24 @@ use crate::state::EnclaveState;
 pub async fn handler(
     state: Arc<EnclaveState>,
     request: MigrateRequest,
-) -> Result<MigrateResponse, enclave_types::Error> {
+) -> Result<MigrateResponse, enclave_primitives::Error> {
     if request.blob.is_empty() {
         tracing::warn!("migrate request carried no blob");
-        return Err(enclave_types::Error::InvalidInput);
+        return Err(enclave_primitives::Error::InvalidInput);
     }
 
     // Opening and sealing are CPU-bound; keep them off the async workers.
     tokio::task::spawn_blocking(move || {
         let (plaintext, sealer) = state.channel().open(&request.blob).map_err(|error| {
             tracing::warn!(?error, "migrate request was not sealed to this boot");
-            enclave_types::Error::RequestNotOpened
+            enclave_primitives::Error::RequestNotOpened
         })?;
         let pcp = pcp_payload::decode(&plaintext).inspect_err(|_| {
             tracing::warn!("migrate request carried an unknown payload");
         })?;
         let blob = sealer.seal(&pcp_payload::encode(pcp)).map_err(|error| {
             tracing::error!(?error, "failed to seal the migrated PCP");
-            enclave_types::Error::Internal
+            enclave_primitives::Error::Internal
         })?;
         Ok(MigrateResponse { blob })
     })
@@ -41,7 +41,7 @@ pub async fn handler(
             std::process::exit(1);
         }
         tracing::error!(%error, "migration task was cancelled");
-        enclave_types::Error::Internal
+        enclave_primitives::Error::Internal
     })?
 }
 
@@ -49,8 +49,8 @@ pub async fn handler(
 mod tests {
     use std::sync::Arc;
 
-    use di_migration_enclave_types::{
-        self as enclave_types, MIGRATION_CHANNEL_DOMAIN, MigrateRequest, pcp_payload,
+    use di_migration_enclave_primitives::{
+        self as enclave_primitives, MIGRATION_CHANNEL_DOMAIN, MigrateRequest, pcp_payload,
     };
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ResponseOpener};
 
@@ -97,7 +97,7 @@ mod tests {
             .await
             .expect_err("a new boot cannot open it");
 
-        assert_eq!(error, enclave_types::Error::RequestNotOpened);
+        assert_eq!(error, enclave_primitives::Error::RequestNotOpened);
     }
 
     #[tokio::test]
@@ -110,7 +110,7 @@ mod tests {
         for request in [unknown, empty] {
             assert_eq!(
                 handler(Arc::clone(&state), request).await,
-                Err(enclave_types::Error::InvalidInput)
+                Err(enclave_primitives::Error::InvalidInput)
             );
         }
     }

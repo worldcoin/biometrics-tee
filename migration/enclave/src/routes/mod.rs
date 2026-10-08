@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use di_migration_enclave_types::{GetEncryptionKeyRequest, HealthRequest, MigrateRequest};
+use di_migration_enclave_primitives::{GetEncryptionKeyRequest, HealthRequest, MigrateRequest};
 use pontifex::Router;
 
 mod encryption_key;

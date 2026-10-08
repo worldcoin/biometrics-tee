@@ -1269,7 +1269,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
-name = "di-dev-api-types"
+name = "di-dev-api-primitives"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1282,7 +1282,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "di-dev-api-types",
+ "di-dev-api-primitives",
  "reqwest 0.12.28",
  "serde_json",
  "thiserror 2.0.20",
@@ -1294,7 +1294,7 @@ name = "di-dev-enclave"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "di-dev-enclave-types",
+ "di-dev-enclave-primitives",
  "di-sandbox",
  "di-worker-protocol",
  "libc",
@@ -1306,7 +1306,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "di-dev-enclave-types"
+name = "di-dev-enclave-primitives"
 version = "0.1.0"
 dependencies = [
  "bytes",
@@ -1323,8 +1323,8 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
- "di-dev-api-types",
- "di-dev-enclave-types",
+ "di-dev-api-primitives",
+ "di-dev-enclave-primitives",
  "flate2",
  "http-body-util",
  "pontifex",
@@ -1341,7 +1341,7 @@ name = "di-migration-enclave"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "di-migration-enclave-types",
+ "di-migration-enclave-primitives",
  "hex",
  "pontifex",
  "tokio",
@@ -1350,7 +1350,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "di-migration-enclave-types"
+name = "di-migration-enclave-primitives"
 version = "0.1.0"
 dependencies = [
  "bytes",
@@ -1372,7 +1372,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "clap",
- "di-migration-enclave-types",
+ "di-migration-enclave-primitives",
  "di-migration-primitives",
  "di-migration-storage",
  "http-body-util",

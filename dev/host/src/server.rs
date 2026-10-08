@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use anyhow::Context;
-use di_dev_api_types::MAX_PCP_BYTES;
+use di_dev_api_primitives::MAX_PCP_BYTES;
 use telemetry_batteries::tracing::middleware::TraceLayer;
 use tokio::net::TcpListener;
 

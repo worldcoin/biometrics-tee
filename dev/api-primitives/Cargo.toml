@@ -1,5 +1,5 @@
 [package]
-name = "di-migration-enclave-types"
+name = "di-dev-api-primitives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-bytes.workspace = true
-pontifex.workspace = true
 serde.workspace = true
-serde_bytes.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::Parser;
-use di_migration_enclave_types::PONTIFEX_PORT;
+use di_migration_enclave_primitives::PONTIFEX_PORT;
 
 /// Everything the host needs to start; a flag overrides its environment variable.
 #[derive(Debug, Clone, Parser)]

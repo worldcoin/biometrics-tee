@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use di_migration_enclave_types::{self as enclave_types, MIGRATION_CHANNEL_DOMAIN};
+use di_migration_enclave_primitives::{self as enclave_primitives, MIGRATION_CHANNEL_DOMAIN};
 use pontifex::channel::{ChannelDomain, ChannelEnclave};
 use tokio::task::JoinHandle;
 
@@ -21,12 +21,12 @@ impl EnclaveState {
     ///
     /// # Errors
     ///
-    /// [`enclave_types::Error::Internal`] when the key cannot be generated or attested.
-    pub fn generate(attestor: Arc<dyn Attestor>) -> Result<Self, enclave_types::Error> {
+    /// [`enclave_primitives::Error::Internal`] when the key cannot be generated or attested.
+    pub fn generate(attestor: Arc<dyn Attestor>) -> Result<Self, enclave_primitives::Error> {
         let channel = ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))
             .map_err(|error| {
                 tracing::error!(?error, "failed to generate the channel key");
-                enclave_types::Error::Internal
+                enclave_primitives::Error::Internal
             })?;
         let attested_channel_key = AttestedKey::new(
             attestor,

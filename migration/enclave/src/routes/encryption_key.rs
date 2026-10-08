@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use di_migration_enclave_types::{self as enclave_types, GetEncryptionKeyRequest, KeyAttestation};
+use di_migration_enclave_primitives::{
+    self as enclave_primitives, GetEncryptionKeyRequest, KeyAttestation,
+};
 
 use crate::state::EnclaveState;
 
@@ -9,7 +11,7 @@ use crate::state::EnclaveState;
 pub async fn handler(
     state: Arc<EnclaveState>,
     _: GetEncryptionKeyRequest,
-) -> Result<KeyAttestation, enclave_types::Error> {
+) -> Result<KeyAttestation, enclave_primitives::Error> {
     Ok(KeyAttestation {
         document: state.channel_key_attestation().await,
         public_key: state.channel().public_key(),

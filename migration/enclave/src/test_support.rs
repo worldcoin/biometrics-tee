@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use di_migration_enclave_types as enclave_types;
+use di_migration_enclave_primitives as enclave_primitives;
 
 use crate::attestation::Attestor;
 
@@ -19,7 +19,7 @@ impl CountingAttestor {
 }
 
 impl Attestor for CountingAttestor {
-    fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_types::Error> {
+    fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let mut document = public_key.to_vec();
         document.extend_from_slice(&call.to_be_bytes());
@@ -47,11 +47,11 @@ impl FailsAfterSuccessesAttestor {
 }
 
 impl Attestor for FailsAfterSuccessesAttestor {
-    fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_types::Error> {
+    fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error> {
         if self.calls.fetch_add(1, Ordering::SeqCst) < self.successes {
             Ok(public_key.to_vec())
         } else {
-            Err(enclave_types::Error::Internal)
+            Err(enclave_primitives::Error::Internal)
         }
     }
 }
