@@ -11,7 +11,7 @@ members = [
     "migration/primitives",
     "migration/storage",
     "migration/api",
-    "migration/api-client",
+    "migration/client",
     "migration/cli",
     "migration/proof",
     "sandbox",
@@ -53,7 +53,7 @@ libc = "0.2"
 mime = "0.3"
 minijail = { git = "https://github.com/google/minijail", rev = "b0b5dc6997956cdc027295ade5e425c416f30d33" }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
-migration-api-client = { path = "migration/api-client" }
+di-migration-client = { path = "migration/client" }
 pontifex = { version = "3.0.0", default-features = false }
 proof = { path = "migration/proof" }
 fastrand = "2"

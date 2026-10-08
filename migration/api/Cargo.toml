@@ -29,6 +29,6 @@ di-migration-storage.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
-migration-api-client.workspace = true
+di-migration-client.workspace = true
 serde_json.workspace = true
 tower.workspace = true

@@ -22,12 +22,12 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use di_migration_client::{Error, MigrationApiClient};
 use di_migration_primitives::{
     EnclaveId, JobId, Status,
     host_api::{AttestationResponse, Capacity, JobAccepted, JobRequest},
 };
 use di_migration_storage::{JobTable, PcpBucket};
-use migration_api_client::{Error, MigrationApiClient};
 
 const DEVICE_KEY: &str = "device-key";
 const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
