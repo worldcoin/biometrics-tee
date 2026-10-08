@@ -26,9 +26,9 @@ pub enum Error {
     #[error("failed to encode the request body: {0}")]
     Encode(#[source] serde_json::Error),
     #[error("failed to build the canonical request: {0}")]
-    CanonicalRequest(String),
+    CanonicalRequest(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("failed to sign the request: {0}")]
-    Sign(String),
+    Sign(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("request to the migration API failed: {0}")]
     Transport(#[source] reqwest::Error),
     #[error("migration API answered {status}")]
