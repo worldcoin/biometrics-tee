@@ -319,7 +319,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     // Migrate waits for the upload.
     assert!(matches!(
-        client.migrate(DEVICE_KEY, &sub).await,
+        client.migrate(&token, &signer, DEVICE_KEY, &sub).await,
         Err(Error::Api { code, .. }) if code == "not_uploaded"
     ));
     client
@@ -327,7 +327,7 @@ async fn a_migration_runs_from_init_to_download() {
         .await
         .expect("upload should succeed");
     let migrating = client
-        .migrate(DEVICE_KEY, &sub)
+        .migrate(&token, &signer, DEVICE_KEY, &sub)
         .await
         .expect("migrate should dispatch");
     assert_eq!(migrating.status, Status::Migrating);
@@ -346,7 +346,7 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(job.device_public_key, DEVICE_KEY);
     assert_eq!(
         client
-            .migration_status(DEVICE_KEY, &sub)
+            .migration_status(&token, &signer, DEVICE_KEY, &sub)
             .await
             .expect("status")
             .status,
@@ -370,7 +370,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     // Status hands out the result, readable only by the right device.
     let done = client
-        .migration_status(DEVICE_KEY, &sub)
+        .migration_status(&token, &signer, DEVICE_KEY, &sub)
         .await
         .expect("status");
     assert_eq!(done.status, Status::Migrated);
@@ -380,7 +380,9 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(download.status(), StatusCode::OK);
     assert_eq!(download.bytes().await.expect("body").as_ref(), PCP);
     assert!(matches!(
-        client.migration_status("other-device", &sub).await,
+        client
+            .migration_status(&token, &signer, "other-device", &sub)
+            .await,
         Err(Error::Api { code, .. }) if code == "device_key_mismatch"
     ));
 

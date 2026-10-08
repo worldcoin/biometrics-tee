@@ -163,11 +163,15 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
     }
 }
 
+fn device_signer(init: &InitArgs) -> SoftwareSigner {
+    SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android)
+}
+
 async fn init_migration(
     client: &MigrationApiClient,
     init: &InitArgs,
 ) -> Result<di_migration_primitives::app_api::InitMigrationResponse, String> {
-    let signer = SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android);
+    let signer = device_signer(init);
     client
         .init_migration(
             &init.integrity_token,
@@ -199,8 +203,14 @@ async fn start(
         .upload_pcp(&response.upload_url, blob)
         .await
         .map_err(|error| format!("upload failed: {error}"))?;
+    let signer = device_signer(init);
     client
-        .migrate(&init.device_public_key, &init.sub)
+        .migrate(
+            &init.integrity_token,
+            &signer,
+            &init.device_public_key,
+            &init.sub,
+        )
         .await
         .map_err(|error| format!("migrate failed: {error}"))?;
     Ok(opener)
@@ -208,9 +218,15 @@ async fn start(
 
 /// Polls until the job ends, returning the download URL of the migrated PCP.
 async fn wait(client: &MigrationApiClient, init: &InitArgs) -> Result<String, String> {
+    let signer = device_signer(init);
     loop {
         let status = client
-            .migration_status(&init.device_public_key, &init.sub)
+            .migration_status(
+                &init.integrity_token,
+                &signer,
+                &init.device_public_key,
+                &init.sub,
+            )
             .await
             .map_err(|error| format!("status failed: {error}"))?;
         match status.status {

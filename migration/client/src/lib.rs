@@ -12,7 +12,10 @@ use di_migration_primitives::app_api::{
     DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
     MigrateResponse, MigrationStatus,
 };
-use reqwest::{StatusCode, Url, header::CONTENT_TYPE};
+use reqwest::{
+    Request, RequestBuilder, StatusCode, Url,
+    header::{CONTENT_TYPE, HeaderName, HeaderValue},
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -89,65 +92,68 @@ impl MigrationApiClient {
             challenge_id: challenge_id.to_owned(),
         })
         .map_err(Error::Encode)?;
-
-        let url = self.url(&["v1", "init-migration"]);
-        let canonical = CanonicalRequest::new(
-            "POST",
-            url.scheme(),
-            url.authority(),
-            url.path(),
-            url.query(),
-            &body,
-        )
-        .map_err(|error| Error::CanonicalRequest(error.to_string()))?;
-
-        // Hardware signers block; callers that need a free executor should wrap this call.
-        let signed = sign_request(&canonical, integrity_token, signer)
-            .map_err(|error| Error::Sign(sign_error_string(error)))?;
-
-        let mut request = self
+        let request = self
             .http
-            .post(url)
+            .post(self.url(&["v1", "init-migration"]))
             .header(DEVICE_KEY_THUMBPRINT, device_public_key)
             .header(CONTENT_TYPE, "application/json")
             .body(body);
-        for (name, value) in signed.headers() {
-            request = request.header(name, value);
-        }
+        // Hardware signers block; callers that need a free executor should wrap this call.
+        let request = sign(request, integrity_token, signer)?;
 
-        let response = request.send().await.map_err(Error::Transport)?;
+        let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
     }
 
     /// Hands the uploaded PCP to its host. A repeated call reports the running job.
-    pub async fn migrate(
+    ///
+    /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
+    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    pub async fn migrate<S: Signer>(
         &self,
+        integrity_token: &str,
+        signer: &S,
         device_public_key: &str,
         sub: &str,
-    ) -> Result<MigrateResponse, Error> {
-        let response = self
-            .http
-            .post(self.url(&["v1", "migrations", sub]))
-            .header(DEVICE_KEY_THUMBPRINT, device_public_key)
-            .send()
-            .await
-            .map_err(Error::Transport)?;
+    ) -> Result<MigrateResponse, Error>
+    where
+        S::Error: std::error::Error + 'static,
+    {
+        let request = sign(
+            self.http
+                .post(self.url(&["v1", "migrations", sub]))
+                .header(DEVICE_KEY_THUMBPRINT, device_public_key),
+            integrity_token,
+            signer,
+        )?;
+
+        let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
     }
 
     /// The `sub`'s latest migration, with a download URL once `migrated`.
-    pub async fn migration_status(
+    ///
+    /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
+    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    pub async fn migration_status<S: Signer>(
         &self,
+        integrity_token: &str,
+        signer: &S,
         device_public_key: &str,
         sub: &str,
-    ) -> Result<MigrationStatus, Error> {
-        let response = self
-            .http
-            .get(self.url(&["v1", "migrations", sub]))
-            .header(DEVICE_KEY_THUMBPRINT, device_public_key)
-            .send()
-            .await
-            .map_err(Error::Transport)?;
+    ) -> Result<MigrationStatus, Error>
+    where
+        S::Error: std::error::Error + 'static,
+    {
+        let request = sign(
+            self.http
+                .get(self.url(&["v1", "migrations", sub]))
+                .header(DEVICE_KEY_THUMBPRINT, device_public_key),
+            integrity_token,
+            signer,
+        )?;
+
+        let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
     }
 
@@ -195,6 +201,43 @@ impl MigrationApiClient {
             Err(Error::UnexpectedStatus { status })
         }
     }
+}
+
+/// Signs `request` and returns it with the attested-request headers attached.
+fn sign<S: Signer>(
+    request: RequestBuilder,
+    integrity_token: &str,
+    signer: &S,
+) -> Result<Request, Error>
+where
+    S::Error: std::error::Error + 'static,
+{
+    let mut request = request.build().map_err(Error::Transport)?;
+    let signed = {
+        let body = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .unwrap_or(&[]);
+        let url = request.url();
+        let canonical = CanonicalRequest::new(
+            request.method().as_str(),
+            url.scheme(),
+            url.authority(),
+            url.path(),
+            url.query(),
+            body,
+        )
+        .map_err(|error| Error::CanonicalRequest(error.to_string()))?;
+        sign_request(&canonical, integrity_token, signer)
+            .map_err(|error| Error::Sign(sign_error_string(error)))?
+    };
+    for (name, value) in signed.headers() {
+        request.headers_mut().insert(
+            HeaderName::from_bytes(name.as_bytes()).expect("attested-request header names"),
+            HeaderValue::from_str(value).map_err(|error| Error::Sign(error.to_string()))?,
+        );
+    }
+    Ok(request)
 }
 
 fn sign_error_string<E: std::error::Error + 'static>(error: SignError<E>) -> String {
