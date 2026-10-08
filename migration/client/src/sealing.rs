@@ -23,6 +23,8 @@ pub enum SealingError {
     Attestation(#[source] ChannelError),
     #[error("enclave_id {claimed} does not match the attested key {attested}")]
     EnclaveIdMismatch { claimed: String, attested: String },
+    #[error("failed to encode the sealed payload")]
+    Encode,
     #[error("failed to seal the PCP: {0}")]
     Seal(#[source] ChannelError),
     #[error("failed to open the migrated PCP: {0}")]
@@ -91,16 +93,18 @@ fn check_enclave_id(claimed: &EnclaveId, attested_key: &[u8]) -> Result<(), Seal
 pub struct EnclaveChannel(ChannelConsumer);
 
 impl EnclaveChannel {
-    /// Seals `pcp` for upload. Only the returned opener can read the enclave's reply, and it
-    /// cannot be persisted: keep it until the migrated PCP is downloaded.
+    /// Seals `pcp` and `credential` as CBOR for upload. Only the returned opener can read the
+    /// enclave's reply, and it cannot be persisted: keep it until the migrated PCP is downloaded.
     ///
     /// # Errors
     ///
-    /// [`SealingError::Seal`] when sealing fails, e.g. without an OS CSPRNG.
-    pub fn seal(&self, pcp: &[u8]) -> Result<(Vec<u8>, PcpOpener), SealingError> {
+    /// [`SealingError::Encode`] when the payload cannot be built, [`SealingError::Seal`] when
+    /// sealing fails.
+    pub fn seal(&self, pcp: &[u8], credential: &str) -> Result<(Vec<u8>, PcpOpener), SealingError> {
+        let plaintext = pcp_payload::encode(pcp, credential).map_err(|_| SealingError::Encode)?;
         let (blob, opener) = self
             .0
-            .seal_to_enclave(&pcp_payload::encode(pcp))
+            .seal_to_enclave(&plaintext)
             .map_err(SealingError::Seal)?;
         Ok((blob, PcpOpener(opener)))
     }
@@ -115,10 +119,10 @@ impl PcpOpener {
     /// # Errors
     ///
     /// [`SealingError`] when `blob` was not sealed to this request or carries an unknown payload.
-    pub fn open(self, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SealingError> {
+    pub fn open(self, blob: &[u8]) -> Result<(Zeroizing<Vec<u8>>, String), SealingError> {
         let payload = self.0.open_from_enclave(blob).map_err(SealingError::Open)?;
         let pcp = pcp_payload::decode(&payload).map_err(|_| SealingError::UnknownPayload)?;
-        Ok(Zeroizing::new(pcp.to_vec()))
+        Ok((Zeroizing::new(pcp.pcp), pcp.credential))
     }
 }
 
@@ -155,7 +159,9 @@ mod tests {
     fn migrate(enclave: &ChannelEnclave, blob: &[u8]) -> Vec<u8> {
         let (plaintext, sealer) = enclave.open(blob).expect("sealed to this enclave");
         let pcp = pcp_payload::decode(&plaintext).expect("a PCP payload");
-        sealer.seal(&pcp_payload::encode(pcp)).expect("should seal")
+        sealer
+            .seal(&pcp_payload::encode(&pcp.pcp, &pcp.credential).expect("encode"))
+            .expect("should seal")
     }
 
     #[test]
@@ -166,10 +172,31 @@ mod tests {
                 .expect("valid key"),
         );
 
-        let (blob, opener) = channel.seal(b"old pcp").expect("should seal");
+        let (blob, opener) = channel
+            .seal(b"old pcp", "self-custody")
+            .expect("should seal");
         let pcp = opener.open(&migrate(&enclave, &blob)).expect("should open");
 
-        assert_eq!(pcp.as_slice(), b"old pcp");
+        assert_eq!(pcp.0.as_slice(), b"old pcp");
+        assert_eq!(pcp.1, "self-custody");
+    }
+
+    #[test]
+    fn seal_with_credential_puts_cbor_on_the_wire() {
+        let enclave = ChannelEnclave::generate(domain()).expect("should generate");
+        let channel = EnclaveChannel(
+            ChannelConsumer::from_unverified_public_key(domain(), &enclave.public_key())
+                .expect("valid key"),
+        );
+
+        let (blob, _) = channel
+            .seal(b"old pcp", "self-custody")
+            .expect("should seal");
+        let (plaintext, _) = enclave.open(&blob).expect("sealed to this enclave");
+        let decoded = pcp_payload::decode(&plaintext).expect("credential payload");
+
+        assert_eq!(decoded.pcp, b"old pcp");
+        assert_eq!(decoded.credential, "self-custody");
     }
 
     #[test]
@@ -179,8 +206,10 @@ mod tests {
             ChannelConsumer::from_unverified_public_key(domain(), &enclave.public_key())
                 .expect("valid key"),
         );
-        let (first, _) = channel.seal(b"first").expect("should seal");
-        let (_, second_opener) = channel.seal(b"second").expect("should seal");
+        let (first, _) = channel.seal(b"first", "self-custody").expect("should seal");
+        let (_, second_opener) = channel
+            .seal(b"second", "self-custody")
+            .expect("should seal");
 
         let error = second_opener
             .open(&migrate(&enclave, &first))
@@ -248,7 +277,9 @@ mod tests {
             ChannelConsumer::from_unverified_public_key(domain(), &enclave.public_key())
                 .expect("valid key"),
         );
-        let (blob, opener) = channel.seal(b"old pcp").expect("should seal");
+        let (blob, opener) = channel
+            .seal(b"old pcp", "self-custody")
+            .expect("should seal");
 
         // An enclave build that replies with a payload version this client does not know.
         let (_, sealer) = enclave.open(&blob).expect("sealed to this enclave");

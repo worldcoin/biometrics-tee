@@ -1,41 +1,77 @@
-//! The plaintext inside the sealed channel, in both directions: a version byte, then the PCP.
+//! The plaintext inside the sealed channel, in both directions: a version byte, then the body.
 //!
 //! The version lets the app's request grow, e.g. by a self-custody key, without a new route.
 
+use serde::{Deserialize, Serialize};
+
 use crate::Error;
 
-/// The only payload version so far.
+/// Payload version: raw PCP bytes after the version byte.
 pub const PCP_PAYLOAD_VERSION: u8 = 1;
 
-/// Prefixes `pcp` with [`PCP_PAYLOAD_VERSION`].
-#[must_use]
-pub fn encode(pcp: &[u8]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(pcp.len() + 1);
-    payload.push(PCP_PAYLOAD_VERSION);
-    payload.extend_from_slice(pcp);
-    payload
+/// Payload version: CBOR `{ pcp, credential }` after the version byte.
+pub const PCP_WITH_CREDENTIAL_VERSION: u8 = 2;
+
+/// PCP and self-custody credential the app seals to the enclave.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcpWithCredential {
+    /// The PCP to migrate.
+    #[serde(with = "serde_bytes")]
+    pub pcp: Vec<u8>,
+    /// Self-custody credential sealed into the migrated PCP.
+    pub credential: String,
 }
 
-/// The PCP inside `payload`.
+/// Prefixes a CBOR `{ pcp, credential }` with [`PCP_WITH_CREDENTIAL_VERSION`].
 ///
 /// # Errors
 ///
-/// [`Error::InvalidInput`] for an unknown version or an empty PCP.
-pub const fn decode(payload: &[u8]) -> Result<&[u8], Error> {
-    match payload.split_first() {
-        Some((&PCP_PAYLOAD_VERSION, pcp)) if !pcp.is_empty() => Ok(pcp),
-        _ => Err(Error::InvalidInput),
+/// [`Error::InvalidInput`] when CBOR encoding fails (should not happen for these fields).
+pub fn encode(pcp: &[u8], credential: &str) -> Result<Vec<u8>, Error> {
+    #[derive(Serialize)]
+    struct Body<'a> {
+        #[serde(with = "serde_bytes")]
+        pcp: &'a [u8],
+        credential: &'a str,
     }
+
+    let mut payload = vec![PCP_WITH_CREDENTIAL_VERSION];
+    ciborium::into_writer(&Body { pcp, credential }, &mut payload)
+        .map_err(|_| Error::InvalidInput)?;
+    Ok(payload)
+}
+
+/// The PCP and credential inside a [`PCP_WITH_CREDENTIAL_VERSION`] `payload`.
+///
+/// # Errors
+///
+/// [`Error::InvalidInput`] for an unknown version, bad CBOR, or an empty PCP/credential.
+pub fn decode(payload: &[u8]) -> Result<PcpWithCredential, Error> {
+    let Some((&PCP_WITH_CREDENTIAL_VERSION, body)) = payload.split_first() else {
+        return Err(Error::InvalidInput);
+    };
+    let decoded: PcpWithCredential =
+        ciborium::from_reader(body).map_err(|_| Error::InvalidInput)?;
+    if decoded.pcp.is_empty() || decoded.credential.is_empty() {
+        return Err(Error::InvalidInput);
+    }
+    Ok(decoded)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, encode};
+    use super::{PCP_WITH_CREDENTIAL_VERSION, PcpWithCredential, decode, encode};
     use crate::Error;
 
     #[test]
     fn a_pcp_round_trips() {
-        assert_eq!(decode(&encode(b"pcp")), Ok(&b"pcp"[..]));
+        assert_eq!(
+            decode(&encode(b"pcp", "cred").expect("encode")),
+            Ok(PcpWithCredential {
+                pcp: b"pcp".to_vec(),
+                credential: "cred".to_owned(),
+            })
+        );
     }
 
     #[test]
@@ -43,5 +79,18 @@ mod tests {
         for payload in [&b""[..], &[1][..], &[2, 0xaa][..]] {
             assert_eq!(decode(payload), Err(Error::InvalidInput), "{payload:?}");
         }
+    }
+
+    #[test]
+    fn a_pcp_with_credential_round_trips() {
+        let payload = encode(b"pcp", "cred").expect("encode");
+        assert_eq!(payload[0], PCP_WITH_CREDENTIAL_VERSION);
+        assert_eq!(
+            decode(&payload),
+            Ok(PcpWithCredential {
+                pcp: b"pcp".to_vec(),
+                credential: "cred".to_owned(),
+            })
+        );
     }
 }

@@ -71,6 +71,10 @@ enum Command {
         /// Trusts any genuine Nitro enclave whatever it runs; only for debug-mode enclaves.
         #[arg(long, conflicts_with = "pcrs")]
         insecure_skip_measurements: bool,
+
+        /// Self-custody credential to seal the PCP with.
+        #[arg(long, env = "CREDENTIAL")]
+        credential: String,
     },
 }
 
@@ -140,6 +144,7 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
             out,
             pcrs,
             insecure_skip_measurements,
+            credential,
         } => {
             let verifier = match pcrs {
                 Some(path) => EnclaveVerifier::new(vec![read_pcrs(&path)?]),
@@ -151,7 +156,7 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
             let pcp = std::fs::read(&pcp)
                 .map_err(|error| format!("failed to read {}: {error}", pcp.display()))?;
 
-            let opener = start(client, &init, &verifier, &pcp).await?;
+            let opener = start(client, &init, &verifier, &pcp, &credential).await?;
             let download_url = wait(client, &init).await?;
             let blob = client
                 .download_pcp(&download_url)
@@ -159,7 +164,7 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
                 .map_err(|error| format!("download failed: {error}"))?;
             let migrated = opener.open(&blob).map_err(|error| error.to_string())?;
 
-            write_private(&out, &migrated)?;
+            write_private(&out, &migrated.0)?;
             eprintln!("migrated PCP written to {}", out.display());
             Ok(())
         }
@@ -190,11 +195,12 @@ async fn start(
     init: &InitArgs,
     verifier: &EnclaveVerifier,
     pcp: &[u8],
+    credential: &str,
 ) -> Result<PcpOpener, String> {
     let response = init_migration(client, init).await?;
     let (blob, opener) = verifier
         .attested_channel(&response)
-        .and_then(|channel| channel.seal(pcp))
+        .and_then(|channel| channel.seal(pcp, credential))
         .map_err(|error| error.to_string())?;
     eprintln!("enclave {} verified", response.enclave_id.as_str());
 
