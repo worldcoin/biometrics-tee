@@ -41,7 +41,15 @@ pub async fn handler(
         Ok(MigrateResponse { blob })
     })
     .await
-    .map_err(|_| enclave_types::Error::Internal)?
+    .map_err(|error| {
+        // The unwind has already zeroized the closure's secrets; restart so the panic is seen.
+        if error.is_panic() {
+            tracing::error!("migration panicked");
+            std::process::exit(1);
+        }
+        tracing::error!(%error, "migration task was cancelled");
+        enclave_types::Error::Internal
+    })?
 }
 
 #[cfg(test)]
