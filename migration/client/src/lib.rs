@@ -221,7 +221,14 @@ impl MigrationApiClient {
 }
 
 fn sign_error_string<E: std::error::Error + 'static>(error: SignError<E>) -> String {
-    error.to_string()
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 /// The success body, or the API's error code.
