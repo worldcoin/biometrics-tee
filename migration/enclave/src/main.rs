@@ -17,11 +17,6 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
-    // A panic may leave keys or plaintext in an unknown state; exit instead of serving on.
-    std::panic::set_hook(Box::new(|info| {
-        tracing::error!(%info, "enclave panicked");
-        std::process::exit(1);
-    }));
 
     // The boot key must come from hardware entropy.
     rng::verify_nsm_hwrng_current().context("Nitro hardware RNG is not configured")?;
