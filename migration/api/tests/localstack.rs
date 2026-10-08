@@ -15,6 +15,7 @@ use std::{
 
 use attested_request::{
     Platform,
+    device::DeviceKey,
     sign::Signer,
     test_util::{SoftwareSigner, TestClaims, TestIssuer, test_key},
 };
@@ -27,14 +28,13 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use di_migration_client::{Error, MigrationApiClient};
+use di_migration_client::{Error, MigrationApiClient, device_jwk};
 use di_migration_primitives::{
     EnclaveId, JobId, Status,
     host_api::{AttestationResponse, Capacity, JobAccepted, JobRequest},
 };
 use di_migration_storage::{JobTable, PcpBucket};
 
-const DEVICE_KEY: &str = "device-key";
 const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
 const PCP: &[u8] = b"sealed pcp";
 
@@ -296,10 +296,13 @@ async fn a_migration_runs_from_init_to_download() {
     let sub = format!("sub-{}", JobId::new());
     let signer = test_signer();
     let token = test_integrity_token(&signer);
+    // The thumbprint the auth proxy would set for the signer's key.
+    let device_key = &DeviceKey::new(signer.verifying_key()).thumbprint();
+    let jwk = device_jwk(&signer.verifying_key());
 
     // Init pins the job to the host's enclave and hands out an upload URL.
     let lost = client
-        .init_migration(&token, &signer, DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(&token, &signer, device_key, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("init should succeed");
     assert!(matches!(
@@ -310,7 +313,7 @@ async fn a_migration_runs_from_init_to_download() {
     ));
     // The same device, e.g. after losing that response, starts over with a new job.
     let init = client
-        .init_migration(&token, &signer, DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(&token, &signer, device_key, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("a repeated init replaces the unclaimed job");
     assert_ne!(init.upload_url, lost.upload_url);
@@ -319,7 +322,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     // Migrate waits for the upload.
     assert!(matches!(
-        client.migrate(DEVICE_KEY, &sub).await,
+        client.migrate(device_key, &jwk, &sub).await,
         Err(Error::Api { code, .. }) if code == "not_uploaded"
     ));
     client
@@ -327,13 +330,13 @@ async fn a_migration_runs_from_init_to_download() {
         .await
         .expect("upload should succeed");
     let migrating = client
-        .migrate(DEVICE_KEY, &sub)
+        .migrate(device_key, &jwk, &sub)
         .await
         .expect("migrate should dispatch");
     assert_eq!(migrating.status, Status::Migrating);
     assert!(matches!(
         client
-            .init_migration(&token, &signer, DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+            .init_migration(&token, &signer, device_key, &sub, "YQ==", CHALLENGE_ID)
             .await,
         Err(Error::Api { code, .. }) if code == "migration_in_progress"
     ));
@@ -343,10 +346,10 @@ async fn a_migration_runs_from_init_to_download() {
         jobs[0].clone()
     };
     assert_eq!(job.enclave_id, enclave_id());
-    assert_eq!(job.device_public_key, DEVICE_KEY);
+    assert_eq!(&job.device_public_key, device_key);
     assert_eq!(
         client
-            .migration_status(DEVICE_KEY, &sub)
+            .migration_status(device_key, &sub)
             .await
             .expect("status")
             .status,
@@ -370,7 +373,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     // Status hands out the result, readable only by the right device.
     let done = client
-        .migration_status(DEVICE_KEY, &sub)
+        .migration_status(device_key, &sub)
         .await
         .expect("status");
     assert_eq!(done.status, Status::Migrated);
@@ -386,7 +389,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     // The finished job frees the sub, so the app can start another migration at once.
     client
-        .init_migration(&token, &signer, DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(&token, &signer, device_key, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("a finished migration no longer blocks init");
 

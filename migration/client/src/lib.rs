@@ -8,9 +8,10 @@ use attested_request::{
     base::CanonicalRequest,
     sign::{Signer, sign_request},
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use di_migration_primitives::app_api::{
-    DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
-    MigrateResponse, MigrationStatus,
+    DEVICE_KEY_THUMBPRINT, DeviceJwk, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
+    MigrateRequest, MigrateResponse, MigrationStatus,
 };
 use reqwest::{StatusCode, Url, header::CONTENT_TYPE};
 
@@ -120,15 +121,21 @@ impl MigrationApiClient {
     }
 
     /// Hands the uploaded PCP to its host. A repeated call reports the running job.
+    /// `device_key` is the full key behind `device_public_key`; the enclave seals it into the
+    /// new PCP.
     pub async fn migrate(
         &self,
         device_public_key: &str,
+        device_key: &DeviceJwk,
         sub: &str,
     ) -> Result<MigrateResponse, Error> {
         let response = self
             .http
             .post(self.url(&["v1", "migrations", sub]))
             .header(DEVICE_KEY_THUMBPRINT, device_public_key)
+            .json(&MigrateRequest {
+                device_public_key: device_key.clone(),
+            })
             .send()
             .await
             .map_err(Error::Transport)?;
@@ -194,6 +201,21 @@ impl MigrationApiClient {
         } else {
             Err(Error::UnexpectedStatus { status })
         }
+    }
+}
+
+/// The JWK of an attested device key, as its integrity token carries it in `cnf.jwk`.
+#[must_use]
+pub fn device_jwk(key: &p256::ecdsa::VerifyingKey) -> DeviceJwk {
+    let point = key.to_encoded_point(false);
+    let (Some(x), Some(y)) = (point.x(), point.y()) else {
+        unreachable!("an uncompressed point has both coordinates");
+    };
+    DeviceJwk {
+        kty: "EC".to_owned(),
+        crv: "P-256".to_owned(),
+        x: URL_SAFE_NO_PAD.encode(x),
+        y: URL_SAFE_NO_PAD.encode(y),
     }
 }
 

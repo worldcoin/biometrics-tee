@@ -11,8 +11,8 @@ use axum::{
 use di_migration_primitives::{
     JobId, Reason, Status,
     app_api::{
-        DEVICE_KEY_THUMBPRINT, InitMigrationRequest, InitMigrationResponse, MigrateResponse,
-        MigrationStatus,
+        DEVICE_KEY_THUMBPRINT, InitMigrationRequest, InitMigrationResponse, MigrateRequest,
+        MigrateResponse, MigrationStatus,
     },
     host_api::JobRequest,
 };
@@ -20,6 +20,7 @@ use di_migration_storage::{JobRecord, NewJob, StorageError, schema::pcp_key};
 
 use crate::{
     AppState,
+    device_key::SentDeviceKey,
     error::ApiError,
     fleet::{FleetLoad, Placement},
     host_client::DispatchError,
@@ -186,8 +187,15 @@ async fn migrate(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(sub): Path<String>,
+    Json(request): Json<MigrateRequest>,
 ) -> Result<(StatusCode, Json<MigrateResponse>), ApiError> {
     let (sub, job) = owned_job(&state, &headers, &sub).await?;
+    // The enclave seals this key, so it must be the one the proxy attested for this job.
+    let device_key = SentDeviceKey::parse(&request.device_public_key)
+        .ok_or_else(ApiError::invalid_device_key)?;
+    if device_key.thumbprint() != job.device_public_key {
+        return Err(ApiError::device_key_mismatch());
+    }
     let now = unix_now();
     if job.status != Status::Created {
         // A retry after an earlier call committed: report where that call left the job.
@@ -222,7 +230,7 @@ async fn migrate(
         object_key: pcp_key(&job.job_id),
         job_id: job.job_id.clone(),
         sub: sub.to_owned(),
-        device_public_key: job.device_public_key,
+        device_public_key: device_key.canonical_jwk(),
         enclave_id: job.enclave_id,
         deadline,
     };

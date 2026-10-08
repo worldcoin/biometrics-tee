@@ -28,7 +28,7 @@ pub struct JobRequest {
     pub object_key: String,
     /// Account the ownership proof was verified for.
     pub sub: String,
-    /// The app's attested device key.
+    /// The app's attested device key as its RFC 7638 canonical JWK.
     pub device_public_key: String,
     /// The boot the PCP was sealed to; a restarted enclave refuses the job.
     pub enclave_id: EnclaveId,

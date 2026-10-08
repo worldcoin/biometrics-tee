@@ -36,6 +36,27 @@ pub struct InitMigrationResponse {
     pub migrate_by: u64,
 }
 
+/// `POST /v1/migrations/{sub}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrateRequest {
+    /// The attested device key, as the integrity token's `cnf.jwk`; the enclave seals it into the
+    /// new PCP. Its thumbprint must be the one the migration was started with.
+    pub device_public_key: DeviceJwk,
+}
+
+/// The public members of an EC P-256 JWK.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceJwk {
+    /// Always `EC`.
+    pub kty: String,
+    /// Always `P-256`.
+    pub crv: String,
+    /// Base64url x coordinate.
+    pub x: String,
+    /// Base64url y coordinate.
+    pub y: String,
+}
+
 /// `202` body of `POST /v1/migrations/{sub}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateResponse {

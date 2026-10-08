@@ -1,4 +1,5 @@
 mod config;
+mod device_key;
 mod error;
 mod fleet;
 mod host_client;
@@ -183,13 +184,14 @@ async fn shutdown_signal() {
 mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::{Arc, Mutex},
+        sync::{Arc, LazyLock, Mutex},
         time::{Duration, UNIX_EPOCH},
     };
 
     use async_trait::async_trait;
     use attested_request::{
         Platform,
+        device::DeviceKey,
         sign::Signer,
         test_util::{SoftwareSigner, TestClaims, TestIssuer, test_key},
     };
@@ -201,7 +203,7 @@ mod tests {
     };
     use di_migration_primitives::{
         EnclaveId,
-        app_api::DEVICE_KEY_THUMBPRINT,
+        app_api::{DEVICE_KEY_THUMBPRINT, DeviceJwk},
         host_api::{AttestationResponse, Capacity},
     };
     use di_migration_storage::{JobTable, PcpBucket};
@@ -212,6 +214,15 @@ mod tests {
 
     const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
     const AMZ_JSON: &str = "application/x-amz-json-1.0";
+
+    /// The thumbprint the auth proxy sets for the test device.
+    static DEVICE_KEY: LazyLock<String> =
+        LazyLock::new(|| DeviceKey::new(*test_key("device-key").verifying_key()).thumbprint());
+
+    /// A device's key as the app sends it to migrate.
+    fn device_jwk(seed: &str) -> DeviceJwk {
+        di_migration_client::device_jwk(test_key(seed).verifying_key())
+    }
 
     fn test_signer() -> SoftwareSigner {
         SoftwareSigner::new(test_key("migration-api-test"), Platform::Android)
@@ -414,7 +425,7 @@ mod tests {
     }
 
     fn valid_init() -> Request<Body> {
-        init_request(Some("device-key"), "test-sub", "YQ==")
+        init_request(Some(DEVICE_KEY.as_str()), "test-sub", "YQ==")
     }
 
     async fn json(response: axum::response::Response) -> serde_json::Value {
@@ -451,7 +462,7 @@ mod tests {
         let writes = writes.lock().unwrap();
         assert_eq!(writes.len(), 1, "one transaction: job row and lock");
         let job = &writes[0]["TransactItems"][0]["Put"]["Item"];
-        assert_eq!(job["device_public_key"]["S"], "device-key");
+        assert_eq!(job["device_public_key"]["S"], DEVICE_KEY.as_str());
         assert_eq!(job["host_ip"]["S"], "127.0.0.1");
         assert_eq!(job["enclave_id"]["S"], enclave_id().as_str());
         let lock = &writes[0]["TransactItems"][1]["Put"]["Item"];
@@ -565,7 +576,7 @@ mod tests {
     #[tokio::test]
     async fn init_rejects_a_blank_sub() {
         let response = routes::router(unavailable_state())
-            .oneshot(init_request(Some("device-key"), "   ", "YQ=="))
+            .oneshot(init_request(Some(DEVICE_KEY.as_str()), "   ", "YQ=="))
             .await
             .unwrap();
 
@@ -576,7 +587,7 @@ mod tests {
     #[tokio::test]
     async fn init_reports_a_missing_proof() {
         let response = routes::router(unavailable_state())
-            .oneshot(init_request(Some("device-key"), "test-sub", ""))
+            .oneshot(init_request(Some(DEVICE_KEY.as_str()), "test-sub", ""))
             .await
             .unwrap();
 
@@ -635,7 +646,7 @@ mod tests {
                 .init_migration(
                     &token,
                     &signer,
-                    "device-key",
+                    DEVICE_KEY.as_str(),
                     "test-sub",
                     "0xa100ff00deadbeef",
                     CHALLENGE_ID,
@@ -797,7 +808,7 @@ mod tests {
         let mut row = serde_json::json!({
             "id": {"S": format!("job#{JOB_ID}")},
             "status": {"S": status},
-            "device_public_key": {"S": "device-key"},
+            "device_public_key": {"S": DEVICE_KEY.as_str()},
             "host_ip": {"S": "127.0.0.1"},
             "enclave_id": {"S": enclave_id().as_str()},
             "created_at": {"N": created_at.to_string()},
@@ -906,12 +917,59 @@ mod tests {
     }
 
     fn migrations_request(method: &str, device_key: &str) -> Request<Body> {
+        let body = if method == "POST" {
+            migrate_body(&device_jwk("device-key"))
+        } else {
+            Body::empty()
+        };
         Request::builder()
             .method(method)
             .uri("/v1/migrations/test-sub")
             .header(DEVICE_KEY_THUMBPRINT, device_key)
-            .body(Body::empty())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
             .unwrap()
+    }
+
+    fn migrate_body(jwk: &DeviceJwk) -> Body {
+        Body::from(serde_json::json!({ "device_public_key": jwk }).to_string())
+    }
+
+    /// The enclave seals the sent key, so it must be the key the job was started with.
+    #[tokio::test]
+    async fn migrate_refuses_a_key_other_than_the_attested_one() {
+        let host = jobs_host(StatusCode::ACCEPTED, "", Arc::default()).await;
+        let mut not_p256 = device_jwk("device-key");
+        not_p256.crv = "P-384".to_owned();
+        let cases = [
+            (
+                device_jwk("other-device"),
+                StatusCode::FORBIDDEN,
+                "device_key_mismatch",
+            ),
+            (not_p256, StatusCode::BAD_REQUEST, "invalid_device_key"),
+        ];
+
+        for (jwk, status, code) in cases {
+            let (state, table) =
+                migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/migrations/test-sub")
+                .header(DEVICE_KEY_THUMBPRINT, DEVICE_KEY.as_str())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(migrate_body(&jwk))
+                .unwrap();
+
+            let response = routes::router(state).oneshot(request).await.unwrap();
+
+            assert_eq!(response.status(), status, "{code}");
+            assert_eq!(json(response).await["error"]["code"], code);
+            assert!(
+                table.lock().unwrap().writes.is_empty(),
+                "{code}: nothing claimed"
+            );
+        }
     }
 
     #[tokio::test]
@@ -922,7 +980,7 @@ mod tests {
             migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
 
         let response = routes::router(state)
-            .oneshot(migrations_request("POST", "device-key"))
+            .oneshot(migrations_request("POST", DEVICE_KEY.as_str()))
             .await
             .unwrap();
 
@@ -945,7 +1003,12 @@ mod tests {
         assert_eq!(seen[0]["job_id"], JOB_ID);
         assert_eq!(seen[0]["object_key"], format!("pcp/{JOB_ID}"));
         assert_eq!(seen[0]["sub"], "test-sub");
-        assert_eq!(seen[0]["device_public_key"], "device-key");
+        let sealed: serde_json::Value =
+            serde_json::from_str(seen[0]["device_public_key"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            sealed,
+            serde_json::to_value(device_jwk("device-key")).unwrap()
+        );
         assert_eq!(seen[0]["enclave_id"], enclave_id().as_str());
     }
 
@@ -957,7 +1020,7 @@ mod tests {
                 "no job",
                 None,
                 StatusCode::OK,
-                "device-key",
+                DEVICE_KEY.as_str(),
                 StatusCode::NOT_FOUND,
                 "not_found",
             ),
@@ -973,7 +1036,7 @@ mod tests {
                 "not uploaded",
                 Some(job_row("created", now(), &[])),
                 StatusCode::NOT_FOUND,
-                "device-key",
+                DEVICE_KEY.as_str(),
                 StatusCode::CONFLICT,
                 "not_uploaded",
             ),
@@ -981,7 +1044,7 @@ mod tests {
                 "upload window passed",
                 Some(job_row("created", now() - 421, &[])),
                 StatusCode::OK,
-                "device-key",
+                DEVICE_KEY.as_str(),
                 StatusCode::CONFLICT,
                 "expired",
             ),
@@ -989,7 +1052,7 @@ mod tests {
                 "already migrated",
                 Some(job_row("migrated", now(), &[])),
                 StatusCode::OK,
-                "device-key",
+                DEVICE_KEY.as_str(),
                 StatusCode::CONFLICT,
                 "invalid_state",
             ),
@@ -1001,7 +1064,7 @@ mod tests {
                     &[("reason", serde_json::json!({"S": "enclave_error"}))],
                 )),
                 StatusCode::OK,
-                "device-key",
+                DEVICE_KEY.as_str(),
                 StatusCode::CONFLICT,
                 "enclave_error",
             ),
@@ -1034,7 +1097,7 @@ mod tests {
         let (state, table) = migration_state(Some(row), StatusCode::OK, host).await;
 
         let response = routes::router(state)
-            .oneshot(migrations_request("POST", "device-key"))
+            .oneshot(migrations_request("POST", DEVICE_KEY.as_str()))
             .await
             .unwrap();
 
@@ -1064,7 +1127,7 @@ mod tests {
             let (state, table) =
                 migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
             let response = routes::router(state)
-                .oneshot(migrations_request("POST", "device-key"))
+                .oneshot(migrations_request("POST", DEVICE_KEY.as_str()))
                 .await
                 .unwrap();
 
@@ -1114,7 +1177,7 @@ mod tests {
         for (row, expected) in cases {
             let (state, table) = migration_state(Some(row), StatusCode::OK, host).await;
             let response = routes::router(state)
-                .oneshot(migrations_request("GET", "device-key"))
+                .oneshot(migrations_request("GET", DEVICE_KEY.as_str()))
                 .await
                 .unwrap();
 
@@ -1138,7 +1201,7 @@ mod tests {
         let (state, _) = migration_state(Some(row), StatusCode::OK, host).await;
 
         let response = routes::router(state)
-            .oneshot(migrations_request("GET", "device-key"))
+            .oneshot(migrations_request("GET", DEVICE_KEY.as_str()))
             .await
             .unwrap();
 
@@ -1178,10 +1241,13 @@ mod tests {
             di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
                 .unwrap();
 
-        let migrating = client.migrate("device-key", "test-sub").await.unwrap();
+        let migrating = client
+            .migrate(DEVICE_KEY.as_str(), &device_jwk("device-key"), "test-sub")
+            .await
+            .unwrap();
         // The fake table keeps serving the `created` row.
         let status = client
-            .migration_status("device-key", "test-sub")
+            .migration_status(DEVICE_KEY.as_str(), "test-sub")
             .await
             .unwrap();
 
