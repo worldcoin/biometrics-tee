@@ -4,10 +4,11 @@ use di_migration_enclave_types::{
     self as enclave_types, MigrateRequest, MigrateResponse, pcp_payload,
 };
 
-use crate::{pipeline::Job, state::EnclaveState};
+use crate::state::EnclaveState;
 
-/// Opens the app's PCP with this boot's key, migrates it, and seals the result to the app's
-/// one-time response key, so the host only ever handles ciphertext.
+/// Opens the app's PCP with this boot's key and seals it back to the app's one-time response
+/// key, so the host only ever handles ciphertext. Echoes the PCP until the migration lands;
+/// `sub` and the device key are unused until then.
 pub async fn handler(
     state: Arc<EnclaveState>,
     request: MigrateRequest,
@@ -17,7 +18,7 @@ pub async fn handler(
         return Err(enclave_types::Error::InvalidInput);
     }
 
-    // Opening, the pipeline and sealing are CPU-bound; keep them off the async workers.
+    // Opening and sealing are CPU-bound; keep them off the async workers.
     tokio::task::spawn_blocking(move || {
         let (plaintext, sealer) = state.channel().open(&request.blob).map_err(|error| {
             tracing::warn!(?error, "migrate request was not sealed to this boot");
@@ -26,18 +27,10 @@ pub async fn handler(
         let pcp = pcp_payload::decode(&plaintext).inspect_err(|_| {
             tracing::warn!("migrate request carried an unknown payload");
         })?;
-        let job = Job {
-            sub: request.sub,
-            device_public_key: request.device_public_key,
-        };
-        let migrated = state.pipeline().migrate(pcp, &job)?;
-
-        let blob = sealer
-            .seal(&pcp_payload::encode(&migrated))
-            .map_err(|error| {
-                tracing::error!(?error, "failed to seal the migrated PCP");
-                enclave_types::Error::Internal
-            })?;
+        let blob = sealer.seal(&pcp_payload::encode(pcp)).map_err(|error| {
+            tracing::error!(?error, "failed to seal the migrated PCP");
+            enclave_types::Error::Internal
+        })?;
         Ok(MigrateResponse { blob })
     })
     .await

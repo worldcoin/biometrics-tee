@@ -58,9 +58,6 @@ impl Attestor for FailsAfterSuccessesAttestor {
 
 /// Boot state attested by a [`CountingAttestor`].
 pub fn state() -> crate::state::EnclaveState {
-    crate::state::EnclaveState::generate(
-        std::sync::Arc::new(CountingAttestor::default()),
-        Box::new(crate::pipeline::EchoPipeline),
-    )
-    .expect("should generate a key")
+    crate::state::EnclaveState::generate(std::sync::Arc::new(CountingAttestor::default()))
+        .expect("should generate a key")
 }

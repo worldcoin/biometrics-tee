@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use di_migration_enclave::{
     attestation::{self, NsmAttestor},
-    pipeline::EchoPipeline,
     rng, server,
     state::EnclaveState,
 };
@@ -23,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     attestation::connect()
         .await
         .context("Nitro Secure Module is unavailable")?;
-    let mut state = EnclaveState::generate(Arc::new(NsmAttestor), Box::new(EchoPipeline))
+    let mut state = EnclaveState::generate(Arc::new(NsmAttestor))
         .map_err(|error| anyhow!("failed to generate and attest the channel key: {error:?}"))?;
     let refresh = state.start_attestation_refresh();
 

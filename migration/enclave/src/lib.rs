@@ -1,7 +1,7 @@
 //! Nitro enclave workload for the `DeepIdentifier` migration.
 //!
 //! Attests a per-boot channel key through the NSM, opens the PCPs apps seal to it, and seals the
-//! migrated PCP back to the app. The pipeline in between echoes until it lands.
+//! PCP back to the app. The migration in between echoes until it lands.
 
 #![deny(
     clippy::all,
@@ -13,8 +13,6 @@
 
 /// Nitro Secure Module attestation of the boot's channel key.
 pub mod attestation;
-/// The migration between opening and sealing.
-pub mod pipeline;
 /// Nitro hardware RNG verification.
 pub mod rng;
 /// Pontifex operations exposed to the host.
