@@ -5,7 +5,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use di_migration_enclave_types::MigrateRequest;
+use di_migration_enclave_types::{self as enclave_types, MigrateRequest};
 use di_migration_primitives::{Reason, host_api::JobRequest};
 
 use crate::{
@@ -95,13 +95,23 @@ impl Worker {
             })
             .await
             .map_err(|error| {
-                tracing::error!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
-                match error {
+                let reason = match &error {
                     enclave::Error::Timeout => Reason::Timeout,
-                    enclave::Error::Transport(_) | enclave::Error::Operation(_) => {
-                        Reason::EnclaveError
+                    // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
+                    enclave::Error::Operation(enclave_types::Error::RequestNotOpened) => {
+                        Reason::EnclaveChanged
                     }
+                    enclave::Error::Operation(
+                        enclave_types::Error::InvalidInput | enclave_types::Error::Internal,
+                    )
+                    | enclave::Error::Transport(_) => Reason::EnclaveError,
+                };
+                if reason == Reason::EnclaveChanged {
+                    tracing::warn!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
+                } else {
+                    tracing::error!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
                 }
+                reason
             })?;
 
         self.blob_store
@@ -125,6 +135,7 @@ fn unix_now() -> u64 {
 mod tests {
     use std::{num::NonZeroUsize, sync::Arc};
 
+    use di_migration_enclave_types as enclave_types;
     use di_migration_primitives::Reason;
 
     use super::Worker;
@@ -169,7 +180,7 @@ mod tests {
     /// Pins each failure to the reason the app sees.
     #[tokio::test]
     async fn each_failure_is_recorded_with_its_reason() {
-        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 4] = [
+        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 7] = [
             (
                 Arc::new(StubEnclave::default()),
                 Arc::new(MemoryStore::default()),
@@ -183,6 +194,27 @@ mod tests {
             (
                 Arc::new(FailingEnclave(enclave::Error::Transport(
                     "refused".to_owned(),
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveError,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_types::Error::RequestNotOpened,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveChanged,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_types::Error::InvalidInput,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveError,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_types::Error::Internal,
                 ))),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
                 Reason::EnclaveError,
