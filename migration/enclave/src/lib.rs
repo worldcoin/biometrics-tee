@@ -25,20 +25,3 @@ pub mod server;
 pub mod state;
 #[cfg(test)]
 mod test_support;
-
-/// Runs CPU-bound work, such as opening a PCP, off the async workers. A panic exits the enclave:
-/// it may have left keys or plaintext in an unknown state.
-pub(crate) async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, di_migration_enclave_types::Error> {
-    let span = tracing::Span::current();
-    tokio::task::spawn_blocking(move || {
-        let _entered = span.enter();
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| {
-            tracing::error!("blocking enclave task panicked");
-            std::process::exit(1);
-        })
-    })
-    .await
-    .map_err(|_| di_migration_enclave_types::Error::Internal)
-}

@@ -4,7 +4,7 @@ use di_migration_enclave_types::{
     self as enclave_types, MigrateRequest, MigrateResponse, pcp_payload,
 };
 
-use crate::{blocking, pipeline::Job, state::EnclaveState};
+use crate::{pipeline::Job, state::EnclaveState};
 
 /// Opens the app's PCP with this boot's key, migrates it, and seals the result to the app's
 /// one-time response key, so the host only ever handles ciphertext.
@@ -17,7 +17,8 @@ pub async fn handler(
         return Err(enclave_types::Error::InvalidInput);
     }
 
-    blocking(move || {
+    // Opening, the pipeline and sealing are CPU-bound; keep them off the async workers.
+    tokio::task::spawn_blocking(move || {
         let (plaintext, sealer) = state.channel().open(&request.blob).map_err(|error| {
             tracing::warn!(?error, "migrate request was not sealed to this boot");
             enclave_types::Error::RequestNotOpened
@@ -39,7 +40,8 @@ pub async fn handler(
             })?;
         Ok(MigrateResponse { blob })
     })
-    .await?
+    .await
+    .map_err(|_| enclave_types::Error::Internal)?
 }
 
 #[cfg(test)]
