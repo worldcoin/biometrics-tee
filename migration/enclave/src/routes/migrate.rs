@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use di_migration_enclave_types::{self as enclave_types, MigrateRequest, MigrateResponse, payload};
+use di_migration_enclave_types::{
+    self as enclave_types, MigrateRequest, MigrateResponse, pcp_payload,
+};
 
 use crate::{blocking, pipeline::Job, state::EnclaveState};
 
@@ -20,7 +22,7 @@ pub async fn handler(
             tracing::warn!(?error, "migrate request was not sealed to this boot");
             enclave_types::Error::RequestNotOpened
         })?;
-        let pcp = payload::decode(&plaintext).inspect_err(|_| {
+        let pcp = pcp_payload::decode(&plaintext).inspect_err(|_| {
             tracing::warn!("migrate request carried an unknown payload");
         })?;
         let job = Job {
@@ -29,10 +31,12 @@ pub async fn handler(
         };
         let migrated = state.pipeline().migrate(pcp, &job)?;
 
-        let blob = sealer.seal(&payload::encode(&migrated)).map_err(|error| {
-            tracing::error!(?error, "failed to seal the migrated PCP");
-            enclave_types::Error::Internal
-        })?;
+        let blob = sealer
+            .seal(&pcp_payload::encode(&migrated))
+            .map_err(|error| {
+                tracing::error!(?error, "failed to seal the migrated PCP");
+                enclave_types::Error::Internal
+            })?;
         Ok(MigrateResponse { blob })
     })
     .await?
@@ -43,7 +47,7 @@ mod tests {
     use std::sync::Arc;
 
     use di_migration_enclave_types::{
-        self as enclave_types, MIGRATION_CHANNEL_DOMAIN, MigrateRequest, payload,
+        self as enclave_types, MIGRATION_CHANNEL_DOMAIN, MigrateRequest, pcp_payload,
     };
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ResponseOpener};
 
@@ -71,7 +75,7 @@ mod tests {
     #[tokio::test]
     async fn only_the_app_can_open_the_migrated_pcp() {
         let state = Arc::new(test_support::state());
-        let (request, opener) = sealed(&state, &payload::encode(b"old pcp"));
+        let (request, opener) = sealed(&state, &pcp_payload::encode(b"old pcp"));
 
         let response = handler(state, request).await.expect("should migrate");
 
@@ -79,13 +83,13 @@ mod tests {
         let plaintext = opener
             .open_from_enclave(&response.blob)
             .expect("the app should open it");
-        assert_eq!(payload::decode(&plaintext), Ok(&b"old pcp"[..]));
+        assert_eq!(pcp_payload::decode(&plaintext), Ok(&b"old pcp"[..]));
     }
 
     #[tokio::test]
     async fn a_blob_sealed_to_another_boot_is_not_opened() {
         let earlier = test_support::state();
-        let (request, _) = sealed(&earlier, &payload::encode(b"old pcp"));
+        let (request, _) = sealed(&earlier, &pcp_payload::encode(b"old pcp"));
 
         let error = handler(Arc::new(test_support::state()), request)
             .await

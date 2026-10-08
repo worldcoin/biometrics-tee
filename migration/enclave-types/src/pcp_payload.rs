@@ -5,13 +5,13 @@
 use crate::Error;
 
 /// The only payload version so far.
-pub const PAYLOAD_VERSION: u8 = 1;
+pub const PCP_PAYLOAD_VERSION: u8 = 1;
 
-/// Prefixes `pcp` with [`PAYLOAD_VERSION`].
+/// Prefixes `pcp` with [`PCP_PAYLOAD_VERSION`].
 #[must_use]
 pub fn encode(pcp: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(pcp.len() + 1);
-    payload.push(PAYLOAD_VERSION);
+    payload.push(PCP_PAYLOAD_VERSION);
     payload.extend_from_slice(pcp);
     payload
 }
@@ -23,7 +23,7 @@ pub fn encode(pcp: &[u8]) -> Vec<u8> {
 /// [`Error::InvalidInput`] for an unknown version or an empty PCP.
 pub const fn decode(payload: &[u8]) -> Result<&[u8], Error> {
     match payload.split_first() {
-        Some((&PAYLOAD_VERSION, pcp)) if !pcp.is_empty() => Ok(pcp),
+        Some((&PCP_PAYLOAD_VERSION, pcp)) if !pcp.is_empty() => Ok(pcp),
         _ => Err(Error::InvalidInput),
     }
 }

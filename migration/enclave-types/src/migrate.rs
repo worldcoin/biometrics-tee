@@ -6,7 +6,7 @@ use crate::Error;
 /// Requests the migration of one sealed PCP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrateRequest {
-    /// The app's [`crate::payload`], sealed to this boot's channel key, as uploaded.
+    /// The app's [`crate::pcp_payload`], sealed to this boot's channel key, as uploaded.
     pub blob: bytes::Bytes,
     /// Account the ownership proof was verified for; sealed into the new PCP.
     pub sub: String,
@@ -22,7 +22,7 @@ impl Request for MigrateRequest {
 /// The migrated PCP, sealed back to the app's one-time response key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateResponse {
-    /// A [`crate::payload`] only the app can open; the host just stores it.
+    /// A [`crate::pcp_payload`] only the app can open; the host just stores it.
     #[serde(with = "serde_bytes")]
     pub blob: Vec<u8>,
 }

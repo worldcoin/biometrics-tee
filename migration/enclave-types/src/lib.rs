@@ -13,7 +13,7 @@ mod error;
 mod health;
 mod keys;
 mod migrate;
-pub mod payload;
+pub mod pcp_payload;
 
 /// vsock port the enclave serves and the host dials; both sides ship together.
 pub const PONTIFEX_PORT: u32 = 1000;
