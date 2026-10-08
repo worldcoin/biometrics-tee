@@ -189,10 +189,10 @@ async fn migrate(
     Json(request): Json<MigrateRequest>,
 ) -> Result<(StatusCode, Json<MigrateResponse>), ApiError> {
     let (sub, job) = owned_job(&state, &headers, &sub).await?;
-    // The enclave seals this key verbatim, so it must be the one the proxy attested for this job.
-    let thumbprint = device_key::thumbprint(&request.device_public_key)
+    // The enclave seals this key, so it must be the one the proxy attested for this job.
+    let device_key = device_key::canonicalize(&request.device_public_key)
         .ok_or_else(ApiError::invalid_device_key)?;
-    if thumbprint != job.device_public_key {
+    if device_key.thumbprint != job.device_public_key {
         return Err(ApiError::device_key_mismatch());
     }
     let now = unix_now();
@@ -229,7 +229,7 @@ async fn migrate(
         object_key: pcp_key(&job.job_id),
         job_id: job.job_id.clone(),
         sub: sub.to_owned(),
-        device_public_key: request.device_public_key,
+        device_public_key: device_key.jwk,
         enclave_id: job.enclave_id,
         deadline,
     };

@@ -19,9 +19,17 @@ struct Jwk {
     y: String,
 }
 
-/// The RFC 7638 thumbprint of the P-256 key in `jwk`, computed as the auth proxy does for
-/// `x-attested-key-thumbprint`, or `None` unless `jwk` is a valid EC P-256 JWK.
-pub fn thumbprint(jwk: &str) -> Option<String> {
+/// A device key in the one form the enclave seals.
+pub struct CanonicalKey {
+    /// The RFC 7638 canonical JWK: `crv`, `kty`, `x`, `y` in that order, no whitespace, and
+    /// coordinates padded to 32 bytes.
+    pub jwk: String,
+    /// Its RFC 7638 thumbprint, as the auth proxy sets `x-attested-key-thumbprint`.
+    pub thumbprint: String,
+}
+
+/// The canonical form of the P-256 key in `jwk`, or `None` unless `jwk` is a valid EC P-256 JWK.
+pub fn canonicalize(jwk: &str) -> Option<CanonicalKey> {
     if jwk.len() > MAX_JWK_LEN {
         return None;
     }
@@ -34,8 +42,19 @@ pub fn thumbprint(jwk: &str) -> Option<String> {
         &coordinate(&jwk.y)?.into(),
         false,
     );
-    let key = PublicKey::from_sec1_bytes(point.as_bytes()).ok()?;
-    Some(DeviceKey::new(VerifyingKey::from(key)).thumbprint())
+    let key = VerifyingKey::from(PublicKey::from_sec1_bytes(point.as_bytes()).ok()?);
+    let point = key.to_encoded_point(false);
+    let (Some(x), Some(y)) = (point.x(), point.y()) else {
+        unreachable!("an uncompressed point has both coordinates");
+    };
+    Some(CanonicalKey {
+        jwk: format!(
+            r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
+            URL_SAFE_NO_PAD.encode(x),
+            URL_SAFE_NO_PAD.encode(y),
+        ),
+        thumbprint: DeviceKey::new(key).thumbprint(),
+    })
 }
 
 // Encoders may strip leading zero bytes, so shorter coordinates are left-padded.
@@ -50,8 +69,10 @@ fn coordinate(encoded: &str) -> Option<[u8; COORDINATE_BYTES]> {
 #[cfg(test)]
 mod tests {
     use attested_request::{device::DeviceKey, test_util::test_key};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest, Sha256};
 
-    use super::thumbprint;
+    use super::canonicalize;
 
     fn jwk() -> serde_json::Value {
         serde_json::from_str(&di_migration_client::device_jwk(
@@ -61,16 +82,27 @@ mod tests {
     }
 
     #[test]
-    fn the_thumbprint_is_the_one_the_proxy_sets() {
+    fn any_serialization_canonicalizes_to_the_proxy_s_thumbprint() {
         let expected = DeviceKey::new(*test_key("device-key").verifying_key()).thumbprint();
-        let mut reordered = jwk();
-        reordered["kid"] = "extra members are ignored".into();
+        let mut extra = jwk();
+        extra["kid"] = "extra members are dropped".into();
 
-        assert_eq!(thumbprint(&jwk().to_string()), Some(expected.clone()));
-        assert_eq!(
-            thumbprint(&serde_json::to_string_pretty(&reordered).unwrap()),
-            Some(expected)
-        );
+        for sent in [
+            jwk().to_string(),
+            serde_json::to_string_pretty(&extra).unwrap(),
+        ] {
+            let key = canonicalize(&sent).expect("a P-256 key");
+            assert_eq!(key.thumbprint, expected);
+            assert_eq!(
+                key.thumbprint,
+                URL_SAFE_NO_PAD.encode(Sha256::digest(key.jwk.as_bytes()))
+            );
+            assert!(
+                key.jwk.starts_with(r#"{"crv":"P-256","kty":"EC","x":""#),
+                "{}",
+                key.jwk
+            );
+        }
     }
 
     #[test]
@@ -83,8 +115,8 @@ mod tests {
         not_base64["x"] = "not base64!".into();
 
         for jwk in [other_curve, off_curve, not_base64] {
-            assert_eq!(thumbprint(&jwk.to_string()), None, "{jwk}");
+            assert!(canonicalize(&jwk.to_string()).is_none(), "{jwk}");
         }
-        assert_eq!(thumbprint("not json"), None);
+        assert!(canonicalize("not json").is_none());
     }
 }

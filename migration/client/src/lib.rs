@@ -121,8 +121,8 @@ impl MigrationApiClient {
     }
 
     /// Hands the uploaded PCP to its host. A repeated call reports the running job.
-    /// `device_key` is the `cnf.jwk` behind `device_public_key`, serialized as the app gives it to
-    /// the orb; the enclave seals it into the new PCP verbatim.
+    /// `device_key` is the `cnf.jwk` behind `device_public_key`, as JSON; the enclave seals its
+    /// canonical form into the new PCP.
     pub async fn migrate(
         &self,
         device_public_key: &str,

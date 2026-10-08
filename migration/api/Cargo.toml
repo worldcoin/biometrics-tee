@@ -34,4 +34,5 @@ di-migration-storage.workspace = true
 attested-request = { version = "0.1.1", features = ["test-util"] }
 http-body-util.workspace = true
 di-migration-client.workspace = true
+sha2.workspace = true
 tower.workspace = true

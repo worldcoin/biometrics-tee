@@ -201,6 +201,7 @@ mod tests {
         http::{Request, StatusCode, header},
         routing::{get, post},
     };
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use di_migration_primitives::{
         EnclaveId,
         app_api::DEVICE_KEY_THUMBPRINT,
@@ -1007,10 +1008,17 @@ mod tests {
         assert_eq!(seen[0]["job_id"], JOB_ID);
         assert_eq!(seen[0]["object_key"], format!("pcp/{JOB_ID}"));
         assert_eq!(seen[0]["sub"], "test-sub");
+        // The pretty-printed key arrives at the enclave in canonical form.
+        let point = test_key("device-key")
+            .verifying_key()
+            .to_encoded_point(false);
         assert_eq!(
             seen[0]["device_public_key"],
-            device_jwk("device-key"),
-            "forwarded verbatim"
+            format!(
+                r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
+                URL_SAFE_NO_PAD.encode(point.x().unwrap()),
+                URL_SAFE_NO_PAD.encode(point.y().unwrap()),
+            )
         );
         assert_eq!(seen[0]["enclave_id"], enclave_id().as_str());
     }
