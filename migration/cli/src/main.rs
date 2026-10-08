@@ -7,6 +7,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use attested_request::{
+    Platform,
+    test_util::{SoftwareSigner, test_key},
+};
 use clap::{Args, Parser, Subcommand};
 use di_migration_client::{
     MigrationApiClient,
@@ -72,6 +76,17 @@ enum Command {
 
 #[derive(Args)]
 struct InitArgs {
+    /// Attestation Gateway integrity token (JWT) whose `cnf.jwk` matches the signer.
+    #[arg(long, env = "INTEGRITY_TOKEN")]
+    integrity_token: String,
+
+    /// Seed for a local software signer whose public key must match `cnf.jwk` in the token.
+    ///
+    /// Only for environments whose proxy trusts a test JWKS (as stage does). The real Attestation
+    /// Gateway will never attest a key derived from a public seed.
+    #[arg(long, env = "DEVICE_SIGNER_SEED", default_value = "migration-cli")]
+    device_signer_seed: String,
+
     /// The device public key; in production the auth proxy sets it after verifying the device.
     #[arg(long, env = "DEVICE_PUBLIC_KEY")]
     device_public_key: String,
@@ -112,15 +127,7 @@ async fn main() -> ExitCode {
 async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String> {
     match command {
         Command::InitMigration(init) => {
-            let response = client
-                .init_migration(
-                    &init.device_public_key,
-                    &init.sub,
-                    &init.proof,
-                    &init.challenge_id,
-                )
-                .await
-                .map_err(|error| format!("init-migration failed: {error}"))?;
+            let response = init_migration(client, &init).await?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&response).map_err(|error| error.to_string())?
@@ -159,6 +166,24 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
     }
 }
 
+async fn init_migration(
+    client: &MigrationApiClient,
+    init: &InitArgs,
+) -> Result<di_migration_primitives::app_api::InitMigrationResponse, String> {
+    let signer = SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android);
+    client
+        .init_migration(
+            &init.integrity_token,
+            &signer,
+            &init.device_public_key,
+            &init.sub,
+            &init.proof,
+            &init.challenge_id,
+        )
+        .await
+        .map_err(|error| format!("init-migration failed: {error}"))
+}
+
 /// Inits, verifies the enclave, uploads the sealed PCP and starts the job.
 async fn start(
     client: &MigrationApiClient,
@@ -166,15 +191,7 @@ async fn start(
     verifier: &EnclaveVerifier,
     pcp: &[u8],
 ) -> Result<PcpOpener, String> {
-    let response = client
-        .init_migration(
-            &init.device_public_key,
-            &init.sub,
-            &init.proof,
-            &init.challenge_id,
-        )
-        .await
-        .map_err(|error| format!("init-migration failed: {error}"))?;
+    let response = init_migration(client, init).await?;
     let (blob, opener) = verifier
         .attested_channel(&response)
         .and_then(|channel| channel.seal(pcp))

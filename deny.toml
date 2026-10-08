@@ -55,6 +55,13 @@ version = "0.0.14"
 expression = "BSD-3-Clause"
 license-files = [{ path = "../../LICENSE", hash = 0x51549d2b }]
 
+# Pontifex reaches webpki 0.22, which only sets license-file (ISC-style), not SPDX.
+[[licenses.clarify]]
+name = "webpki"
+version = "0.22.4"
+expression = "ISC"
+license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
