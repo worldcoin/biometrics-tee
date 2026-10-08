@@ -203,7 +203,7 @@ mod tests {
     };
     use di_migration_primitives::{
         EnclaveId,
-        app_api::{DEVICE_KEY_THUMBPRINT, DeviceJwk},
+        app_api::DEVICE_KEY_THUMBPRINT,
         host_api::{AttestationResponse, Capacity},
     };
     use di_migration_storage::{JobTable, PcpBucket};
@@ -220,8 +220,13 @@ mod tests {
         LazyLock::new(|| DeviceKey::new(*test_key("device-key").verifying_key()).thumbprint());
 
     /// A device's key as the app sends it to migrate.
-    fn device_jwk(seed: &str) -> DeviceJwk {
-        di_migration_client::device_jwk(test_key(seed).verifying_key())
+    fn device_jwk(seed: &str) -> String {
+        let jwk: serde_json::Value = serde_json::from_str(&di_migration_client::device_jwk(
+            test_key(seed).verifying_key(),
+        ))
+        .unwrap();
+        // Pretty-printed, so a re-serialization by the API would show.
+        serde_json::to_string_pretty(&jwk).unwrap()
     }
 
     fn test_signer() -> SoftwareSigner {
@@ -931,7 +936,7 @@ mod tests {
             .unwrap()
     }
 
-    fn migrate_body(jwk: &DeviceJwk) -> Body {
+    fn migrate_body(jwk: &str) -> Body {
         Body::from(serde_json::json!({ "device_public_key": jwk }).to_string())
     }
 
@@ -939,8 +944,7 @@ mod tests {
     #[tokio::test]
     async fn migrate_refuses_a_key_other_than_the_attested_one() {
         let host = jobs_host(StatusCode::ACCEPTED, "", Arc::default()).await;
-        let mut not_p256 = device_jwk("device-key");
-        not_p256.crv = "P-384".to_owned();
+        let not_p256 = device_jwk("device-key").replace("P-256", "P-384");
         let cases = [
             (
                 device_jwk("other-device"),
@@ -1003,11 +1007,10 @@ mod tests {
         assert_eq!(seen[0]["job_id"], JOB_ID);
         assert_eq!(seen[0]["object_key"], format!("pcp/{JOB_ID}"));
         assert_eq!(seen[0]["sub"], "test-sub");
-        let sealed: serde_json::Value =
-            serde_json::from_str(seen[0]["device_public_key"].as_str().unwrap()).unwrap();
         assert_eq!(
-            sealed,
-            serde_json::to_value(device_jwk("device-key")).unwrap()
+            seen[0]["device_public_key"],
+            device_jwk("device-key"),
+            "forwarded verbatim"
         );
         assert_eq!(seen[0]["enclave_id"], enclave_id().as_str());
     }

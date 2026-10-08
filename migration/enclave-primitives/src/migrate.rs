@@ -10,8 +10,8 @@ pub struct MigrateRequest {
     pub blob: bytes::Bytes,
     /// Account the ownership proof was verified for; sealed into the new PCP.
     pub sub: String,
-    /// The app's attested device key as its RFC 7638 canonical JWK; sealed into the new PCP so
-    /// only it can refresh.
+    /// The app's attested device key, as the app sent it; sealed into the new PCP verbatim, as
+    /// the orb seals it, so only that device can refresh.
     pub device_public_key: String,
 }
 
