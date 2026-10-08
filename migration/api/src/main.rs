@@ -629,20 +629,19 @@ mod tests {
 
         let signer = test_signer();
         let token = test_integrity_token(&signer);
-        let response = migration_api_client::MigrationApiClient::new(
-            &format!("http://{api}").parse().unwrap(),
-        )
-        .unwrap()
-        .init_migration(
-            &token,
-            &signer,
-            "device-key",
-            "test-sub",
-            "0xa100ff00deadbeef",
-            CHALLENGE_ID,
-        )
-        .await
-        .unwrap();
+        let response =
+            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
+                .unwrap()
+                .init_migration(
+                    &token,
+                    &signer,
+                    "device-key",
+                    "test-sub",
+                    "0xa100ff00deadbeef",
+                    CHALLENGE_ID,
+                )
+                .await
+                .unwrap();
 
         assert_eq!(response.enclave_id, enclave_id());
         let seen = mock.seen.lock().unwrap().clone();
