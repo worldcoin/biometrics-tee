@@ -166,15 +166,11 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
     }
 }
 
-fn device_signer(init: &InitArgs) -> SoftwareSigner {
-    SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android)
-}
-
 async fn init_migration(
     client: &MigrationApiClient,
     init: &InitArgs,
 ) -> Result<di_migration_primitives::app_api::InitMigrationResponse, String> {
-    let signer = device_signer(init);
+    let signer = SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android);
     client
         .init_migration(
             &init.integrity_token,

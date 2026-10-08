@@ -12,10 +12,7 @@ use di_migration_primitives::app_api::{
     DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
     MigrateResponse, MigrationStatus,
 };
-use reqwest::{
-    Request, RequestBuilder, StatusCode, Url,
-    header::{CONTENT_TYPE, HeaderName, HeaderValue},
-};
+use reqwest::{StatusCode, Url, header::CONTENT_TYPE};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -92,16 +89,33 @@ impl MigrationApiClient {
             challenge_id: challenge_id.to_owned(),
         })
         .map_err(Error::Encode)?;
-        let request = self
+
+        let url = self.url(&["v1", "init-migration"]);
+        let canonical = CanonicalRequest::new(
+            "POST",
+            url.scheme(),
+            url.authority(),
+            url.path(),
+            url.query(),
+            &body,
+        )
+        .map_err(|error| Error::CanonicalRequest(Box::new(error)))?;
+
+        // Hardware signers block; callers that need a free executor should wrap this call.
+        let signed = sign_request(&canonical, integrity_token, signer)
+            .map_err(|error| Error::Sign(Box::new(error)))?;
+
+        let mut request = self
             .http
-            .post(self.url(&["v1", "init-migration"]))
+            .post(url)
             .header(DEVICE_KEY_THUMBPRINT, device_public_key)
             .header(CONTENT_TYPE, "application/json")
             .body(body);
-        // Hardware signers block; callers that need a free executor should wrap this call.
-        let request = sign(request, integrity_token, signer)?;
+        for (name, value) in signed.headers() {
+            request = request.header(name, value);
+        }
 
-        let response = self.http.execute(request).await.map_err(Error::Transport)?;
+        let response = request.send().await.map_err(Error::Transport)?;
         decode(response).await
     }
 
