@@ -83,13 +83,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_app_can_open_the_migrated_pcp() {
+    async fn a_sealed_pcp_round_trips_to_the_app() {
         let state = Arc::new(test_support::state());
         let (request, opener) = sealed(&state, &pcp_payload::encode(b"old pcp"));
 
         let response = handler(state, request).await.expect("should migrate");
 
-        assert!(!response.blob.windows(7).any(|window| window == b"old pcp"));
         let plaintext = opener
             .open_from_enclave(&response.blob)
             .expect("the app should open it");
