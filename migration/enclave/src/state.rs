@@ -63,25 +63,18 @@ impl EnclaveState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use super::EnclaveState;
-    use crate::test_support::CountingAttestor;
+    use crate::test_support::state;
 
     #[test]
     fn each_boot_gets_a_new_key() {
-        let first = EnclaveState::generate(Arc::new(CountingAttestor::default()))
-            .expect("should generate a key");
-        let second = EnclaveState::generate(Arc::new(CountingAttestor::default()))
-            .expect("should generate a key");
+        let (first, second) = (state(), state());
 
         assert_ne!(first.channel().public_key(), second.channel().public_key());
     }
 
     #[tokio::test]
     async fn the_attestation_binds_the_key_commitment() {
-        let state = EnclaveState::generate(Arc::new(CountingAttestor::default()))
-            .expect("should generate a key");
+        let state = state();
 
         let document = state.channel_key_attestation().await;
 

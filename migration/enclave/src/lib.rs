@@ -1,7 +1,7 @@
 //! Nitro enclave workload for the `DeepIdentifier` migration.
 //!
-//! Attests a per-boot channel key through the NSM. Migrate still echoes the sealed blob until the
-//! pipeline lands.
+//! Attests a per-boot channel key through the NSM, opens the PCPs apps seal to it, and seals the
+//! PCP back to the app. The migration in between echoes until it lands.
 
 #![deny(
     clippy::all,
