@@ -12,7 +12,10 @@ use di_migration_primitives::app_api::{
     DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
     MigrateResponse, MigrationStatus,
 };
-use reqwest::{StatusCode, Url, header::CONTENT_TYPE};
+use reqwest::{
+    Request, RequestBuilder, StatusCode, Url,
+    header::{CONTENT_TYPE, HeaderName, HeaderValue},
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -253,7 +256,6 @@ where
     }
     Ok(request)
 }
-
 
 /// The success body, or the API's error code.
 async fn decode<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
