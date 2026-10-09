@@ -15,7 +15,7 @@ attested-request = { version = "0.1.1", features = ["test-util"] }
 clap = { workspace = true, features = ["derive", "env"] }
 di-migration-primitives.workspace = true
 hex.workspace = true
-di-migration-client.workspace = true
+di-migration-client = { workspace = true, features = ["test-util"] }
 pontifex = { workspace = true, features = ["attestation"] }
 reqwest.workspace = true
 serde_json.workspace = true
