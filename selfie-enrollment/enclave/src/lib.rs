@@ -235,6 +235,15 @@ mod tests {
         let (sealed, _) = consumer
             .seal_to_enclave(&request.encode().unwrap())
             .unwrap();
+        let another_boot = super::tests::state();
+        assert!(matches!(
+            another_boot
+                .extract(ExtractRequest {
+                    ciphertext: sealed.clone()
+                })
+                .await,
+            Err(Error::ReassignRequired)
+        ));
         state
             .assignments
             .lock()

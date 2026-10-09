@@ -28,6 +28,7 @@ pub fn decode_result(
                 report.zeroize();
             }
             if result.vector.is_empty()
+                || result.vector.len() > 4096
                 || result.r#type.is_empty()
                 || result.r#type.len() > 128
                 || result.version.is_empty()

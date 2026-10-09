@@ -1,6 +1,6 @@
 //! Browser WebSocket adapter with a bounded incoming queue, deadlines and cancellation.
 use crate::{Config, Error, Frame, Transport};
-use futures_channel::mpsc;
+use futures_channel::{mpsc, oneshot};
 use futures_util::{
     FutureExt, StreamExt,
     future::{Either, select},
@@ -9,6 +9,34 @@ use selfie_enrollment_api_types::{MAX_CONTROL_BYTES, MAX_RESPONSE_BYTES};
 use std::time::Duration;
 use wasm_bindgen::{JsCast, prelude::*};
 use web_sys::{AbortSignal, Event, MessageEvent, WebSocket};
+
+/// A separate cancellation future interrupts even an issuer promise that never settles.
+struct Cancellation {
+    signal: AbortSignal,
+    callback: Closure<dyn FnMut(Event)>,
+}
+impl Cancellation {
+    fn new(signal: AbortSignal) -> Result<(Self, oneshot::Receiver<()>), Error> {
+        let (sender, receiver) = oneshot::channel();
+        let mut sender = Some(sender);
+        let callback = Closure::wrap(Box::new(move |_: Event| {
+            if let Some(sender) = sender.take() {
+                let _ = sender.send(());
+            }
+        }) as Box<dyn FnMut(Event)>);
+        signal
+            .add_event_listener_with_callback("abort", callback.as_ref().unchecked_ref())
+            .map_err(|_| Error::Transport)?;
+        Ok((Self { signal, callback }, receiver))
+    }
+}
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        let _ = self
+            .signal
+            .remove_event_listener_with_callback("abort", self.callback.as_ref().unchecked_ref());
+    }
+}
 
 enum EventFrame {
     Open,
@@ -146,7 +174,46 @@ impl Drop for BrowserTransport {
     }
 }
 
+/// Runs the browser transport with a Rust admission callback, including cancellation
+/// while that callback is pending. Suitable for callers inside a dedicated Web Worker.
+pub async fn extract<F, Fut>(
+    config: &Config,
+    image: Vec<u8>,
+    issuer: F,
+    signal: Option<AbortSignal>,
+) -> Result<selfie_enrollment_sealed_types::EmbeddingResult, Error>
+where
+    F: FnOnce(selfie_enrollment_api_types::AdmissionChallenge) -> Fut,
+    Fut: std::future::Future<Output = Result<selfie_enrollment_api_types::AdmissionTicket, Error>>,
+{
+    let mut image = zeroize::Zeroizing::new(image);
+    let cancellation = signal.clone().map(Cancellation::new).transpose()?;
+    if signal.as_ref().is_some_and(AbortSignal::aborted) {
+        return Err(Error::Timeout);
+    }
+    let operation = async {
+        let mut socket = BrowserTransport::connect(config, signal).await?;
+        let exchange =
+            crate::exchange(&mut socket, config, std::mem::take(&mut *image), issuer).boxed_local();
+        let timer = gloo_timers::future::TimeoutFuture::new(100_000).boxed_local();
+        match select(exchange, timer).await {
+            Either::Left((result, _)) => result,
+            _ => Err(Error::Timeout),
+        }
+    }
+    .boxed_local();
+    if let Some((_guard, receiver)) = cancellation {
+        match select(operation, receiver).await {
+            Either::Left((result, _)) => result,
+            Either::Right(_) => Err(Error::Timeout),
+        }
+    } else {
+        operation.await
+    }
+}
+
 /// `issueTicket(challenge)` calls a trusted test issuer; it must not embed a signing key.
+#[cfg(feature = "js-export")]
 #[wasm_bindgen(js_name=extractEmbedding)]
 pub async fn extract_embedding(
     config_json: String,
@@ -154,27 +221,27 @@ pub async fn extract_embedding(
     issue_ticket: js_sys::Function,
     signal: Option<AbortSignal>,
 ) -> Result<JsValue, JsValue> {
-    let result = async {
+    let mut image = zeroize::Zeroizing::new(image);
+    let operation = async {
         let config: Config = serde_json::from_str(&config_json).map_err(|_| Error::Config)?;
-        let mut socket = BrowserTransport::connect(&config, signal).await?;
-        let exchange = crate::exchange(&mut socket, &config, image, move |challenge| async move {
-            let arg = serde_wasm_bindgen::to_value(&challenge).map_err(|_| Error::Admission)?;
-            let value = issue_ticket
-                .call1(&JsValue::NULL, &arg)
-                .map_err(|_| Error::Admission)?;
-            let value = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&value))
-                .await
-                .map_err(|_| Error::Admission)?;
-            serde_wasm_bindgen::from_value(value).map_err(|_| Error::Admission)
-        })
-        .boxed_local();
-        let timer = gloo_timers::future::TimeoutFuture::new(100_000).boxed_local();
-        let result = match select(exchange, timer).await {
-            Either::Left((result, _)) => result?,
-            _ => return Err(Error::Timeout),
-        };
+        let result = extract(
+            &config,
+            std::mem::take(&mut *image),
+            move |challenge| async move {
+                let arg = serde_wasm_bindgen::to_value(&challenge).map_err(|_| Error::Admission)?;
+                let value = issue_ticket
+                    .call1(&JsValue::NULL, &arg)
+                    .map_err(|_| Error::Admission)?;
+                let value = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&value))
+                    .await
+                    .map_err(|_| Error::Admission)?;
+                serde_wasm_bindgen::from_value(value).map_err(|_| Error::Admission)
+            },
+            signal,
+        )
+        .await?;
         serde_wasm_bindgen::to_value(&result).map_err(|_| Error::Protocol)
     }
     .await;
-    result.map_err(|e: Error| JsValue::from_str(&e.to_string()))
+    operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
 }

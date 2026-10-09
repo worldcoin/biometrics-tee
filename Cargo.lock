@@ -3682,6 +3682,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "selfie-enrollment-e2e"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "hex",
+ "p256",
+ "rand 0.8.8",
+ "selfie-enrollment-api-types",
+ "selfie-enrollment-client",
+ "selfie-enrollment-sealed-types",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "selfie-enrollment-enclave"
 version = "0.1.0"
 dependencies = [

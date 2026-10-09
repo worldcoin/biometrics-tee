@@ -139,19 +139,17 @@ impl VerifiedAssignment {
                 .ok_or(Error::Attestation)?,
         )
         .map_err(|_| Error::Attestation)?;
-        let matches_release = config.releases.iter().any(|r| {
-            r.worker_sha384 == identity.executable_sha384
-                && [(&r.pcr0, 0), (&r.pcr1, 1), (&r.pcr2, 2)]
-                    .iter()
-                    .all(|(expected, index)| {
-                        verified
-                            .document()
-                            .pcrs
-                            .get(index)
-                            .is_some_and(|actual| hex::encode(actual) == **expected)
-                    })
-        });
-        if !matches_release {
+        if !matches_release(
+            &config.releases,
+            &identity,
+            std::array::from_fn(|index| {
+                verified
+                    .document()
+                    .pcrs
+                    .get(&index)
+                    .map(|pcr| pcr.as_slice())
+            }),
+        ) {
             return Err(Error::Attestation);
         }
         Ok(Self {
@@ -182,6 +180,22 @@ impl VerifiedAssignment {
             },
         ))
     }
+}
+// Called only after signature/chain, timestamp and channel commitment verification.
+fn matches_release(
+    releases: &[Release],
+    identity: &WorkerIdentity,
+    pcrs: [Option<&[u8]>; 3],
+) -> bool {
+    releases.iter().any(|release| {
+        release.worker_sha384 == identity.executable_sha384
+            && [&release.pcr0, &release.pcr1, &release.pcr2]
+                .iter()
+                .zip(pcrs)
+                .all(|(expected, actual)| {
+                    actual.is_some_and(|actual| hex::encode(actual) == **expected)
+                })
+    })
 }
 pub struct PendingResult {
     opener: ResponseOpener,
@@ -306,5 +320,44 @@ mod tests {
         let mut c = config();
         c.endpoint = "ws://example.com/v1/embeddings".into();
         assert!(c.validate().is_err());
+    }
+    #[test]
+    fn authenticated_worker_and_measurements_must_belong_to_the_same_release() {
+        let mut config = config();
+        let first = config.releases[0].clone();
+        let second = Release {
+            pcr0: "5".repeat(96),
+            pcr1: "6".repeat(96),
+            pcr2: "7".repeat(96),
+            worker_sha384: "8".repeat(96),
+        };
+        config.releases.push(second.clone());
+        let mut identity = WorkerIdentity {
+            profile: PROFILE.into(),
+            executable_sha384: first.worker_sha384.clone(),
+        };
+        let pcr0 = hex::decode(&first.pcr0).unwrap();
+        let pcr1 = hex::decode(&first.pcr1).unwrap();
+        let pcr2 = hex::decode(&first.pcr2).unwrap();
+        let pcrs = [
+            Some(pcr0.as_slice()),
+            Some(pcr1.as_slice()),
+            Some(pcr2.as_slice()),
+        ];
+        assert!(matches_release(&config.releases, &identity, pcrs));
+        identity.executable_sha384 = second.worker_sha384;
+        assert!(!matches_release(&config.releases, &identity, pcrs));
+        identity.executable_sha384 = first.worker_sha384;
+        let other_pcr = hex::decode(&second.pcr1).unwrap();
+        assert!(!matches_release(
+            &config.releases,
+            &identity,
+            [pcrs[0], Some(&other_pcr), pcrs[2]]
+        ));
+        assert!(!matches_release(
+            &config.releases,
+            &identity,
+            [pcrs[0], None, pcrs[2]]
+        ));
     }
 }

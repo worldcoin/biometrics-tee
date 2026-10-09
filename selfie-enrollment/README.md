@@ -19,6 +19,7 @@ The sealed CBOR request contains protocol version 1, the assignment nonce and an
 - `sealed-types`: client/enclave plaintext types and strict codecs.
 - `enclave`: worker bootstrap, Minijail adapter, attested keys, assignment replay protection and extraction policy.
 - `host`: admission, bounded WebSocket relay, health/readiness and graceful shutdown.
+- `e2e`: native diagnostic command and loopback-only browser harness/test issuer.
 - `client`: shared verification and sealing, native transport, browser WASM transport with bounded incoming queue and AbortSignal support.
 
 The shared `sandbox/` crate remains byte-oriented. Its bundle receiver uses the pinned Flamingo consolidation from #60; this branch includes that foundation. Enrollment uses the published `biometric-engines-protocol` face contract rather than DI's vendored migration protocol. The worker is started before broker keys or executor threads exist. Worker transport/protocol failures terminate the enclave; image/quality rejections remain recoverable.
@@ -39,3 +40,31 @@ The browser export is `extractEmbedding(configJson, imageBytes, issueTicket, abo
 ## Deployment
 
 `worldcoin/tee-apps` owns paired host/EIF publication and Argo values. Staging uses the independent `selfie-enrollment-v1` node track and the `selfie-enrollment` namespace/service account. Required infrastructure is tracked in worldcoin/infrastructure#50677. Initial acceptance must use trusted build measurements and a pinned real worker on non-debug Nitro; local fake-worker tests do not establish a deployed extraction service or camera liveness.
+
+## Exercise a measured staging release
+
+Use the reviewed `client-stage.json` from tee-apps; never construct the allowlist from an untrusted host's response. On an operator machine:
+
+```sh
+cargo run --locked -p selfie-enrollment-e2e -- keygen --directory /private/tmp/enrollment-issuer
+cargo run --locked -p selfie-enrollment-e2e -- extract \
+  --config /path/to/client-stage.json --image /path/to/approved-test-image.jpg \
+  --admission-key /private/tmp/enrollment-issuer/admission-private.hex
+```
+
+Configure only `admission-public.hex` on the staging host. Private keys and explicit `--output` files are created with mode 0600 and never overwritten. The default diagnostic output includes only embedding metadata and worker identity. The local issuer is a test facility, not a credential-issuance authorization method.
+
+For the browser harness, install matching wasm-bindgen CLI 0.2.126 and build:
+
+```sh
+cargo build --locked -p selfie-enrollment-client --target wasm32-unknown-unknown
+wasm-bindgen --target web --out-dir target/enrollment-web \
+  target/wasm32-unknown-unknown/debug/selfie_enrollment_client.wasm
+cargo run --locked -p selfie-enrollment-e2e -- serve \
+  --config /path/to/client-stage.json \
+  --admission-key /private/tmp/enrollment-issuer/admission-private.hex
+```
+
+Open `http://127.0.0.1:8765` and select the approved image. The harness sends the encrypted image directly to the TEE host and only the public admission challenge to its local issuer. The issuer rejects non-loopback Host headers, missing/cross-origin Origin headers and a wrong audience. No private key or biometric payload is served by the issuer. Cancel aborts the entire exchange, including a pending issuer promise.
+
+WASM linking requires a WASM-capable C compiler and LLVM archiver for the attestation verifier's `ring` dependency. On macOS, set `CC_wasm32_unknown_unknown` and `AR_wasm32_unknown_unknown` to LLVM tools; the Apple archiver cannot index WASM objects. CI links the WASM and runs twelve Chromium/WebKit regressions for untrusted attestation, stalled-issuer cancellation, pre-aborted requests, oversized messages, flooding and invalid policy. These are adversarial transport tests with mocked WebSocket events, not live Nitro extraction.

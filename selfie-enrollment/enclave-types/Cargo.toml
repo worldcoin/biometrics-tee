@@ -11,4 +11,3 @@ pontifex.workspace = true
 serde.workspace = true
 serde_bytes.workspace = true
 selfie-enrollment-api-types.workspace = true
-

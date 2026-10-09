@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "selfie-enrollment/e2e",
     "selfie-enrollment/host",
     "selfie-enrollment/client",
     "selfie-enrollment/enclave",
