@@ -146,7 +146,7 @@ async fn init_migration(
         Err(StorageError::ActiveJob) => replace_unclaimed_job(&state, &job).await?,
         Err(error) => return Err(ApiError::storage("dynamodb", error.to_string())),
     }
-
+    tracing::info!(%sub, job_id = %job.job_id, "migration job created");
     Ok(Json(InitMigrationResponse {
         enclave_id: attestation.enclave_id,
         attestation: attestation.attestation,
@@ -202,10 +202,12 @@ async fn migrate(
         .await
         .map_err(|error| ApiError::storage("s3", error.to_string()))?;
     if !uploaded {
+        tracing::warn!(%sub, job_id = %job.job_id, "migration job not uploaded");
         return Err(ApiError::not_uploaded());
     }
 
     let deadline = now + state.job_deadline.as_secs();
+    tracing::info!(%sub, job_id = %job.job_id, deadline, "migration job claimed");
     match state.jobs.claim(&job.job_id, sub, now, deadline).await {
         Ok(()) => {}
         Err(StorageError::UploadWindowPassed) => return Err(ApiError::expired()),
@@ -234,7 +236,7 @@ async fn migrate(
         // A host that is gone took its enclave's key with it.
         DispatchError::EnclaveChanged | DispatchError::Host(_) => Reason::EnclaveChanged,
     };
-    tracing::warn!(%error, %host, dependency = "host", reason = reason.as_str(), "dispatch failed");
+    tracing::warn!(%sub, job_id = %job.job_id, %error, %host, dependency = "host", reason = reason.as_str(), "dispatch failed");
     match state.jobs.fail_dispatch(&job.job_id, sub, reason).await {
         // The host may have queued it after all and already finished it.
         Ok(()) | Err(StorageError::NotMigrating) => Err(ApiError::failed(reason)),
@@ -258,10 +260,12 @@ async fn migration_status(
         download_url: None,
         download_expires_at: None,
     };
+    tracing::info!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration status checked");
     match job.status {
         Status::Migrating if job.deadline.is_some_and(|deadline| now > deadline) => {
             status.status = Status::Failed;
             status.reason = Some(Reason::Timeout);
+            tracing::warn!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration timed out");
         }
         Status::Migrated => {
             status.download_url = Some(
@@ -272,6 +276,7 @@ async fn migration_status(
                     .map_err(|error| ApiError::storage("s3", error.to_string()))?,
             );
             status.download_expires_at = Some(now + state.presigned_url_ttl.as_secs());
+            tracing::info!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration downloaded");
         }
         _ => {}
     }
