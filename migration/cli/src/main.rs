@@ -123,10 +123,7 @@ async fn main() -> ExitCode {
     }
 }
 
-fn client(
-    api_url: &Url,
-    device_public_key: Option<&str>,
-) -> Result<MigrationApiClient, String> {
+fn client(api_url: &Url, device_public_key: Option<&str>) -> Result<MigrationApiClient, String> {
     let mut client = MigrationApiClient::new(api_url).map_err(|error| error.to_string())?;
     if let Some(key) = device_public_key {
         client = client.with_device_public_key(key);

@@ -329,10 +329,7 @@ async fn a_migration_runs_from_init_to_download() {
         .upload_pcp(&init.upload_url, PCP.to_vec())
         .await
         .expect("upload should succeed");
-    let migrating = client
-        .migrate(&sub)
-        .await
-        .expect("migrate should dispatch");
+    let migrating = client.migrate(&sub).await.expect("migrate should dispatch");
     assert_eq!(migrating.status, Status::Migrating);
     assert!(matches!(
         client
@@ -348,11 +345,7 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(job.enclave_id, enclave_id());
     assert_eq!(job.device_public_key, DEVICE_KEY);
     assert_eq!(
-        client
-            .migration_status(&sub)
-            .await
-            .expect("status")
-            .status,
+        client.migration_status(&sub).await.expect("status").status,
         Status::Migrating
     );
 
@@ -372,10 +365,7 @@ async fn a_migration_runs_from_init_to_download() {
         .expect("the host marks the job migrated");
 
     // Status hands out the result, readable only by the right device.
-    let done = client
-        .migration_status(&sub)
-        .await
-        .expect("status");
+    let done = client.migration_status(&sub).await.expect("status");
     assert_eq!(done.status, Status::Migrated);
     let download = reqwest::get(done.download_url.expect("download url"))
         .await

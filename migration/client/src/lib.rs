@@ -174,9 +174,7 @@ impl MigrationApiClient {
         if let Some(device_public_key) = &self.device_public_key {
             request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
         }
-        let response = request.send()
-            .await
-            .map_err(Error::Transport)?;
+        let response = request.send().await.map_err(Error::Transport)?;
         decode(response).await
     }
 
