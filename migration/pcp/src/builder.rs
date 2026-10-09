@@ -61,7 +61,7 @@ pub fn with_build_request<T>(
     let thumbnail_png = image(files, "face/thumbnail.png", &mut used)?;
     let face_ir_png = optional_image(files, "face_ir_and_thermal/face_ir.png", &mut used);
     let thermal_png = optional_image(files, "face_ir_and_thermal/thermal.png", &mut used);
-    let fraud = fraud_images(files, &mut used)?;
+    let fraud = fraud_images(files, &mut used);
     let mut ids = BTreeSet::new();
     let left_ids = image_ids(&info.left_ir_multiframe_image_ids, &mut ids)?;
     let right_ids = image_ids(&info.right_ir_multiframe_image_ids, &mut ids)?;
@@ -118,24 +118,25 @@ pub(crate) fn migration(
     }
 }
 
-/// The builder requires all three RGB images whenever any fraud image exists.
+/// The source's fraud images, each only if present. Without any, no
+/// `fraud.tar` is written.
 fn fraud_images<'a>(
     files: &'a Files,
     used: &mut BTreeSet<String>,
-) -> Result<Option<orb_pcp::FraudImages<'a>>, Error> {
+) -> Option<orb_pcp::FraudImages<'a>> {
     if !files.keys().any(|path| path.starts_with("fraud/")) {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(orb_pcp::FraudImages {
-        scc_rgb_png: image(files, "fraud/scc_rgb.png", used)?,
-        left_rgb_png: image(files, "fraud/left_rgb.png", used)?,
-        right_rgb_png: image(files, "fraud/right_rgb.png", used)?,
+    Some(orb_pcp::FraudImages {
+        scc_rgb_png: optional_image(files, "fraud/scc_rgb.png", used),
+        left_rgb_png: optional_image(files, "fraud/left_rgb.png", used),
+        right_rgb_png: optional_image(files, "fraud/right_rgb.png", used),
         left_thermal_png: optional_image(files, "fraud/left_thermal.png", used),
         right_thermal_png: optional_image(files, "fraud/right_thermal.png", used),
         scc_depth_png: optional_image(files, "fraud/scc_depth.png", used),
         left_depth_png: optional_image(files, "fraud/left_depth.png", used),
         right_depth_png: optional_image(files, "fraud/right_depth.png", used),
-    }))
+    })
 }
 
 fn optional_image<'a>(

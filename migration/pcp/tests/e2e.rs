@@ -14,8 +14,7 @@ use profiles::version_profile;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use support::{
-    FRAME_A, NEW_SIGNUP_ID, OutputKeys, SIGNATURE, build_and_open, check_request, context,
-    pipeline, source_files,
+    FRAME_A, NEW_SIGNUP_ID, OutputKeys, SIGNATURE, build_and_open, context, pipeline, source_files,
 };
 
 fn json_file(files: &Files, name: &str) -> Value {
@@ -278,13 +277,19 @@ fn opened_thermal_and_fraud_images_use_their_modality_archives() {
     }
     assert!(!new.files.contains_key("fraud/right_depth.png"));
 
-    // The builder needs all three RGB images for a fraud archive.
-    old.remove("fraud/scc_rgb.png");
+    // Any subset of fraud images is carried as it is.
+    for name in ["scc_rgb", "left_rgb", "right_rgb"] {
+        old.remove(&format!("fraud/{name}.png"));
+    }
     let source = SourcePcp::parse(old).unwrap();
-    assert_eq!(
-        check_request(&source, &pipeline(), &context()).err(),
-        Some(Error::InvalidField("raw_image"))
-    );
+    let new = build_and_open(&source, &bio, &ctx);
+    verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
+    let fraud: Vec<_> = new
+        .files
+        .keys()
+        .filter(|name| name.starts_with("fraud/"))
+        .collect();
+    assert_eq!(fraud, ["fraud/left_depth.png"]);
 }
 
 #[test]
