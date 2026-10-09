@@ -1413,6 +1413,7 @@ name = "di-migration-enclave-primitives"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "ciborium",
  "pontifex",
  "serde",
  "serde_bytes",

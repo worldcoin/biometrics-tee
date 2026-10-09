@@ -292,25 +292,28 @@ async fn a_migration_runs_from_init_to_download() {
         proof_verification().await,
     )
     .await;
-    let client = MigrationApiClient::new(&base_url.parse().expect("url")).expect("client");
+    let client = MigrationApiClient::new(&base_url.parse().expect("url"))
+        .expect("client")
+        .with_device_public_key(DEVICE_KEY);
+    let other = client.with_device_public_key("other-device");
     let sub = format!("sub-{}", JobId::new());
     let signer = test_signer();
     let token = test_integrity_token(&signer);
 
     // Init pins the job to the host's enclave and hands out an upload URL.
     let lost = client
-        .init_migration(&token, &signer, DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("init should succeed");
     assert!(matches!(
-        client
-            .init_migration(&token, &signer, "other-device", &sub, "YQ==", CHALLENGE_ID)
+        other
+            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
             .await,
         Err(Error::Api { code, .. }) if code == "migration_in_progress"
     ));
     // The same device, e.g. after losing that response, starts over with a new job.
     let init = client
-        .init_migration(&token, &signer, DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("a repeated init replaces the unclaimed job");
     assert_ne!(init.upload_url, lost.upload_url);
@@ -319,7 +322,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     // Migrate waits for the upload.
     assert!(matches!(
-        client.migrate(&token, &signer, DEVICE_KEY, &sub).await,
+        client.migrate(&token, &signer, &sub).await,
         Err(Error::Api { code, .. }) if code == "not_uploaded"
     ));
     client
@@ -327,13 +330,13 @@ async fn a_migration_runs_from_init_to_download() {
         .await
         .expect("upload should succeed");
     let migrating = client
-        .migrate(&token, &signer, DEVICE_KEY, &sub)
+        .migrate(&token, &signer, &sub)
         .await
         .expect("migrate should dispatch");
     assert_eq!(migrating.status, Status::Migrating);
     assert!(matches!(
         client
-            .init_migration(&token, &signer, DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
             .await,
         Err(Error::Api { code, .. }) if code == "migration_in_progress"
     ));
@@ -346,7 +349,7 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(job.device_public_key, DEVICE_KEY);
     assert_eq!(
         client
-            .migration_status(&token, &signer, DEVICE_KEY, &sub)
+            .migration_status(&token, &signer, &sub)
             .await
             .expect("status")
             .status,
@@ -370,7 +373,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     // Status hands out the result, readable only by the right device.
     let done = client
-        .migration_status(&token, &signer, DEVICE_KEY, &sub)
+        .migration_status(&token, &signer, &sub)
         .await
         .expect("status");
     assert_eq!(done.status, Status::Migrated);
@@ -380,15 +383,13 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(download.status(), StatusCode::OK);
     assert_eq!(download.bytes().await.expect("body").as_ref(), PCP);
     assert!(matches!(
-        client
-            .migration_status(&token, &signer, "other-device", &sub)
-            .await,
+        other.migration_status(&token, &signer, &sub).await,
         Err(Error::Api { code, .. }) if code == "device_key_mismatch"
     ));
 
     // The finished job frees the sub, so the app can start another migration at once.
     client
-        .init_migration(&token, &signer, DEVICE_KEY, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("a finished migration no longer blocks init");
 
