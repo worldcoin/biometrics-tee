@@ -27,7 +27,6 @@ impl Enclave for FakeEnclave {
         Ok(KeyAttestation {
             document: vec![1],
             public_key: vec![2],
-            nonce: [3; 32],
         })
     }
     async fn extract(&self, _: ExtractRequest) -> Result<ExtractResponse, ErrorCode> {

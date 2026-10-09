@@ -106,10 +106,9 @@ pub enum Error {
     Admission,
 }
 
-/// Holds the verified boot key and single-use nonce together.
+/// Holds the verified boot key and attested worker identity.
 pub struct VerifiedAssignment {
     consumer: ChannelConsumer,
-    nonce: [u8; 32],
     identity: WorkerIdentity,
 }
 impl VerifiedAssignment {
@@ -152,16 +151,11 @@ impl VerifiedAssignment {
         ) {
             return Err(Error::Attestation);
         }
-        Ok(Self {
-            consumer,
-            nonce: assignment.nonce,
-            identity,
-        })
+        Ok(Self { consumer, identity })
     }
     pub fn seal(self, image: Vec<u8>) -> Result<(Vec<u8>, PendingResult), Error> {
         let request = EmbeddingRequest {
             version: PROTOCOL_VERSION,
-            nonce: self.nonce,
             image,
         };
         let plaintext = request.encode().map_err(|_| Error::Protocol)?;

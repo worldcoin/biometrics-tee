@@ -10,7 +10,6 @@ pub const PADDED_RESULT_BYTES: usize = 64 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingRequest {
     pub version: u32,
-    pub nonce: [u8; 32],
     #[serde(with = "serde_bytes")]
     pub image: Vec<u8>,
 }
@@ -165,7 +164,6 @@ mod tests {
     fn request_rejects_empty_oversized_and_trailing_bytes() {
         let mut request = EmbeddingRequest {
             version: 1,
-            nonce: [1; 32],
             image: vec![1],
         };
         let mut encoded = request.encode().unwrap();

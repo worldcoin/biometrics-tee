@@ -9,7 +9,6 @@ pub struct KeyAttestation {
     pub document: Vec<u8>,
     #[serde(with = "serde_bytes")]
     pub public_key: Vec<u8>,
-    pub nonce: [u8; 32],
 }
 #[derive(Serialize, Deserialize)]
 pub struct AssignmentRequest;

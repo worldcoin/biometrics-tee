@@ -9,18 +9,10 @@ pub mod runtime;
 use attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
 use engine::Engine;
 use pontifex::{ChannelDomain, ChannelEnclave};
-use rand::RngCore;
 use selfie_enrollment_api_types::{CHANNEL_DOMAIN, MAX_REQUEST_BYTES};
 use selfie_enrollment_enclave_types::{Error, ExtractRequest, ExtractResponse, KeyAttestation};
 use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult, Failure, WorkerIdentity};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
-
-const ASSIGNMENT_TTL: Duration = Duration::from_secs(60);
-const MAX_ASSIGNMENTS: usize = 32;
+use std::sync::{Arc, Mutex};
 
 /// No worker replacement or key rotation occurs inside an enclave boot.
 pub struct State {
@@ -28,7 +20,6 @@ pub struct State {
     attested: AttestedKey,
     identity: WorkerIdentity,
     engine: Mutex<Box<dyn Engine>>,
-    assignments: Mutex<BTreeMap<[u8; 32], Instant>>,
     processing: Arc<tokio::sync::Semaphore>,
 }
 impl State {
@@ -50,7 +41,6 @@ impl State {
             attested,
             identity,
             engine: Mutex::new(engine),
-            assignments: Mutex::new(BTreeMap::new()),
             processing: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
@@ -66,22 +56,9 @@ impl State {
     }
     pub async fn assignment(&self) -> Result<KeyAttestation, Error> {
         self.health()?;
-        let document = self.attested.document().await;
-        let now = Instant::now();
-        let mut pending = self.assignments.lock().map_err(|_| Error::Unavailable)?;
-        pending.retain(|_, created| now.duration_since(*created) < ASSIGNMENT_TTL);
-        if pending.len() >= MAX_ASSIGNMENTS {
-            return Err(Error::Busy);
-        }
-        let mut nonce = [0; 32];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
-        if pending.insert(nonce, now).is_some() {
-            return Err(Error::Unavailable);
-        }
         Ok(KeyAttestation {
-            document,
+            document: self.attested.document().await,
             public_key: self.channel.public_key(),
-            nonce,
         })
     }
     /// Permit moves into the blocking task: cancellation cannot release it while inference runs.
@@ -109,15 +86,6 @@ impl State {
                     reason: Failure::InvalidRequest,
                 },
                 Ok(input) => {
-                    let created = state
-                        .assignments
-                        .lock()
-                        .map_err(|_| Error::Unavailable)?
-                        .remove(&input.nonce)
-                        .ok_or(Error::ReassignRequired)?;
-                    if created.elapsed() >= ASSIGNMENT_TTL {
-                        return Err(Error::ReassignRequired);
-                    }
                     let mut engine = state.engine.lock().map_err(|_| Error::Unavailable)?;
                     match engine.extract(&input.image, &state.identity)? {
                         Ok(embedding) => EmbeddingResult::Success { embedding },
@@ -178,7 +146,7 @@ mod tests {
         )
     }
     #[tokio::test]
-    async fn sealed_round_trip_is_single_use_and_response_bound() {
+    async fn sealed_round_trip_allows_resubmission_and_uses_request_response_key() {
         let state = state();
         let assignment = state.assignment().await.unwrap();
         let consumer = ChannelConsumer::from_unverified_public_key(
@@ -188,7 +156,6 @@ mod tests {
         .unwrap();
         let request = EmbeddingRequest {
             version: 1,
-            nonce: assignment.nonce,
             image: vec![1, 2, 3],
         };
         let (sealed, opener) = consumer
@@ -205,10 +172,10 @@ mod tests {
             EmbeddingResult::decode(&opened).unwrap(),
             EmbeddingResult::Success { .. }
         ));
-        assert!(matches!(
-            state.extract(ExtractRequest { ciphertext: sealed }).await,
-            Err(Error::ReassignRequired)
-        ));
+        state
+            .extract(ExtractRequest { ciphertext: sealed })
+            .await
+            .expect("same-boot resubmission is allowed");
         let (_, other_opener) = consumer
             .seal_to_enclave(&request.encode().unwrap())
             .unwrap();
@@ -219,9 +186,13 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn bounded_assignments_expire_and_wrong_boot_cannot_open() {
+    async fn assignments_reuse_the_boot_key_and_wrong_boot_cannot_open() {
         let state = state();
         let assignment = state.assignment().await.unwrap();
+        for _ in 0..64 {
+            let next = state.assignment().await.unwrap();
+            assert_eq!(next.public_key, assignment.public_key);
+        }
         let consumer = ChannelConsumer::from_unverified_public_key(
             ChannelDomain::new(CHANNEL_DOMAIN),
             &assignment.public_key,
@@ -229,7 +200,6 @@ mod tests {
         .unwrap();
         let request = EmbeddingRequest {
             version: 1,
-            nonce: assignment.nonce,
             image: vec![1],
         };
         let (sealed, _) = consumer
@@ -244,18 +214,5 @@ mod tests {
                 .await,
             Err(Error::ReassignRequired)
         ));
-        state
-            .assignments
-            .lock()
-            .unwrap()
-            .insert(assignment.nonce, Instant::now() - ASSIGNMENT_TTL);
-        assert!(matches!(
-            state.extract(ExtractRequest { ciphertext: sealed }).await,
-            Err(Error::ReassignRequired)
-        ));
-        for _ in 0..MAX_ASSIGNMENTS {
-            state.assignment().await.unwrap();
-        }
-        assert!(matches!(state.assignment().await, Err(Error::Busy)));
     }
 }

@@ -35,7 +35,7 @@ async function main() {
                   else if(mode==='flood') for(let i=0;i<20;i++) this.onmessage?.(new MessageEvent('message',{data:admission}));
                   else this.onmessage?.(new MessageEvent('message',{data:admission}));
                 },0)}
-                send(data){window.transport.sent.push(typeof data==='string'?'ticket':'image');setTimeout(()=>this.onmessage?.(new MessageEvent('message',{data:JSON.stringify({type:'assignment',data:{attestation:'AQ==',public_key:'Ag==',nonce:Array(32).fill(3)}})})),0)}
+                send(data){window.transport.sent.push(typeof data==='string'?'ticket':'image');setTimeout(()=>this.onmessage?.(new MessageEvent('message',{data:JSON.stringify({type:'assignment',data:{attestation:'AQ==',public_key:'Ag=='}})})),0)}
                 close(){this.readyState=3;window.transport.closed++}
               };
             },{mode});

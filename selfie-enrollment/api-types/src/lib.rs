@@ -16,7 +16,6 @@ pub const CHANNEL_DOMAIN: &str = "selfie-enrollment/embedding/v1";
 pub struct Assignment {
     pub attestation: String,
     pub public_key: String,
-    pub nonce: [u8; 32],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

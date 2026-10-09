@@ -3848,7 +3848,6 @@ dependencies = [
  "hex",
  "libc",
  "pontifex",
- "rand 0.8.8",
  "selfie-enrollment-api-types",
  "selfie-enrollment-enclave-types",
  "selfie-enrollment-sealed-types",

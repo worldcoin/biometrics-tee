@@ -6,23 +6,45 @@ This application follows Flamingo's public host / measured enclave / private san
 
 `GET /v1/embeddings` upgrades to a WebSocket. The host sends an admission nonce, the caller obtains a P256 ticket from its trusted test issuer, and the host verifies the ticket before accessing the enclave. Tickets expire within 60 seconds and commit to the audience and the connection's random nonce, so a captured ticket cannot authorize another socket. Native clients may omit Origin; browser Origins must be explicitly allowed. The issuer's signing key never belongs in browser code.
 
-The enclave returns its boot-scoped channel key, Nitro attestation and a single-use 60-second assignment nonce. The client verifies the AWS chain, document freshness, PCR0/1/2, channel-key commitment and worker identity before sealing an image. A release allowlist entry binds all three measurements to a specific worker executable SHA-384. There is no measurement-bypass option.
+The enclave returns its boot-scoped channel key and Nitro attestation, following Flamingo's stateless assignment flow. The client verifies the AWS chain, document freshness, PCR0/1/2, channel-key commitment and worker identity before sealing an image. A release allowlist entry binds all three measurements to a specific worker executable SHA-384. There is no measurement-bypass option.
 
 The attestation's `user_data` contains CBOR `WorkerIdentity`: the enclave-verified executable digest plus `selfie-enrollment/vanilla-selfie/v1`. The digest is immutable for the boot and covers the worker's embedded models. It differs from the archive SHA-256 verified by the host provisioner. Model/worker releases can change independently of the public broker EIF while remaining subject to the client's explicit allowlist.
 
-The sealed CBOR request contains protocol version 1, the assignment nonce and an image of at most 8 MiB. The enclave consumes the nonce and permits one worker operation at a time. A response carries either a typed image/quality failure or the original worker vector encoding, type, version, inference backend and worker identity. Responses are padded to 64 KiB before sealing. No image, embedding or worker debug report is logged or persisted by the host. Biometric plaintext types erase their owned buffers on drop.
+The sealed CBOR request contains protocol version 1 and an image of at most 8 MiB. The enclave permits one worker operation at a time. Assignments reserve no state and have no per-request expiry; replaying valid ciphertext during the same enclave boot can repeat inference. A restart changes the channel key, so old ciphertext returns `reassign_required`. A response carries either a typed image/quality failure or the original worker vector encoding, type, version, inference backend and worker identity. Responses are padded to 64 KiB before sealing. Response encryption is not an independently attested or signed extraction statement; credential-issuance verification is outside this protocol. No image, embedding or worker debug report is logged or persisted by the host. Biometric plaintext types erase their owned buffers on drop.
 
 ## Layout and dependencies
 
 - `api-types`: public session/admission messages and limits.
 - `enclave-types`: ciphertext-only Pontifex RPCs and health.
 - `sealed-types`: client/enclave plaintext types and strict codecs.
-- `enclave`: worker bootstrap, Minijail adapter, attested keys, assignment replay protection and extraction policy.
+- `enclave`: worker bootstrap, Minijail adapter, attested keys, extraction policy.
 - `host`: admission, bounded WebSocket relay, health/readiness and graceful shutdown.
 - `e2e`: native diagnostic command and loopback-only browser harness/test issuer.
 - `client`: shared verification and sealing, native transport, browser WASM transport with bounded incoming queue and AbortSignal support.
 
 The shared `sandbox/` crate remains byte-oriented. Its bundle receiver uses the pinned Flamingo consolidation from #60; this branch includes that foundation. Enrollment uses the published `biometric-engines-protocol` face contract rather than DI's vendored migration protocol. The worker is started before broker keys or executor threads exist. Worker transport/protocol failures terminate the enclave; image/quality rejections remain recoverable.
+
+## Review against Flamingo
+
+Comparison baseline: [Flamingo `0cd6389`](https://github.com/worldcoin/flamingo/tree/0cd638927fdaf9b240b8b893d94a2697a4e7d2aa). These are the enrollment-specific decisions to review:
+
+| Difference | Enrollment behavior | Review here |
+| --- | --- | --- |
+| Operation and result | One `VanillaSelfie` image becomes an embedding and metadata. No comparison threshold, PCP validation, match-token signing, or signing-key attestation. Worker debug reports are erased instead of returned. | [sealed payloads](sealed-types/src/lib.rs), [worker adapter](enclave/src/engine.rs) |
+| Browser admission and wire messages | `/v1/embeddings` starts with a host-issued challenge and P256 ticket; the host pushes the assignment after ticket verification. Flamingo's host waits for `assignment_request` on `/v1/matches`. Enrollment uses `{type,data}` control messages, exact browser Origin checks, and host-side test admission. | [public messages](api-types/src/lib.rs), [host session](host/src/lib.rs), [session tests](host/tests/session.rs) |
+| Worker allowlist | Nitro `user_data` carries the verified worker executable digest and extraction profile. The client requires the worker digest and PCR0/1/2 to match one approved release entry. Flamingo's current `NsmAttestor` leaves `user_data` empty. | [attestation](enclave/src/attestation.rs), [startup](enclave/src/runtime.rs), [client verification](client/src/lib.rs) |
+| Browser client | Native and WASM transports share verification and session sequencing. The browser transport bounds queued frames and supports cancellation; the issuer callback receives only the public admission challenge. | [shared client](client/src/lib.rs), [browser transport](client/src/browser.rs), [native transport](client/src/native.rs) |
+| Limits and scheduling | One inference per enclave with immediate `busy` while occupied; Flamingo waits up to five seconds for its worker lock. Enrollment has an 8 MiB image limit, fixed 64 KiB padded results, eight default host sockets and a 90-second host session deadline. | [enclave state](enclave/src/lib.rs), [limits](api-types/src/lib.rs), [host lifecycle](host/src/lib.rs) |
+| Sandbox integration | DI's existing byte-oriented Minijail process/transport remains. The PR replaces duplicated bundle provisioning with a pinned `flamingo-verifier-sandbox-bundle` dependency; enrollment supplies the typed embedding adapter. This shared dependency change also affects DI. | [sandbox re-exports](../sandbox/src/lib.rs), [workspace dependencies](../Cargo.toml), [worker adapter](enclave/src/engine.rs) |
+| Build and diagnostics | Adds an enrollment Nix EIF target, host image, native diagnostics and loopback-only browser/test issuer. Deployment publication and promotion live in `tee-apps`. | [Nix target](../nix/enclave-images.nix), [build script](../scripts/build-enclaves.sh), [operator tool](e2e/src/main.rs), [CI](../.github/workflows/rust-ci.yml) |
+
+Assignment contents now match Flamingo's fields: attestation and public key. There is no assignment nonce, reservation table, expiry or consumed-request tracking. The remaining `AdmissionChallenge.nonce` belongs to the host's ticket exchange, never to the Nitro document or sealed image request. The attestation call leaves Nitro's optional nonce field empty.
+
+The common foundation is Pontifex 3 channel encryption, boot-scoped keys, cached Nitro attestation, a host that relays ciphertext, one encrypted request/result per WebSocket, and a worker launched before broker keys or runtime threads. The Minijail policy/process implementation is pre-existing in the PR base; the new trust-sensitive code is the integration listed above.
+
+Enrollment does not produce Flamingo's independently verifiable signed result. `PendingResult::open` decrypts and validates the response and checks its worker metadata; it is not a credential-issuance proof. A caller can submit the same image or ciphertext again during the same boot. Application authorization, freshness and issuance binding remain separate work.
+
+The assignment and sealed-request changes require a matching client/server release. WalletKit's dependency and the deployment source pin must move together with the newly built PCR policy; the previously deployed staging release and its E2E evidence describe the older wire format.
 
 ## Build and validation
 

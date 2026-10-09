@@ -207,7 +207,6 @@ async fn serve(socket: &mut WebSocket, state: &AppState) -> Result<(), ErrorCode
         ServerMessage::Assignment(Assignment {
             attestation: STANDARD.encode(assignment.document),
             public_key: STANDARD.encode(assignment.public_key),
-            nonce: assignment.nonce,
         }),
     )
     .await?;
