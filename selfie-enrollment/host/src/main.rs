@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
         )?;
         let listener = tokio::net::TcpListener::bind(&config.address).await?;
         let permits = state.connections.clone();
-        axum::serve(listener, selfie_enrollment_host::router(state))
+        axum::serve(listener, selfie_enrollment_host::router(state.clone()))
             .with_graceful_shutdown(async move {
                 let mut terminate =
                     tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
                 permits.close();
             })
             .await?;
+        state.drain().await?;
         Ok(())
     }
 }

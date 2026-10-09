@@ -183,3 +183,32 @@ async fn unapproved_browser_origin_is_rejected_before_upgrade() {
     assert_eq!(enclave.assignments.load(Ordering::SeqCst), 0);
     task.abort();
 }
+
+#[tokio::test]
+async fn shutdown_waits_for_upgraded_sockets_and_rejects_new_sessions() {
+    let (url, state, _, _, task) = server().await;
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    assert!(matches!(
+        next(&mut socket).await,
+        ServerMessage::Admission(_)
+    ));
+    let draining = state.clone();
+    let drain = tokio::spawn(async move { draining.drain().await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !state.connections.is_closed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!drain.is_finished());
+    assert!(connect_async(&url).await.is_err());
+    socket.close(None).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), drain)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.connections.available_permits(), 1);
+    task.abort();
+}

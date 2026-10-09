@@ -19,7 +19,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    sync::Semaphore,
+    sync::{Notify, OwnedSemaphorePermit, Semaphore},
     time::{Instant, timeout, timeout_at},
 };
 
@@ -36,6 +36,8 @@ pub struct AppState {
     pub audience: String,
     pub allowed_origins: Vec<String>,
     pub connections: Arc<Semaphore>,
+    max_connections: usize,
+    session_finished: Arc<Notify>,
 }
 impl AppState {
     pub fn new(
@@ -59,9 +61,41 @@ impl AppState {
             audience,
             allowed_origins,
             connections: Arc::new(Semaphore::new(connections)),
+            max_connections: connections,
+            session_finished: Arc::new(Notify::new()),
         })
     }
 }
+// Hyper releases upgraded connections from its graceful-shutdown accounting.
+// Keep their permits until the session task actually exits, then wake the host drain.
+struct SessionPermit {
+    permit: Option<OwnedSemaphorePermit>,
+    finished: Arc<Notify>,
+}
+impl Drop for SessionPermit {
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        self.finished.notify_one();
+    }
+}
+impl AppState {
+    /// Reject new sessions and await all upgraded sockets, bounded by their session deadline.
+    pub async fn drain(&self) -> anyhow::Result<()> {
+        self.connections.close();
+        timeout(Duration::from_secs(91), async {
+            loop {
+                let finished = self.session_finished.notified();
+                if self.connections.available_permits() == self.max_connections {
+                    break;
+                }
+                finished.await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("enrollment sessions did not drain"))
+    }
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { StatusCode::OK }))
@@ -92,6 +126,10 @@ async fn upgrade(
     }
     let Ok(permit) = state.connections.clone().try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let permit = SessionPermit {
+        permit: Some(permit),
+        finished: state.session_finished.clone(),
     };
     upgrade
         .max_message_size(MAX_REQUEST_BYTES)
