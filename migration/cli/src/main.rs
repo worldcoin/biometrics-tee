@@ -13,7 +13,7 @@ use attested_request::{
 };
 use clap::{Args, Parser, Subcommand};
 use di_migration_client::{
-    MigrationApiClient,
+    MigrationApiClient, StartMigration,
     sealing::{EnclaveVerifier, PcpOpener},
 };
 use di_migration_primitives::Status;
@@ -197,21 +197,22 @@ async fn start(
     pcp: &[u8],
     credential: &str,
 ) -> Result<PcpOpener, String> {
-    let response = init_migration(client, init).await?;
-    let (blob, opener) = verifier
-        .attested_channel(&response)
-        .and_then(|channel| channel.seal(pcp, credential))
+    let signer = SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android);
+    let (opener, enclave_id) = client
+        .start_migration(StartMigration {
+            integrity_token: &init.integrity_token,
+            signer: &signer,
+            verifier,
+            device_public_key: &init.device_public_key,
+            sub: &init.sub,
+            proof: &init.proof,
+            challenge_id: &init.challenge_id,
+            pcp,
+            credential,
+        })
+        .await
         .map_err(|error| error.to_string())?;
-    eprintln!("enclave {} verified", response.enclave_id.as_str());
-
-    client
-        .upload_pcp(&response.upload_url, blob)
-        .await
-        .map_err(|error| format!("upload failed: {error}"))?;
-    client
-        .migrate(&init.device_public_key, &init.sub)
-        .await
-        .map_err(|error| format!("migrate failed: {error}"))?;
+    eprintln!("enclave {} verified", enclave_id.as_str());
     Ok(opener)
 }
 

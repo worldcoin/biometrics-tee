@@ -6,11 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
-/// Payload version: raw PCP bytes after the version byte.
-pub const PCP_PAYLOAD_VERSION: u8 = 1;
-
 /// Payload version: CBOR `{ pcp, credential }` after the version byte.
-pub const PCP_WITH_CREDENTIAL_VERSION: u8 = 2;
+pub const PCP_WITH_CREDENTIAL_VERSION: u8 = 1;
 
 /// PCP and self-custody credential the app seals to the enclave.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,16 +25,12 @@ pub struct PcpWithCredential {
 ///
 /// [`Error::InvalidInput`] when CBOR encoding fails (should not happen for these fields).
 pub fn encode(pcp: &[u8], credential: &str) -> Result<Vec<u8>, Error> {
-    #[derive(Serialize)]
-    struct Body<'a> {
-        #[serde(with = "serde_bytes")]
-        pcp: &'a [u8],
-        credential: &'a str,
-    }
-
+    let body = PcpWithCredential {
+        pcp: pcp.to_vec(),
+        credential: credential.to_owned(),
+    };
     let mut payload = vec![PCP_WITH_CREDENTIAL_VERSION];
-    ciborium::into_writer(&Body { pcp, credential }, &mut payload)
-        .map_err(|_| Error::InvalidInput)?;
+    ciborium::into_writer(&body, &mut payload).map_err(|_| Error::InvalidInput)?;
     Ok(payload)
 }
 

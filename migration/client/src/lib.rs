@@ -8,11 +8,16 @@ use attested_request::{
     base::CanonicalRequest,
     sign::{Signer, sign_request},
 };
-use di_migration_primitives::app_api::{
-    DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
-    MigrateResponse, MigrationStatus,
+use di_migration_primitives::{
+    EnclaveId,
+    app_api::{
+        DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
+        MigrateResponse, MigrationStatus,
+    },
 };
 use reqwest::{StatusCode, Url, header::CONTENT_TYPE};
+
+use crate::sealing::{EnclaveVerifier, PcpOpener, SealingError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -37,6 +42,8 @@ pub enum Error {
     Api { status: StatusCode, code: String },
     #[error("failed to decode the migration API response: {0}")]
     Decode(#[source] reqwest::Error),
+    #[error(transparent)]
+    Sealing(#[from] SealingError),
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +51,29 @@ pub struct MigrationApiClient {
     http: reqwest::Client,
     /// Routes are appended to its path as segments.
     base_url: Url,
+}
+
+/// Arguments of [`MigrationApiClient::start_migration`].
+#[derive(Clone, Copy)]
+pub struct StartMigration<'a, S> {
+    /// Attestation Gateway integrity token (JWT).
+    pub integrity_token: &'a str,
+    /// Signs the init request.
+    pub signer: &'a S,
+    /// Trusts the enclave boot the API returns before the PCP is sealed to it.
+    pub verifier: &'a EnclaveVerifier,
+    /// Device public key, sent as [`DEVICE_KEY_THUMBPRINT`].
+    pub device_public_key: &'a str,
+    /// Subject of the account being migrated.
+    pub sub: &'a str,
+    /// Standard-base64 ownership proof.
+    pub proof: &'a str,
+    /// Challenge id the proof was built for.
+    pub challenge_id: &'a str,
+    /// PCP sealed to the enclave and uploaded.
+    pub pcp: &'a [u8],
+    /// Self-custody credential sealed with the PCP.
+    pub credential: &'a str,
 }
 
 impl MigrationApiClient {
@@ -194,6 +224,46 @@ impl MigrationApiClient {
         } else {
             Err(Error::UnexpectedStatus { status })
         }
+    }
+
+    /// Inits, verifies the enclave, seals and uploads the PCP, and starts the job.
+    ///
+    /// Returns the opener for the migrated result and the attested `enclave_id`.
+    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    /// Not retried here: each call creates a new migration record and must be re-signed.
+    pub async fn start_migration<S: Signer>(
+        &self,
+        StartMigration {
+            integrity_token,
+            signer,
+            verifier,
+            device_public_key,
+            sub,
+            proof,
+            challenge_id,
+            pcp,
+            credential,
+        }: StartMigration<'_, S>,
+    ) -> Result<(PcpOpener, EnclaveId), Error>
+    where
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let response = self
+            .init_migration(
+                integrity_token,
+                signer,
+                device_public_key,
+                sub,
+                proof,
+                challenge_id,
+            )
+            .await?;
+        let (blob, opener) = verifier
+            .attested_channel(&response)
+            .and_then(|channel| channel.seal(pcp, credential))?;
+        self.upload_pcp(&response.upload_url, blob).await?;
+        self.migrate(device_public_key, sub).await?;
+        Ok((opener, response.enclave_id))
     }
 }
 

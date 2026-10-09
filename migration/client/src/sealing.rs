@@ -284,7 +284,7 @@ mod tests {
         // An enclave build that replies with a payload version this client does not know.
         let (_, sealer) = enclave.open(&blob).expect("sealed to this enclave");
         let reply = sealer
-            .seal(&[pcp_payload::PCP_PAYLOAD_VERSION + 1, 0x42])
+            .seal(&[pcp_payload::PCP_WITH_CREDENTIAL_VERSION + 1, 0x42])
             .expect("should seal");
         let error = opener.open(&reply).expect_err("an unknown payload");
 
