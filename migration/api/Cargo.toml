@@ -30,6 +30,6 @@ di-migration-storage.workspace = true
 [dev-dependencies]
 attested-request = { version = "0.1.1", features = ["test-util"] }
 http-body-util.workspace = true
-di-migration-client.workspace = true
+di-migration-client = { workspace = true, features = ["test-util"] }
 serde_json.workspace = true
 tower.workspace = true

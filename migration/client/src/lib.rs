@@ -51,6 +51,12 @@ pub struct MigrationApiClient {
     http: reqwest::Client,
     /// Routes are appended to its path as segments.
     base_url: Url,
+    /// Sent as [`DEVICE_KEY_THUMBPRINT`] when set.
+    ///
+    /// In production the auth proxy populates this header from the request signature; leave
+    /// unset there. Under the `test-util` feature (and in this crate's tests), set it via
+    /// [`Self::with_device_public_key`].
+    device_public_key: Option<String>,
 }
 
 /// Arguments of [`MigrationApiClient::start_migration`].
@@ -62,8 +68,6 @@ pub struct StartMigration<'a, S> {
     pub signer: &'a S,
     /// Trusts the enclave boot the API returns before the PCP is sealed to it.
     pub verifier: &'a EnclaveVerifier,
-    /// Device public key, sent as [`DEVICE_KEY_THUMBPRINT`].
-    pub device_public_key: &'a str,
     /// Subject of the account being migrated.
     pub sub: &'a str,
     /// Standard-base64 ownership proof.
@@ -92,11 +96,25 @@ impl MigrationApiClient {
         Ok(Self {
             http,
             base_url: base_url.clone(),
+            device_public_key: None,
         })
     }
 
-    /// Starts a migration for `sub` as the device with `device_public_key`, with a
-    /// standard-base64 ownership `proof` and the `challenge_id` the proof was built for.
+    /// Sets the device public key header for tests and local tooling without an auth proxy.
+    ///
+    /// In production leave this unset; the proxy injects [`DEVICE_KEY_THUMBPRINT`] after
+    /// verifying the signature.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_device_public_key(&self, device_public_key: impl Into<String>) -> Self {
+        Self {
+            device_public_key: Some(device_public_key.into()),
+            http: self.http.clone(),
+            base_url: self.base_url.clone(),
+        }
+    }
+
+    /// Starts a migration for `sub` with a standard-base64 ownership `proof` and the
+    /// `challenge_id` the proof was built for.
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
     /// Hardware signers block, so call this off any async executor that must stay responsive.
@@ -105,7 +123,6 @@ impl MigrationApiClient {
         &self,
         integrity_token: &str,
         signer: &S,
-        device_public_key: &str,
         sub: &str,
         proof: &str,
         challenge_id: &str,
@@ -138,9 +155,11 @@ impl MigrationApiClient {
         let mut request = self
             .http
             .post(url)
-            .header(DEVICE_KEY_THUMBPRINT, device_public_key)
             .header(CONTENT_TYPE, "application/json")
             .body(body);
+        if let Some(device_public_key) = &self.device_public_key {
+            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        }
         for (name, value) in signed.headers() {
             request = request.header(name, value);
         }
@@ -150,34 +169,24 @@ impl MigrationApiClient {
     }
 
     /// Hands the uploaded PCP to its host. A repeated call reports the running job.
-    pub async fn migrate(
-        &self,
-        device_public_key: &str,
-        sub: &str,
-    ) -> Result<MigrateResponse, Error> {
-        let response = self
-            .http
-            .post(self.url(&["v1", "migrations", sub]))
-            .header(DEVICE_KEY_THUMBPRINT, device_public_key)
-            .send()
+    pub async fn migrate(&self, sub: &str) -> Result<MigrateResponse, Error> {
+        let mut request = self.http.post(self.url(&["v1", "migrations", sub]));
+        if let Some(device_public_key) = &self.device_public_key {
+            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        }
+        let response = request.send()
             .await
             .map_err(Error::Transport)?;
         decode(response).await
     }
 
     /// The `sub`'s latest migration, with a download URL once `migrated`.
-    pub async fn migration_status(
-        &self,
-        device_public_key: &str,
-        sub: &str,
-    ) -> Result<MigrationStatus, Error> {
-        let response = self
-            .http
-            .get(self.url(&["v1", "migrations", sub]))
-            .header(DEVICE_KEY_THUMBPRINT, device_public_key)
-            .send()
-            .await
-            .map_err(Error::Transport)?;
+    pub async fn migration_status(&self, sub: &str) -> Result<MigrationStatus, Error> {
+        let mut request = self.http.get(self.url(&["v1", "migrations", sub]));
+        if let Some(device_public_key) = &self.device_public_key {
+            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        }
+        let response = request.send().await.map_err(Error::Transport)?;
         decode(response).await
     }
 
@@ -237,7 +246,6 @@ impl MigrationApiClient {
             integrity_token,
             signer,
             verifier,
-            device_public_key,
             sub,
             proof,
             challenge_id,
@@ -249,20 +257,13 @@ impl MigrationApiClient {
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let response = self
-            .init_migration(
-                integrity_token,
-                signer,
-                device_public_key,
-                sub,
-                proof,
-                challenge_id,
-            )
+            .init_migration(integrity_token, signer, sub, proof, challenge_id)
             .await?;
         let (blob, opener) = verifier
             .attested_channel(&response)
             .and_then(|channel| channel.seal(pcp, credential))?;
         self.upload_pcp(&response.upload_url, blob).await?;
-        self.migrate(device_public_key, sub).await?;
+        self.migrate(sub).await?;
         Ok((opener, response.enclave_id))
     }
 }
@@ -377,10 +378,10 @@ mod tests {
 
         let response = MigrationApiClient::new(&url)
             .unwrap()
+            .with_device_public_key("device-key")
             .init_migration(
                 &test_client.token(),
                 &test_client.signer,
-                "device-key",
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
@@ -405,10 +406,10 @@ mod tests {
         let token = test_token(&signer);
         let error = MigrationApiClient::new(&url)
             .unwrap()
+            .with_device_public_key("device-key")
             .init_migration(
                 &token,
                 &signer,
-                "device-key",
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",

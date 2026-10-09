@@ -91,9 +91,11 @@ struct InitArgs {
     #[arg(long, env = "DEVICE_SIGNER_SEED", default_value = "migration-cli")]
     device_signer_seed: String,
 
-    /// The device public key; in production the auth proxy sets it after verifying the device.
+    /// Device public key header for environments without an auth proxy (tests, local).
+    ///
+    /// In production the proxy sets `x-attested-key-thumbprint` from the request signature.
     #[arg(long, env = "DEVICE_PUBLIC_KEY")]
-    device_public_key: String,
+    device_public_key: Option<String>,
 
     /// Subject of the user being migrated.
     #[arg(long, env = "SUB")]
@@ -111,15 +113,8 @@ struct InitArgs {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let client = match MigrationApiClient::new(&cli.api_url) {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
 
-    match run(&client, cli.command).await {
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -128,10 +123,22 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String> {
-    match command {
+fn client(
+    api_url: &Url,
+    device_public_key: Option<&str>,
+) -> Result<MigrationApiClient, String> {
+    let mut client = MigrationApiClient::new(api_url).map_err(|error| error.to_string())?;
+    if let Some(key) = device_public_key {
+        client = client.with_device_public_key(key);
+    }
+    Ok(client)
+}
+
+async fn run(cli: Cli) -> Result<(), String> {
+    match cli.command {
         Command::InitMigration(init) => {
-            let response = init_migration(client, &init).await?;
+            let client = client(&cli.api_url, init.device_public_key.as_deref())?;
+            let response = init_migration(&client, &init).await?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&response).map_err(|error| error.to_string())?
@@ -146,6 +153,7 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
             insecure_skip_measurements,
             credential,
         } => {
+            let client = client(&cli.api_url, init.device_public_key.as_deref())?;
             let verifier = match pcrs {
                 Some(path) => EnclaveVerifier::new(vec![read_pcrs(&path)?]),
                 None if insecure_skip_measurements => {
@@ -156,8 +164,8 @@ async fn run(client: &MigrationApiClient, command: Command) -> Result<(), String
             let pcp = std::fs::read(&pcp)
                 .map_err(|error| format!("failed to read {}: {error}", pcp.display()))?;
 
-            let opener = start(client, &init, &verifier, &pcp, &credential).await?;
-            let download_url = wait(client, &init).await?;
+            let opener = start(&client, &init, &verifier, &pcp, &credential).await?;
+            let download_url = wait(&client, &init).await?;
             let blob = client
                 .download_pcp(&download_url)
                 .await
@@ -180,7 +188,6 @@ async fn init_migration(
         .init_migration(
             &init.integrity_token,
             &signer,
-            &init.device_public_key,
             &init.sub,
             &init.proof,
             &init.challenge_id,
@@ -203,7 +210,6 @@ async fn start(
             integrity_token: &init.integrity_token,
             signer: &signer,
             verifier,
-            device_public_key: &init.device_public_key,
             sub: &init.sub,
             proof: &init.proof,
             challenge_id: &init.challenge_id,
@@ -220,7 +226,7 @@ async fn start(
 async fn wait(client: &MigrationApiClient, init: &InitArgs) -> Result<String, String> {
     loop {
         let status = client
-            .migration_status(&init.device_public_key, &init.sub)
+            .migration_status(&init.sub)
             .await
             .map_err(|error| format!("status failed: {error}"))?;
         match status.status {
