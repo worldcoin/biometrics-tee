@@ -22,11 +22,11 @@ The sealed CBOR request contains protocol version 1 and an image of at most 8 Mi
 - `e2e`: native diagnostic command and loopback-only browser harness/test issuer.
 - `client`: shared verification and sealing, native transport, browser WASM transport with bounded incoming queue and AbortSignal support.
 
-The shared `sandbox/` crate remains byte-oriented. Its bundle receiver uses the pinned Flamingo consolidation from #60; this branch includes that foundation. Enrollment uses the published `biometric-engines-protocol` face contract rather than DI's vendored migration protocol. The worker is started before broker keys or executor threads exist. Worker transport/protocol failures terminate the enclave; image/quality rejections remain recoverable.
+The shared `sandbox/` crate remains byte-oriented. Its bundle receiver uses `flamingo-verifier-sandbox-bundle` from [Flamingo server/v0.1.0-rc.2](https://github.com/worldcoin/flamingo/releases/tag/server/v0.1.0-rc.2), pinned to the release tag and locked commit. The bundle crate is not published to crates.io. Enrollment uses the published `biometric-engines-protocol` face contract rather than DI's vendored migration protocol. The worker is started before broker keys or executor threads exist. Worker transport/protocol failures terminate the enclave; image/quality rejections remain recoverable.
 
 ## Review against Flamingo
 
-Comparison baseline: [Flamingo `0cd6389`](https://github.com/worldcoin/flamingo/tree/0cd638927fdaf9b240b8b893d94a2697a4e7d2aa). These are the enrollment-specific decisions to review:
+Comparison baseline: [Flamingo `48205c5`](https://github.com/worldcoin/flamingo/tree/48205c5fce4524b9f4f3cad079eb5813f3cce0ab). These are the enrollment-specific decisions to review:
 
 | Difference | Enrollment behavior | Review here |
 | --- | --- | --- |

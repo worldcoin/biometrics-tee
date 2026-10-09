@@ -1781,7 +1781,7 @@ checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 [[package]]
 name = "flamingo-verifier-sandbox-bundle"
 version = "0.8.0"
-source = "git+https://github.com/worldcoin/flamingo?rev=54ab0f2e032b00abbdaeb5dd5efe1e46958d23e8#54ab0f2e032b00abbdaeb5dd5efe1e46958d23e8"
+source = "git+https://github.com/worldcoin/flamingo?tag=server%2Fv0.1.0-rc.2#48205c5fce4524b9f4f3cad079eb5813f3cce0ab"
 dependencies = [
  "hex",
  "serde",
