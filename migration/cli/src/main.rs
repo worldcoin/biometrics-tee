@@ -13,7 +13,7 @@ use attested_request::{
 };
 use clap::{Args, Parser, Subcommand};
 use di_migration_client::{
-    MigrationApiClient, StartMigration,
+    MigrationApiClient,
     sealing::{EnclaveVerifier, PcpOpener},
 };
 use di_migration_primitives::Status;
@@ -208,7 +208,7 @@ async fn start(
     let response = init_migration(client, init).await?;
     let (blob, opener) = verifier
         .attested_channel(&response)
-        .and_then(|channel| channel.seal(pcp))
+        .and_then(|channel| channel.seal(pcp, credential))
         .map_err(|error| error.to_string())?;
     eprintln!("enclave {} verified", response.enclave_id.as_str());
 
@@ -218,14 +218,10 @@ async fn start(
         .map_err(|error| format!("upload failed: {error}"))?;
     let signer = device_signer(init);
     client
-        .migrate(
-            &init.integrity_token,
-            &signer,
-            &init.sub,
-        )
+        .migrate(&init.integrity_token, &signer, &init.sub)
         .await
         .map_err(|error| error.to_string())?;
-    eprintln!("enclave {} verified", enclave_id.as_str());
+    eprintln!("enclave {} verified", response.enclave_id.as_str());
     Ok(opener)
 }
 
@@ -234,11 +230,7 @@ async fn wait(client: &MigrationApiClient, init: &InitArgs) -> Result<String, St
     let signer = device_signer(init);
     loop {
         let status = client
-            .migration_status(
-                &init.integrity_token,
-                &signer,
-                &init.sub,
-            )
+            .migration_status(&init.integrity_token, &signer, &init.sub)
             .await
             .map_err(|error| format!("status failed: {error}"))?;
         match status.status {

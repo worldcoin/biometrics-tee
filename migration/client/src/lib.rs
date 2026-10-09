@@ -141,11 +141,14 @@ impl MigrationApiClient {
         .map_err(Error::Encode)?;
 
         let url = self.url(&["v1", "init-migration"]);
-        let request = self
+        let mut request = self
             .http
             .post(url)
             .header(CONTENT_TYPE, "application/json")
             .body(body);
+        if let Some(device_public_key) = &self.device_public_key {
+            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        }
 
         let signed = sign(request, integrity_token, signer)?;
         let response = self.http.execute(signed).await.map_err(Error::Transport)?;
@@ -160,18 +163,16 @@ impl MigrationApiClient {
         &self,
         integrity_token: &str,
         signer: &S,
-        device_public_key: &str,
         sub: &str,
     ) -> Result<MigrateResponse, Error>
     where
         S::Error: std::error::Error + Send + Sync + 'static,
     {
-        let request = sign(
-            self.http
-                .post(self.url(&["v1", "migrations", sub]))
-            integrity_token,
-            signer,
-        )?;
+        let mut request = self.http.post(self.url(&["v1", "migrations", sub]));
+        if let Some(device_public_key) = &self.device_public_key {
+            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        }
+        let request = sign(request, integrity_token, signer)?;
 
         let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
@@ -190,12 +191,11 @@ impl MigrationApiClient {
     where
         S::Error: std::error::Error + Send + Sync + 'static,
     {
-        let request = sign(
-            self.http
-                .get(self.url(&["v1", "migrations", sub]))
-            integrity_token,
-            signer,
-        )?;
+        let mut request = self.http.get(self.url(&["v1", "migrations", sub]));
+        if let Some(device_public_key) = &self.device_public_key {
+            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        }
+        let request = sign(request, integrity_token, signer)?;
 
         let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
@@ -274,7 +274,7 @@ impl MigrationApiClient {
             .attested_channel(&response)
             .and_then(|channel| channel.seal(pcp, credential))?;
         self.upload_pcp(&response.upload_url, blob).await?;
-        self.migrate(sub).await?;
+        self.migrate(integrity_token, signer, sub).await?;
         Ok((opener, response.enclave_id))
     }
 }
@@ -398,7 +398,6 @@ mod tests {
                 let verifier = verifier.clone();
                 async move {
                     let (parts, body) = request.into_parts();
-                    assert_eq!(parts.headers["x-attested-key-thumbprint"], "device-key");
                     let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
                     verifier.verify(&parts, &body).await.unwrap();
 
