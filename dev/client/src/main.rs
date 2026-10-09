@@ -16,7 +16,7 @@ mod error;
 use std::{fs, path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
-use di_dev_api_types::MAX_PCP_BYTES;
+use di_dev_api_primitives::MAX_PCP_BYTES;
 
 use crate::{client::Client, error::Error};
 

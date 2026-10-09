@@ -1,5 +1,5 @@
 [package]
-name = "di-dev-enclave-types"
+name = "di-migration-enclave-primitives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 bytes.workspace = true
+ciborium.workspace = true
 pontifex.workspace = true
 serde.workspace = true
 serde_bytes.workspace = true

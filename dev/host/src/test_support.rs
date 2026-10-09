@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use di_dev_enclave_types::{MigrateRequest, MigrateResponse};
+use di_dev_enclave_primitives::{MigrateRequest, MigrateResponse};
 use tokio::sync::Notify;
 
 use crate::{

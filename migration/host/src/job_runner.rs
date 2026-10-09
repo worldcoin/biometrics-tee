@@ -1,8 +1,11 @@
-//! The single worker: one job at a time from fetch to recorded outcome.
+//! The single job runner: one job at a time from fetch to recorded outcome.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use di_migration_enclave_types::MigrateRequest;
+use di_migration_enclave_primitives::{self as enclave_primitives, MigrateRequest};
 use di_migration_primitives::{Reason, host_api::JobRequest};
 
 use crate::{
@@ -12,15 +15,15 @@ use crate::{
 };
 
 /// Everything a job touches.
-pub struct Worker {
+pub struct JobRunner {
     queue: Arc<JobQueue>,
     enclave_client: Arc<dyn EnclaveClient>,
     blob_store: Arc<dyn BlobStore>,
     job_store: Arc<dyn JobStore>,
 }
 
-impl Worker {
-    /// Creates a worker draining `queue`.
+impl JobRunner {
+    /// Creates a job runner draining `queue`.
     #[must_use]
     pub fn new(
         queue: Arc<JobQueue>,
@@ -45,18 +48,23 @@ impl Worker {
         }
     }
 
-    /// Runs `job` and records its outcome.
+    /// Runs `job` and records its outcome. A job whose deadline passed while it waited already
+    /// reads as `timeout`, so it is skipped rather than spending enclave time.
     pub async fn handle(&self, job: &JobRequest) {
+        if unix_now() > job.deadline {
+            tracing::warn!(job_id = %job.job_id, "job passed its deadline in the queue; skipped");
+            return;
+        }
         let recorded = match self.migrate(job).await {
-            Ok(result_key) => self.job_store.mark_migrated(&job.job_id, &result_key).await,
-            Err(reason) => self.job_store.mark_failed(&job.job_id, reason).await,
+            Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
+            Err(reason) => self.job_store.mark_failed(job, reason).await,
         };
 
         match recorded {
             Ok(()) => {}
             Err(StoreError::NotMigrating) => tracing::warn!(
                 job_id = %job.job_id,
-                "job was resolved elsewhere first, e.g. it timed out; outcome not recorded"
+                "job was resolved elsewhere first or passed its deadline; outcome not recorded"
             ),
             // The row stays `migrating` and reads as `timeout` once its deadline passes.
             Err(error) => tracing::error!(
@@ -87,13 +95,24 @@ impl Worker {
             })
             .await
             .map_err(|error| {
-                tracing::error!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
-                match error {
+                let reason = match &error {
                     enclave::Error::Timeout => Reason::Timeout,
-                    enclave::Error::Transport(_) | enclave::Error::Operation(_) => {
-                        Reason::EnclaveError
+                    // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
+                    enclave::Error::Operation(enclave_primitives::Error::RequestNotOpened) => {
+                        Reason::EnclaveChanged
                     }
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::InvalidInput
+                        | enclave_primitives::Error::Internal,
+                    )
+                    | enclave::Error::Transport(_) => Reason::EnclaveError,
+                };
+                if reason == Reason::EnclaveChanged {
+                    tracing::warn!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
+                } else {
+                    tracing::error!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
                 }
+                reason
             })?;
 
         self.blob_store
@@ -106,13 +125,21 @@ impl Worker {
     }
 }
 
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{num::NonZeroUsize, sync::Arc};
 
+    use di_migration_enclave_primitives as enclave_primitives;
     use di_migration_primitives::Reason;
 
-    use super::Worker;
+    use super::JobRunner;
     use crate::{
         enclave,
         queue::JobQueue,
@@ -124,8 +151,8 @@ mod tests {
         di_migration_storage::schema::result_key(&job(n).job_id)
     }
 
-    fn worker(enclave: Arc<dyn enclave::EnclaveClient>, store: &Arc<MemoryStore>) -> Worker {
-        Worker::new(
+    fn job_runner(enclave: Arc<dyn enclave::EnclaveClient>, store: &Arc<MemoryStore>) -> JobRunner {
+        JobRunner::new(
             Arc::new(JobQueue::new(NonZeroUsize::new(4).expect("non-zero"))),
             enclave,
             store.clone(),
@@ -137,7 +164,7 @@ mod tests {
     async fn a_migrated_blob_is_stored_and_the_job_marked_migrated() {
         let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed"));
 
-        worker(Arc::new(StubEnclave::default()), &store)
+        job_runner(Arc::new(StubEnclave::default()), &store)
             .handle(&job(1))
             .await;
 
@@ -154,7 +181,7 @@ mod tests {
     /// Pins each failure to the reason the app sees.
     #[tokio::test]
     async fn each_failure_is_recorded_with_its_reason() {
-        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 4] = [
+        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 7] = [
             (
                 Arc::new(StubEnclave::default()),
                 Arc::new(MemoryStore::default()),
@@ -173,6 +200,27 @@ mod tests {
                 Reason::EnclaveError,
             ),
             (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_primitives::Error::RequestNotOpened,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveChanged,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_primitives::Error::InvalidInput,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveError,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_primitives::Error::Internal,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveError,
+            ),
+            (
                 Arc::new(StubEnclave::default()),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed").failing_writes()),
                 Reason::S3Error,
@@ -180,18 +228,33 @@ mod tests {
         ];
 
         for (enclave, store, reason) in cases {
-            worker(enclave, &store).handle(&job(1)).await;
+            job_runner(enclave, &store).handle(&job(1)).await;
 
             assert_eq!(store.outcome(&job(1).job_id), Some(Outcome::Failed(reason)));
         }
     }
 
     /// A job that timed out first keeps its `failed` row; the late result is not recorded.
+    /// A job that waited past its deadline is neither run nor recorded.
+    #[tokio::test]
+    async fn a_job_past_its_deadline_is_skipped() {
+        let mut expired = job(1);
+        expired.deadline = 1;
+        let store = Arc::new(MemoryStore::with_pcp(&expired, b"sealed"));
+
+        job_runner(Arc::new(StubEnclave::default()), &store)
+            .handle(&expired)
+            .await;
+
+        // Running it would record an outcome either way.
+        assert!(store.outcome(&expired.job_id).is_none());
+    }
+
     #[tokio::test]
     async fn a_job_resolved_elsewhere_is_not_overwritten() {
         let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed").resolved_elsewhere());
 
-        worker(Arc::new(StubEnclave::default()), &store)
+        job_runner(Arc::new(StubEnclave::default()), &store)
             .handle(&job(1))
             .await;
 
@@ -205,7 +268,7 @@ mod tests {
         let (enclave, entered, release) = GatedEnclave::new();
         let queue = Arc::new(JobQueue::new(NonZeroUsize::new(4).expect("non-zero")));
         let runner = tokio::spawn(
-            Worker::new(
+            JobRunner::new(
                 Arc::clone(&queue),
                 Arc::new(enclave),
                 store.clone(),

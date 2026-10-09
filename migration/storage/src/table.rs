@@ -5,8 +5,8 @@ use std::{collections::HashMap, net::IpAddr, time::Duration};
 use aws_sdk_dynamodb::{
     Client,
     error::DisplayErrorContext,
-    operation::{transact_write_items::TransactWriteItemsError, update_item::UpdateItemError},
-    types::{AttributeValue, Put, TransactWriteItem, Update},
+    operation::transact_write_items::TransactWriteItemsError,
+    types::{AttributeValue, ConditionCheck, Put, TransactWriteItem, Update},
 };
 use tokio::time::timeout;
 
@@ -40,48 +40,42 @@ impl JobTable {
         Self { client, table_name }
     }
 
-    /// Moves a `migrating` row to `status`, setting `extra` alongside. A row in any other state
-    /// was already resolved, e.g. timed out, so it is left alone.
+    /// Moves a `migrating` row to `status`, setting `extra` alongside, and releases its `sub`'s
+    /// lock so the app can init again. A row past its deadline already reads as `timeout`, and
+    /// one in any other state was resolved elsewhere, so both are left alone.
     async fn finish(
         &self,
         job_id: &JobId,
+        sub: &str,
         status: Status,
         extra: (&'static str, String),
+        now: u64,
     ) -> Result<(), StorageError> {
-        const OPERATION: &str = "DynamoDB UpdateItem";
-        let result = timeout(
-            WRITE_TIMEOUT,
-            self.client
-                .update_item()
-                .table_name(&self.table_name)
-                .key(attributes::ID, AttributeValue::S(row_id(job_id)))
-                .update_expression("SET #status = :status, #extra = :extra")
-                .condition_expression("#status = :migrating")
-                .expression_attribute_names("#status", attributes::STATUS)
-                .expression_attribute_names("#extra", extra.0)
-                .expression_attribute_values(":status", string(status.as_str()))
-                .expression_attribute_values(":extra", AttributeValue::S(extra.1))
-                .expression_attribute_values(":migrating", string(Status::Migrating.as_str()))
-                .send(),
-        )
-        .await
-        .map_err(|_| StorageError::Timeout {
-            operation: OPERATION,
-        })?;
+        const OPERATION: &str = "DynamoDB TransactWriteItems";
+        let job_row = Update::builder()
+            .table_name(&self.table_name)
+            .key(attributes::ID, string(&row_id(job_id)))
+            .update_expression("SET #status = :status, #extra = :extra")
+            .condition_expression("#status = :migrating AND #deadline >= :now")
+            .expression_attribute_names("#status", attributes::STATUS)
+            .expression_attribute_names("#extra", extra.0)
+            .expression_attribute_names("#deadline", attributes::DEADLINE)
+            .expression_attribute_values(":status", string(status.as_str()))
+            .expression_attribute_values(":extra", AttributeValue::S(extra.1))
+            .expression_attribute_values(":migrating", string(Status::Migrating.as_str()))
+            .expression_attribute_values(":now", number(now))
+            .build()
+            .map_err(|error| failed(OPERATION, &error))?;
 
-        match result {
-            Ok(_) => Ok(()),
-            Err(error)
-                if error
-                    .as_service_error()
-                    .is_some_and(UpdateItemError::is_conditional_check_failed_exception) =>
-            {
-                Err(StorageError::NotMigrating)
-            }
-            Err(error) => Err(StorageError::Failed {
-                operation: OPERATION,
-                detail: DisplayErrorContext(&error).to_string(),
-            }),
+        match self
+            .transact(vec![
+                TransactWriteItem::builder().update(job_row).build(),
+                self.retarget_lock(sub, job_id, 0, None)?,
+            ])
+            .await?
+        {
+            Transaction::Committed => Ok(()),
+            Transaction::Rejected(_) => Err(StorageError::NotMigrating),
         }
     }
 }
@@ -116,34 +110,48 @@ impl JobTable {
         Ok(())
     }
 
-    /// Marks a `migrating` job `migrated` with its result key.
+    /// Marks a `migrating` job `migrated` with its result key, and frees its `sub`.
     ///
     /// # Errors
     ///
-    /// [`StorageError::NotMigrating`] when the row was resolved elsewhere, or the update failed.
+    /// [`StorageError::NotMigrating`] when the row was resolved elsewhere or is past its
+    /// deadline at `now`, or the write failed.
     pub async fn mark_migrated(
         &self,
         job_id: &JobId,
+        sub: &str,
         result_key: &str,
+        now: u64,
     ) -> Result<(), StorageError> {
         self.finish(
             job_id,
+            sub,
             Status::Migrated,
             (attributes::RESULT_KEY, result_key.to_owned()),
+            now,
         )
         .await
     }
 
-    /// Marks a `migrating` job `failed` with its reason.
+    /// Marks a `migrating` job `failed` with its reason, and frees its `sub`.
     ///
     /// # Errors
     ///
-    /// [`StorageError::NotMigrating`] when the row was resolved elsewhere, or the update failed.
-    pub async fn mark_failed(&self, job_id: &JobId, reason: Reason) -> Result<(), StorageError> {
+    /// [`StorageError::NotMigrating`] when the row was resolved elsewhere or is past its
+    /// deadline at `now`, or the write failed.
+    pub async fn mark_failed(
+        &self,
+        job_id: &JobId,
+        sub: &str,
+        reason: Reason,
+        now: u64,
+    ) -> Result<(), StorageError> {
         self.finish(
             job_id,
+            sub,
             Status::Failed,
             (attributes::REASON, reason.as_str().to_owned()),
+            now,
         )
         .await
     }
@@ -206,7 +214,77 @@ impl JobTable {
     /// [`StorageError::ActiveJob`] when the `sub` has an active job, or the write failed.
     pub async fn create_job(&self, job: &NewJob) -> Result<(), StorageError> {
         const OPERATION: &str = "DynamoDB TransactWriteItems";
-        let job_row = Put::builder()
+        let lock_row = self
+            .lock_row(job)
+            .condition_expression("attribute_not_exists(#id) OR #active_until < :now")
+            .expression_attribute_names("#id", attributes::ID)
+            .expression_attribute_names("#active_until", attributes::ACTIVE_UNTIL)
+            .expression_attribute_values(":now", number(job.created_at))
+            .build()
+            .map_err(|error| failed(OPERATION, &error))?;
+
+        let outcome = self
+            .transact(vec![
+                TransactWriteItem::builder().put(self.job_row(job)?).build(),
+                TransactWriteItem::builder().put(lock_row).build(),
+            ])
+            .await?;
+        match outcome {
+            Transaction::Committed => Ok(()),
+            Transaction::Rejected(failed_items) if failed_items == [false, true] => {
+                Err(StorageError::ActiveJob)
+            }
+            Transaction::Rejected(_) => Err(job_id_taken(OPERATION)),
+        }
+    }
+
+    /// Creates `job` in place of `previous`, the `sub`'s current job, while `previous` is still
+    /// `created` and belongs to the same device. Nothing was queued for it yet, so an app that
+    /// lost its init response or never uploaded can start over instead of waiting out the lock.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::ActiveJob`] when `previous` moved on, another job took the lock, or the
+    /// device differs; or the write failed.
+    pub async fn replace_job(&self, job: &NewJob, previous: &JobId) -> Result<(), StorageError> {
+        const OPERATION: &str = "DynamoDB TransactWriteItems";
+        let lock_row = self
+            .lock_row(job)
+            .condition_expression("#job_id = :previous")
+            .expression_attribute_names("#job_id", attributes::JOB_ID)
+            .expression_attribute_values(":previous", string(previous.as_str()))
+            .build()
+            .map_err(|error| failed(OPERATION, &error))?;
+        let previous_row = ConditionCheck::builder()
+            .table_name(&self.table_name)
+            .key(attributes::ID, string(&row_id(previous)))
+            .condition_expression("#status = :created AND #device_public_key = :device_public_key")
+            .expression_attribute_names("#status", attributes::STATUS)
+            .expression_attribute_names("#device_public_key", attributes::DEVICE_PUBLIC_KEY)
+            .expression_attribute_values(":created", string(Status::Created.as_str()))
+            .expression_attribute_values(":device_public_key", string(&job.device_public_key))
+            .build()
+            .map_err(|error| failed(OPERATION, &error))?;
+
+        let outcome = self
+            .transact(vec![
+                TransactWriteItem::builder().put(self.job_row(job)?).build(),
+                TransactWriteItem::builder().put(lock_row).build(),
+                TransactWriteItem::builder()
+                    .condition_check(previous_row)
+                    .build(),
+            ])
+            .await?;
+        match outcome {
+            Transaction::Committed => Ok(()),
+            Transaction::Rejected(failed_items) if !failed_items[0] => Err(StorageError::ActiveJob),
+            Transaction::Rejected(_) => Err(job_id_taken(OPERATION)),
+        }
+    }
+
+    /// The new `created` row for `job`, written only if its ID is unused.
+    fn job_row(&self, job: &NewJob) -> Result<Put, StorageError> {
+        Put::builder()
             .table_name(&self.table_name)
             .item(attributes::ID, string(&row_id(&job.job_id)))
             .item(attributes::STATUS, string(Status::Created.as_str()))
@@ -221,36 +299,17 @@ impl JobTable {
             .condition_expression("attribute_not_exists(#id)")
             .expression_attribute_names("#id", attributes::ID)
             .build()
-            .map_err(|error| failed(OPERATION, &error))?;
-        let lock_row = Put::builder()
+            .map_err(|error| failed("DynamoDB TransactWriteItems", &error))
+    }
+
+    /// The `sub`'s lock pointing at `job` for its upload window; the caller adds the condition.
+    fn lock_row(&self, job: &NewJob) -> aws_sdk_dynamodb::types::builders::PutBuilder {
+        Put::builder()
             .table_name(&self.table_name)
             .item(attributes::ID, string(&lock_id(&job.sub)))
             .item(attributes::JOB_ID, string(job.job_id.as_str()))
             .item(attributes::ACTIVE_UNTIL, number(job.active_until))
             .item(attributes::TTL, number(job.expires_at))
-            .condition_expression("attribute_not_exists(#id) OR #active_until < :now")
-            .expression_attribute_names("#id", attributes::ID)
-            .expression_attribute_names("#active_until", attributes::ACTIVE_UNTIL)
-            .expression_attribute_values(":now", number(job.created_at))
-            .build()
-            .map_err(|error| failed(OPERATION, &error))?;
-
-        let outcome = self
-            .transact([
-                TransactWriteItem::builder().put(job_row).build(),
-                TransactWriteItem::builder().put(lock_row).build(),
-            ])
-            .await?;
-        match outcome {
-            Transaction::Committed => Ok(()),
-            Transaction::Rejected(failed_items) if failed_items == [false, true] => {
-                Err(StorageError::ActiveJob)
-            }
-            Transaction::Rejected(_) => Err(StorageError::Failed {
-                operation: OPERATION,
-                detail: "job ID already exists".to_owned(),
-            }),
-        }
     }
 
     /// The latest job for `sub`, active or not, until its rows expire.
@@ -297,7 +356,8 @@ impl JobTable {
     ///
     /// # Errors
     ///
-    /// [`StorageError::UploadWindowPassed`] when `now` is past the upload window,
+    /// [`StorageError::UploadWindowPassed`] when `now` is past the upload window or a newer job
+    /// replaced this one,
     /// [`StorageError::NotCreated`] when the job already left `created` or a newer job for the
     /// `sub` took the lock, or the write failed.
     pub async fn claim(
@@ -322,7 +382,7 @@ impl JobTable {
             .map_err(|error| failed(OPERATION, &error))?;
 
         match self
-            .transact([
+            .transact(vec![
                 TransactWriteItem::builder().update(job_row).build(),
                 self.retarget_lock(sub, job_id, deadline, Some(now))?,
             ])
@@ -363,7 +423,7 @@ impl JobTable {
             .map_err(|error| failed(OPERATION, &error))?;
 
         match self
-            .transact([
+            .transact(vec![
                 TransactWriteItem::builder().update(job_row).build(),
                 self.retarget_lock(sub, job_id, 0, None)?,
             ])
@@ -405,13 +465,13 @@ impl JobTable {
 
     /// Runs `items` as one transaction; a failed condition is a [`Transaction::Rejected`] that
     /// says which items failed.
-    async fn transact(&self, items: [TransactWriteItem; 2]) -> Result<Transaction, StorageError> {
+    async fn transact(&self, items: Vec<TransactWriteItem>) -> Result<Transaction, StorageError> {
         const OPERATION: &str = "DynamoDB TransactWriteItems";
         let result = timeout(
             WRITE_TIMEOUT,
             self.client
                 .transact_write_items()
-                .set_transact_items(Some(items.to_vec()))
+                .set_transact_items(Some(items))
                 .send(),
         )
         .await
@@ -468,7 +528,15 @@ impl JobTable {
     }
 }
 
-/// How a two-item transaction ended.
+/// A fresh random job ID collided; practically impossible.
+fn job_id_taken(operation: &'static str) -> StorageError {
+    StorageError::Failed {
+        operation,
+        detail: "job ID already exists".to_owned(),
+    }
+}
+
+/// How a transaction ended.
 enum Transaction {
     Committed,
     /// Which items failed their condition, in order.
@@ -583,13 +651,18 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_migrated(&id(), "result/abc")
+            .mark_migrated(&id(), "sub", "result/abc", 100)
             .await
             .expect("should update");
 
-        let request = seen.lock().expect("lock should hold")[0].clone();
+        let items = seen.lock().expect("lock should hold")[0]["TransactItems"].clone();
+        let request = &items[0]["Update"];
         assert_eq!(request["Key"]["id"]["S"], format!("job#{ID}"));
-        assert_eq!(request["ConditionExpression"], "#status = :migrating");
+        assert_eq!(
+            request["ConditionExpression"],
+            "#status = :migrating AND #deadline >= :now"
+        );
+        assert_eq!(request["ExpressionAttributeValues"][":now"]["N"], "100");
         assert_eq!(
             request["ExpressionAttributeValues"][":status"]["S"],
             "migrated"
@@ -599,6 +672,11 @@ mod tests {
             "result/abc"
         );
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "result_key");
+        let lock = &items[1]["Update"];
+        assert_eq!(
+            lock["ExpressionAttributeValues"][":active_until"]["N"], "0",
+            "the sub is free again"
+        );
     }
 
     #[tokio::test]
@@ -606,11 +684,12 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_failed(&id(), Reason::EnclaveError)
+            .mark_failed(&id(), "sub", Reason::EnclaveError, 100)
             .await
             .expect("should update");
 
-        let request = seen.lock().expect("lock should hold")[0].clone();
+        let request =
+            seen.lock().expect("lock should hold")[0]["TransactItems"][0]["Update"].clone();
         assert_eq!(
             request["ExpressionAttributeValues"][":status"]["S"],
             "failed"
@@ -622,17 +701,17 @@ mod tests {
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "reason");
     }
 
-    /// A job resolved elsewhere first, e.g. timed out, is not overwritten.
+    /// A job resolved elsewhere first, or past its deadline, is not overwritten.
     #[tokio::test]
     async fn a_job_no_longer_migrating_is_left_alone() {
         let (store, _) = fake(
             StatusCode::BAD_REQUEST,
-            r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"The conditional request failed"}"#,
+            r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"canceled","CancellationReasons":[{"Code":"ConditionalCheckFailed"},{"Code":"None"}]}"#,
         )
         .await;
 
         let error = store
-            .mark_migrated(&id(), "result/abc")
+            .mark_migrated(&id(), "sub", "result/abc", 100)
             .await
             .expect_err("should skip");
 

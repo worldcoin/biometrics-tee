@@ -7,9 +7,23 @@
 let
   nitroLib = nitro-util.lib.${system};
   nitroBlobs = nitroLib.blobs.x86_64;
+  # aws-nitro-util still pins v1.2.3; v1.5.0 fixes init's mount-root setup, which the
+  # worker's Minijail bind mounts need (same pin as flamingo).
+  sandboxInit = pkgs.runCommand "nitro-init-1.5.0" { } ''
+    install -m755 ${
+      pkgs.fetchurl {
+        name = "nitro-init-1.5.0";
+        url = "https://raw.githubusercontent.com/aws/aws-nitro-enclaves-cli/2950b3699d81ad304df2458915688a552734833d/blobs/x86_64/init";
+        hash = "sha256-dV5lC3Mnd7eYy57CQ+5AK+9IJveJzwGh5FO7ckIHwAU=";
+      }
+    } "$out"
+  '';
 
   buildEnclaveImage =
-    { pname }:
+    {
+      pname,
+      sandboxed ? false,
+    }:
     let
       version = enclaveBins.${pname}.version;
 
@@ -23,6 +37,11 @@ let
           "/bin"
           "/etc"
         ];
+        # Nitro mounts /tmp noexec. Stage the worker on the executable root filesystem, not a
+        # Nix store symlink; bootstrap restores its private mode after Nix normalization.
+        postBuild = pkgs.lib.optionalString sandboxed ''
+          mkdir -p "$out/worker-runtime"
+        '';
       };
 
       dockerArchive = pkgs.dockerTools.buildLayeredImage {
@@ -58,7 +77,7 @@ let
         kernel = nitroBlobs.kernel;
         kernelConfig = nitroBlobs.kernelConfig;
         nsmKo = nitroBlobs.nsmKo;
-        init = nitroBlobs.init;
+        init = if sandboxed then sandboxInit else nitroBlobs.init;
         copyToRoot = root;
         copyToRootWithClosure = true;
         entrypoint = "/bin/${pname}";
@@ -74,7 +93,10 @@ let
     };
 
   migration = buildEnclaveImage { pname = "di-migration-enclave"; };
-  dev = buildEnclaveImage { pname = "di-dev-enclave"; };
+  dev = buildEnclaveImage {
+    pname = "di-dev-enclave";
+    sandboxed = true;
+  };
 in
 {
   di-migration-oci = migration.oci;

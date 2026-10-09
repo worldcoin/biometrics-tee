@@ -6,9 +6,9 @@ use anyhow::Context;
 use telemetry_batteries::tracing::middleware::TraceLayer;
 use tokio::{net::TcpListener, sync::oneshot};
 
-use crate::{AppState, drain, routes, worker::Worker};
+use crate::{AppState, drain, job_runner::JobRunner, routes};
 
-/// Starts the API server and the worker. If the worker ever stops, the process exits, so a
+/// Starts the API server and the job runner. If the job runner ever stops, the process exits, so a
 /// host never keeps accepting jobs nothing runs.
 ///
 /// On SIGTERM the host drains: readiness fails so the Service stops routing inits here, the API
@@ -17,11 +17,11 @@ use crate::{AppState, drain, routes, worker::Worker};
 ///
 /// # Errors
 ///
-/// Returns an error when the listener cannot bind, the server exits, or the worker stops.
+/// Returns an error when the listener cannot bind, the server exits, or the job runner stops.
 pub async fn start(
     port: NonZeroU16,
     state: AppState,
-    worker: Worker,
+    job_runner: JobRunner,
     drain_timeout: Duration,
 ) -> anyhow::Result<()> {
     let address = SocketAddr::from(([0, 0, 0, 0], port.get()));
@@ -59,9 +59,9 @@ pub async fn start(
 
     tokio::select! {
         result = server => result.context("API server failed"),
-        joined = tokio::spawn(worker.run()) => {
-            tracing::error!(?joined, "job worker stopped");
-            anyhow::bail!("job worker stopped")
+        joined = tokio::spawn(job_runner.run()) => {
+            tracing::error!(?joined, "job runner stopped");
+            anyhow::bail!("job runner stopped")
         }
     }
 }

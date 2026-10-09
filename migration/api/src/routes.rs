@@ -11,12 +11,13 @@ use axum::{
 use di_migration_primitives::{
     JobId, Reason, Status,
     app_api::{
-        DEVICE_PUBLIC_KEY_HEADER, InitMigrationRequest, InitMigrationResponse, MigrateResponse,
+        DEVICE_KEY_THUMBPRINT, InitMigrationRequest, InitMigrationResponse, MigrateResponse,
         MigrationStatus,
     },
     host_api::JobRequest,
 };
 use di_migration_storage::{JobRecord, NewJob, StorageError, schema::pcp_key};
+use telemetry_batteries::reexports::metrics::counter;
 
 use crate::{
     AppState,
@@ -111,11 +112,15 @@ async fn init_migration(
     let host = match state.fleet.place() {
         Placement::Host(host) => host,
         Placement::AtCapacity => {
+            counter!("migration.init", "outcome" => "at_capacity").increment(1);
             return Err(ApiError::at_capacity(
                 AT_CAPACITY_RETRY_AFTER_SECS + fastrand::u64(..=AT_CAPACITY_RETRY_AFTER_SECS),
             ));
         }
-        Placement::Unknown => return Err(ApiError::capacity_unknown()),
+        Placement::Unknown => {
+            counter!("migration.init", "outcome" => "capacity_unknown").increment(1);
+            return Err(ApiError::capacity_unknown());
+        }
     };
     let attestation = state
         .hosts
@@ -135,21 +140,23 @@ async fn init_migration(
         active_until: now + state.upload_window.as_secs(),
         expires_at: now + JOB_RETENTION.as_secs(),
     };
-    state
-        .jobs
-        .create_job(&job)
-        .await
-        .map_err(|error| match error {
-            StorageError::ActiveJob => ApiError::migration_in_progress(),
-            error => ApiError::storage("dynamodb", error.to_string()),
-        })?;
-
+    // Presign before taking the lock, so a failure here leaves nothing that blocks a retry.
     let upload_url = state
         .bucket
         .presign_upload(&job.job_id, state.presigned_url_ttl)
         .await
         .map_err(|error| ApiError::storage("s3", error.to_string()))?;
-
+    match state.jobs.create_job(&job).await {
+        Ok(()) => {
+            counter!("migration.init", "outcome" => "created").increment(1);
+        }
+        Err(StorageError::ActiveJob) => {
+            replace_unclaimed_job(&state, &job).await?;
+            counter!("migration.init", "outcome" => "replaced").increment(1);
+        }
+        Err(error) => return Err(ApiError::storage("dynamodb", error.to_string())),
+    }
+    tracing::info!(%sub, job_id = %job.job_id, "migration job created");
     Ok(Json(InitMigrationResponse {
         enclave_id: attestation.enclave_id,
         attestation: attestation.attestation,
@@ -157,6 +164,30 @@ async fn init_migration(
         upload_url,
         migrate_by: job.active_until,
     }))
+}
+
+/// Starts over for an app that holds an unclaimed job, e.g. it lost the init response or never
+/// uploaded; nothing was queued for that job yet. Any other active job stays in progress.
+async fn replace_unclaimed_job(state: &AppState, job: &NewJob) -> Result<(), ApiError> {
+    let current = state
+        .jobs
+        .latest_job(&job.sub)
+        .await
+        .map_err(|error| ApiError::storage("dynamodb", error.to_string()))?;
+    let Some(current) = current.filter(|current| {
+        current.status == Status::Created && current.device_public_key == job.device_public_key
+    }) else {
+        return Err(ApiError::migration_in_progress());
+    };
+    state
+        .jobs
+        .replace_job(job, &current.job_id)
+        .await
+        .map_err(|error| match error {
+            // Claimed or replaced concurrently.
+            StorageError::ActiveJob => ApiError::migration_in_progress(),
+            error => ApiError::storage("dynamodb", error.to_string()),
+        })
 }
 
 /// Hands the uploaded PCP's job to its host. The claim commits `migrating` first, so a retried
@@ -181,12 +212,17 @@ async fn migrate(
         .await
         .map_err(|error| ApiError::storage("s3", error.to_string()))?;
     if !uploaded {
+        counter!("migration.migrate", "outcome" => "not_uploaded").increment(1);
+        tracing::warn!(%sub, job_id = %job.job_id, "migration job not uploaded");
         return Err(ApiError::not_uploaded());
     }
 
     let deadline = now + state.job_deadline.as_secs();
+    tracing::info!(%sub, job_id = %job.job_id, deadline, "migration job claimed");
     match state.jobs.claim(&job.job_id, sub, now, deadline).await {
-        Ok(()) => {}
+        Ok(()) => {
+            counter!("migration.migrate", "outcome" => "claimed").increment(1);
+        }
         Err(StorageError::UploadWindowPassed) => return Err(ApiError::expired()),
         Err(StorageError::NotCreated) => {
             // A concurrent migrate claimed it first.
@@ -203,8 +239,10 @@ async fn migrate(
         sub: sub.to_owned(),
         device_public_key: job.device_public_key,
         enclave_id: job.enclave_id,
+        deadline,
     };
     let Err(error) = state.hosts.submit(host, &request).await else {
+        counter!("migration.migrate", "outcome" => "accepted").increment(1);
         return Ok(accepted(deadline));
     };
     let reason = match &error {
@@ -212,7 +250,13 @@ async fn migrate(
         // A host that is gone took its enclave's key with it.
         DispatchError::EnclaveChanged | DispatchError::Host(_) => Reason::EnclaveChanged,
     };
-    tracing::warn!(%error, %host, dependency = "host", reason = reason.as_str(), "dispatch failed");
+    counter!(
+        "migration.migrate",
+        "outcome" => "dispatch_failed",
+        "reason" => reason.as_str()
+    )
+    .increment(1);
+    tracing::warn!(%sub, job_id = %job.job_id, %error, %host, dependency = "host", reason = reason.as_str(), "dispatch failed");
     match state.jobs.fail_dispatch(&job.job_id, sub, reason).await {
         // The host may have queued it after all and already finished it.
         Ok(()) | Err(StorageError::NotMigrating) => Err(ApiError::failed(reason)),
@@ -236,10 +280,13 @@ async fn migration_status(
         download_url: None,
         download_expires_at: None,
     };
+    tracing::info!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration status checked");
     match job.status {
         Status::Migrating if job.deadline.is_some_and(|deadline| now > deadline) => {
             status.status = Status::Failed;
             status.reason = Some(Reason::Timeout);
+            counter!("migration.status", "outcome" => "timeout").increment(1);
+            tracing::warn!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration timed out");
         }
         Status::Migrated => {
             status.download_url = Some(
@@ -250,6 +297,8 @@ async fn migration_status(
                     .map_err(|error| ApiError::storage("s3", error.to_string()))?,
             );
             status.download_expires_at = Some(now + state.presigned_url_ttl.as_secs());
+            counter!("migration.status", "outcome" => "download").increment(1);
+            tracing::info!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration downloaded");
         }
         _ => {}
     }
@@ -310,7 +359,7 @@ fn valid_sub(sub: &str) -> Result<&str, ApiError> {
 
 /// The device key the auth proxy forwards; the API does not verify devices itself.
 fn device_public_key(headers: &HeaderMap) -> Option<String> {
-    let key = headers.get(DEVICE_PUBLIC_KEY_HEADER)?.to_str().ok()?.trim();
+    let key = headers.get(DEVICE_KEY_THUMBPRINT)?.to_str().ok()?.trim();
     (!key.is_empty() && key.len() <= MAX_DEVICE_KEY_LEN).then(|| key.to_owned())
 }
 

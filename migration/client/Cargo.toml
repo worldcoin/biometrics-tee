@@ -1,0 +1,29 @@
+[package]
+name = "di-migration-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Exposes [`MigrationApiClient::with_device_public_key`] for tests and local tooling
+# that talk to the API without an auth proxy.
+test-util = []
+
+[dependencies]
+base64.workspace = true
+di-migration-enclave-primitives.workspace = true
+attested-request = "0.1.1"
+di-migration-primitives.workspace = true
+pontifex = { workspace = true, features = ["attestation", "channel"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+attested-request = { version = "0.1.1", features = ["test-util"] }
+axum.workspace = true
+tokio.workspace = true

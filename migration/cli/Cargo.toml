@@ -11,8 +11,15 @@ name = "migration-cli"
 path = "src/main.rs"
 
 [dependencies]
+attested-request = { version = "0.1.1", features = ["test-util"] }
 clap = { workspace = true, features = ["derive", "env"] }
-migration-api-client.workspace = true
+di-migration-primitives.workspace = true
+hex.workspace = true
+di-migration-client = { workspace = true, features = ["test-util"] }
+pontifex = { workspace = true, features = ["attestation"] }
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

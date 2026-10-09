@@ -1,5 +1,5 @@
 [package]
-name = "di-migration-enclave-types"
+name = "di-dev-enclave-primitives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

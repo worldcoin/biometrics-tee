@@ -184,10 +184,15 @@ mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::{Arc, Mutex},
-        time::Duration,
+        time::{Duration, UNIX_EPOCH},
     };
 
     use async_trait::async_trait;
+    use attested_request::{
+        Platform,
+        sign::Signer,
+        test_util::{SoftwareSigner, TestClaims, TestIssuer, test_key},
+    };
     use axum::{
         Json, Router,
         body::Body,
@@ -196,7 +201,7 @@ mod tests {
     };
     use di_migration_primitives::{
         EnclaveId,
-        app_api::DEVICE_PUBLIC_KEY_HEADER,
+        app_api::DEVICE_KEY_THUMBPRINT,
         host_api::{AttestationResponse, Capacity},
     };
     use di_migration_storage::{JobTable, PcpBucket};
@@ -207,6 +212,19 @@ mod tests {
 
     const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
     const AMZ_JSON: &str = "application/x-amz-json-1.0";
+
+    fn test_signer() -> SoftwareSigner {
+        SoftwareSigner::new(test_key("migration-api-test"), Platform::Android)
+    }
+
+    fn test_integrity_token(signer: &SoftwareSigner) -> String {
+        TestIssuer::new("https://attestation.example").mint(&TestClaims::valid(
+            "migration-api",
+            signer.platform(),
+            signer.verifying_key(),
+            UNIX_EPOCH + Duration::from_secs(1_790_000_000),
+        ))
+    }
 
     async fn serve(router: Router) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -257,15 +275,35 @@ mod tests {
     }
 
     /// `DynamoDB` that refuses the lock because the `sub` has an active job.
-    async fn dynamodb_with_active_job() -> SocketAddr {
+    /// `DynamoDB` where the `sub` already holds the job `current`: a plain create is refused,
+    /// reads serve `current`, and a replacement is accepted and recorded.
+    async fn dynamodb_with_active_job(
+        current: serde_json::Value,
+        replacements: Arc<Mutex<Vec<serde_json::Value>>>,
+    ) -> SocketAddr {
         serve(Router::new().route(
             "/",
-            post(|| async {
-                (
-                    StatusCode::BAD_REQUEST,
-                    [(header::CONTENT_TYPE, AMZ_JSON)],
-                    r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"canceled","CancellationReasons":[{"Code":"None"},{"Code":"ConditionalCheckFailed"}]}"#,
-                )
+            post(move |headers: axum::http::HeaderMap, body: String| async move {
+                let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let target = headers["x-amz-target"].to_str().unwrap();
+                if target.ends_with("GetItem") {
+                    let id = body["Key"]["id"]["S"].as_str().unwrap();
+                    let item = if id.starts_with("sub#") {
+                        serde_json::json!({"id": {"S": id}, "job_id": {"S": JOB_ID}, "active_until": {"N": "0"}})
+                    } else {
+                        current.clone()
+                    };
+                    return (StatusCode::OK, [(header::CONTENT_TYPE, AMZ_JSON)], serde_json::json!({"Item": item}).to_string());
+                }
+                if body["TransactItems"].as_array().unwrap().len() == 2 {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        [(header::CONTENT_TYPE, AMZ_JSON)],
+                        r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"canceled","CancellationReasons":[{"Code":"None"},{"Code":"ConditionalCheckFailed"}]}"#.to_owned(),
+                    );
+                }
+                replacements.lock().unwrap().push(body);
+                (StatusCode::OK, [(header::CONTENT_TYPE, AMZ_JSON)], "{}".to_owned())
             }),
         ))
         .await
@@ -365,7 +403,7 @@ mod tests {
             .uri("/v1/init-migration")
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(key) = device_key {
-            request = request.header(DEVICE_PUBLIC_KEY_HEADER, key);
+            request = request.header(DEVICE_KEY_THUMBPRINT, key);
         }
         request
             .body(Body::from(
@@ -467,13 +505,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_init_for_the_sub_is_in_progress() {
-        let state = state(vec![host(0, 4).await], dynamodb_with_active_job().await).await;
+    async fn a_second_init_for_a_running_or_foreign_job_is_in_progress() {
+        let mut foreign = job_row("created", now(), &[]);
+        foreign["device_public_key"] = serde_json::json!({"S": "other-device"});
+        for current in [job_row("migrating", now(), &[]), foreign] {
+            let replacements = Arc::new(Mutex::new(Vec::new()));
+            let dynamodb = dynamodb_with_active_job(current, Arc::clone(&replacements)).await;
+            let state = state(vec![host(0, 4).await], dynamodb).await;
+
+            let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert_eq!(error_code(response).await, "migration_in_progress");
+            assert!(replacements.lock().unwrap().is_empty());
+        }
+    }
+
+    /// An app that lost its init response, or never uploaded, starts over with a new job.
+    #[tokio::test]
+    async fn a_second_init_replaces_the_device_s_unclaimed_job() {
+        let replacements = Arc::new(Mutex::new(Vec::new()));
+        let dynamodb =
+            dynamodb_with_active_job(job_row("created", now(), &[]), Arc::clone(&replacements))
+                .await;
+        let state = state(vec![host(0, 4).await], dynamodb).await;
 
         let response = routes::router(state).oneshot(valid_init()).await.unwrap();
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert_eq!(error_code(response).await, "migration_in_progress");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(json(response).await["upload_url"].is_string());
+        let replacements = replacements.lock().unwrap();
+        assert_eq!(replacements.len(), 1);
+        let lock = &replacements[0]["TransactItems"][1]["Put"];
+        assert_eq!(lock["ExpressionAttributeValues"][":previous"]["S"], JOB_ID);
     }
 
     /// The host was polled but stops answering before init asks it to attest.
@@ -563,13 +627,21 @@ mod tests {
         };
         let api = serve(routes::router(state)).await;
 
-        let response = migration_api_client::MigrationApiClient::new(
-            &format!("http://{api}").parse().unwrap(),
-        )
-        .unwrap()
-        .init_migration("device-key", "test-sub", "0xa100ff00deadbeef", CHALLENGE_ID)
-        .await
-        .unwrap();
+        let signer = test_signer();
+        let token = test_integrity_token(&signer);
+        let response =
+            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
+                .unwrap()
+                .with_device_public_key("device-key")
+                .init_migration(
+                    &token,
+                    &signer,
+                    "test-sub",
+                    "0xa100ff00deadbeef",
+                    CHALLENGE_ID,
+                )
+                .await
+                .unwrap();
 
         assert_eq!(response.enclave_id, enclave_id());
         let seen = mock.seen.lock().unwrap().clone();
@@ -837,7 +909,7 @@ mod tests {
         Request::builder()
             .method(method)
             .uri("/v1/migrations/test-sub")
-            .header(DEVICE_PUBLIC_KEY_HEADER, device_key)
+            .header(DEVICE_KEY_THUMBPRINT, device_key)
             .body(Body::empty())
             .unwrap()
     }
@@ -1102,23 +1174,28 @@ mod tests {
         let (state, _) =
             migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
         let api = serve(routes::router(state)).await;
-        let client = migration_api_client::MigrationApiClient::new(
-            &format!("http://{api}").parse().unwrap(),
-        )
-        .unwrap();
+        let client =
+            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
+                .unwrap()
+                .with_device_public_key("device-key");
+        let signer = test_signer();
+        let token = test_integrity_token(&signer);
 
-        let migrating = client.migrate("device-key", "test-sub").await.unwrap();
+        let migrating = client.migrate(&token, &signer, "test-sub").await.unwrap();
         // The fake table keeps serving the `created` row.
         let status = client
-            .migration_status("device-key", "test-sub")
+            .migration_status(&token, &signer, "test-sub")
             .await
             .unwrap();
 
         assert_eq!(migrating.status, di_migration_primitives::Status::Migrating);
         assert_eq!(status.status, di_migration_primitives::Status::Created);
+        let other = client.with_device_public_key("other-key");
         assert!(matches!(
-            client.migration_status("other-key", "test-sub").await,
-            Err(migration_api_client::Error::Api { code, .. }) if code == "device_key_mismatch"
+            other
+                .migration_status(&token, &signer, "test-sub")
+                .await,
+            Err(di_migration_client::Error::Api { code, .. }) if code == "device_key_mismatch"
         ));
     }
 }

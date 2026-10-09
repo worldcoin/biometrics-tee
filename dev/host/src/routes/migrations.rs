@@ -4,8 +4,8 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use di_dev_api_types::{MAX_PCP_BYTES, MIGRATION_CONTENT_TYPE, codes};
-use di_dev_enclave_types::MigrateRequest;
+use di_dev_api_primitives::{MAX_PCP_BYTES, MIGRATION_CONTENT_TYPE, codes};
+use di_dev_enclave_primitives::MigrateRequest;
 
 use crate::{AppState, compression, error::ApiError};
 
@@ -105,7 +105,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode, header},
     };
-    use di_dev_api_types::{ErrorEnvelope, MAX_PCP_BYTES, MIGRATION_CONTENT_TYPE};
+    use di_dev_api_primitives::{ErrorEnvelope, MAX_PCP_BYTES, MIGRATION_CONTENT_TYPE};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 

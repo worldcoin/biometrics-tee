@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use di_dev_api_types::{ErrorEnvelope, MIGRATION_CONTENT_TYPE, codes};
+use di_dev_api_primitives::{ErrorEnvelope, MIGRATION_CONTENT_TYPE, codes};
 use reqwest::{StatusCode, blocking};
 
 use crate::error::Error;

@@ -12,7 +12,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use di_migration_enclave_types::{KeyAttestation, MigrateRequest, MigrateResponse};
+use di_migration_enclave_primitives::{KeyAttestation, MigrateRequest, MigrateResponse};
 use di_migration_primitives::{JobId, Reason, host_api::JobRequest};
 use di_migration_storage::StorageError;
 use tokio::sync::Notify;
@@ -104,7 +104,7 @@ impl EnclaveClient for CountingEnclave {
     }
 }
 
-/// Answers every readiness check; the job paths are unused until the worker lands.
+/// Answers every readiness check; the job paths are unused until the job runner lands.
 pub struct HealthyStore;
 
 #[async_trait]
@@ -128,11 +128,11 @@ impl JobStore for HealthyStore {
         Ok(())
     }
 
-    async fn mark_migrated(&self, _: &JobId, _: &str) -> Result<(), StoreError> {
+    async fn mark_migrated(&self, _: &JobRequest, _: &str) -> Result<(), StoreError> {
         unimplemented!("not exercised by these tests")
     }
 
-    async fn mark_failed(&self, _: &JobId, _: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(&self, _: &JobRequest, _: Reason) -> Result<(), StoreError> {
         unimplemented!("not exercised by these tests")
     }
 }
@@ -194,7 +194,7 @@ struct Memory {
     last_error: Option<StoreError>,
 }
 
-/// S3 and the job table in memory, with switches for the failures the worker must handle.
+/// S3 and the job table in memory, with switches for the failures the job runner must handle.
 #[derive(Default)]
 pub struct MemoryStore {
     memory: Mutex<Memory>,
@@ -283,12 +283,12 @@ impl JobStore for MemoryStore {
         Ok(())
     }
 
-    async fn mark_migrated(&self, job_id: &JobId, result_key: &str) -> Result<(), StoreError> {
-        self.record(job_id, Outcome::Migrated(result_key.to_owned()))
+    async fn mark_migrated(&self, job: &JobRequest, result_key: &str) -> Result<(), StoreError> {
+        self.record(&job.job_id, Outcome::Migrated(result_key.to_owned()))
     }
 
-    async fn mark_failed(&self, job_id: &JobId, reason: Reason) -> Result<(), StoreError> {
-        self.record(job_id, Outcome::Failed(reason))
+    async fn mark_failed(&self, job: &JobRequest, reason: Reason) -> Result<(), StoreError> {
+        self.record(&job.job_id, Outcome::Failed(reason))
     }
 }
 
@@ -323,11 +323,11 @@ impl JobStore for FailingStore {
         Err(unreachable())
     }
 
-    async fn mark_migrated(&self, _: &JobId, _: &str) -> Result<(), StoreError> {
+    async fn mark_migrated(&self, _: &JobRequest, _: &str) -> Result<(), StoreError> {
         Err(unreachable())
     }
 
-    async fn mark_failed(&self, _: &JobId, _: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(&self, _: &JobRequest, _: Reason) -> Result<(), StoreError> {
         Err(unreachable())
     }
 }
@@ -364,5 +364,6 @@ pub fn job(n: u64) -> JobRequest {
         sub: "sub".to_owned(),
         device_public_key: "device-key".to_owned(),
         enclave_id: crate::enclave::enclave_id(&StubEnclave::default().public_key),
+        deadline: u64::MAX,
     }
 }

@@ -1,22 +1,42 @@
 //! Boot-scoped state owned by the enclave.
 
-use di_migration_enclave_types::MIGRATION_CHANNEL_DOMAIN;
-use pontifex::channel::{ChannelDomain, ChannelEnclave, ChannelError};
+use std::sync::Arc;
+
+use di_migration_enclave_primitives::{self as enclave_primitives, MIGRATION_CHANNEL_DOMAIN};
+use pontifex::channel::{ChannelDomain, ChannelEnclave};
+use tokio::task::JoinHandle;
+
+use crate::attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
 
 /// State fixed for the life of one enclave boot.
 pub struct EnclaveState {
     channel: ChannelEnclave,
+    /// Attests the channel key's commitment, which apps check before sealing a PCP.
+    attested_channel_key: AttestedKey,
 }
 
 impl EnclaveState {
-    /// Generates this boot's channel key; a restart gets a new key and so a new `enclave_id`.
+    /// Generates this boot's channel key and attests it; a restart gets a new key and so a new
+    /// `enclave_id`. Attesting here rather than per request fails the boot on a broken NSM.
     ///
     /// # Errors
     ///
-    /// Fails if the CSPRNG is unavailable.
-    pub fn boot() -> Result<Self, ChannelError> {
+    /// [`enclave_primitives::Error::Internal`] when the key cannot be generated or attested.
+    pub fn generate(attestor: Arc<dyn Attestor>) -> Result<Self, enclave_primitives::Error> {
+        let channel = ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))
+            .map_err(|error| {
+                tracing::error!(?error, "failed to generate the channel key");
+                enclave_primitives::Error::Internal
+            })?;
+        let attested_channel_key = AttestedKey::new(
+            attestor,
+            channel.public_key_commitment().to_vec(),
+            MAX_CACHED_AGE,
+        )?;
+
         Ok(Self {
-            channel: ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))?,
+            channel,
+            attested_channel_key,
         })
     }
 
@@ -25,17 +45,39 @@ impl EnclaveState {
     pub const fn channel(&self) -> &ChannelEnclave {
         &self.channel
     }
+
+    /// The latest document attesting the channel key's commitment.
+    pub async fn channel_key_attestation(&self) -> Vec<u8> {
+        self.attested_channel_key.document().await
+    }
+
+    /// Starts refreshing the channel key's attestation; supervise the handle and exit if it ends.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called more than once.
+    pub fn start_attestation_refresh(&mut self) -> JoinHandle<()> {
+        self.attested_channel_key.start_refresh()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::EnclaveState;
+    use crate::test_support::state;
 
     #[test]
     fn each_boot_gets_a_new_key() {
-        let first = EnclaveState::boot().expect("should generate a key");
-        let second = EnclaveState::boot().expect("should generate a key");
+        let (first, second) = (state(), state());
 
         assert_ne!(first.channel().public_key(), second.channel().public_key());
+    }
+
+    #[tokio::test]
+    async fn the_attestation_binds_the_key_commitment() {
+        let state = state();
+
+        let document = state.channel_key_attestation().await;
+
+        assert!(document.starts_with(&state.channel().public_key_commitment()));
     }
 }

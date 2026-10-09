@@ -6,8 +6,8 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use di_dev_api_types::{ErrorBody, ErrorEnvelope, codes};
-use di_dev_enclave_types as enclave_types;
+use di_dev_api_primitives::{ErrorBody, ErrorEnvelope, codes};
+use di_dev_enclave_primitives as enclave_primitives;
 
 use crate::{compression, enclave};
 
@@ -113,10 +113,10 @@ impl ApiError {
         }
     }
 
-    fn enclave_rejected(operation: enclave_types::Error) -> Self {
+    fn enclave_rejected(operation: enclave_primitives::Error) -> Self {
         match operation {
             // The host rejects empty bodies first, so this means mismatched deploys.
-            enclave_types::Error::EmptyPcp => Self::new(
+            enclave_primitives::Error::EmptyPcp => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL_ERROR,
                 "Internal server error",
@@ -125,7 +125,7 @@ impl ApiError {
             .with_detail(format!(
                 "enclave rejected a payload the host accepted: {operation:?}"
             )),
-            enclave_types::Error::Internal => Self::new(
+            enclave_primitives::Error::Internal => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL_ERROR,
                 "Internal server error",
@@ -171,8 +171,8 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
-    use di_dev_api_types::codes;
-    use di_dev_enclave_types as enclave_types;
+    use di_dev_api_primitives::codes;
+    use di_dev_enclave_primitives as enclave_primitives;
 
     use super::ApiError;
     use crate::{compression, enclave};
@@ -223,7 +223,7 @@ mod tests {
                 codes::ENCLAVE_UNREACHABLE,
             ),
             (
-                enclave::Error::Operation(enclave_types::Error::Internal),
+                enclave::Error::Operation(enclave_primitives::Error::Internal),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL_ERROR,
             ),
@@ -241,7 +241,7 @@ mod tests {
     /// The one enclave rejection that is not retryable: mismatched deploys, not bad input.
     #[test]
     fn a_rejection_the_host_should_have_caught_is_not_retryable() {
-        let operation = enclave_types::Error::EmptyPcp;
+        let operation = enclave_primitives::Error::EmptyPcp;
         let mapped = ApiError::enclave(&enclave::Error::Operation(operation));
 
         assert_eq!(mapped.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -252,7 +252,9 @@ mod tests {
     /// The diagnosing arm's detail must not be overwritten by a generic one.
     #[test]
     fn a_limit_disagreement_keeps_its_diagnostic_detail() {
-        let mapped = ApiError::enclave(&enclave::Error::Operation(enclave_types::Error::EmptyPcp));
+        let mapped = ApiError::enclave(&enclave::Error::Operation(
+            enclave_primitives::Error::EmptyPcp,
+        ));
 
         assert_eq!(
             mapped.detail.as_deref(),

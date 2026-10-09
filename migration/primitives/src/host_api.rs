@@ -32,6 +32,8 @@ pub struct JobRequest {
     pub device_public_key: String,
     /// The boot the PCP was sealed to; a restarted enclave refuses the job.
     pub enclave_id: EnclaveId,
+    /// Unix seconds after which the job reads as `timeout`; the host skips it then.
+    pub deadline: u64,
 }
 
 /// `202` body of `POST /jobs`.
@@ -115,6 +117,7 @@ mod tests {
             sub: "sub".to_owned(),
             device_public_key: "key".to_owned(),
             enclave_id: EnclaveId::from_commitment([1; 32]),
+            deadline: 1_800_000_600,
         };
 
         assert_eq!(
@@ -125,6 +128,7 @@ mod tests {
                 "sub": "sub",
                 "device_public_key": "key",
                 "enclave_id": "01".repeat(32),
+                "deadline": 1_800_000_600,
             })
         );
     }

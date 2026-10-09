@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use di_migration_enclave_types::{GetEncryptionKeyRequest, HealthRequest, MigrateRequest};
+use di_migration_enclave_primitives::{GetEncryptionKeyRequest, HealthRequest, MigrateRequest};
 use pontifex::Router;
 
 mod encryption_key;
@@ -24,12 +24,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::router;
-    use crate::state::EnclaveState;
 
     #[test]
     fn router_registers_enclave_operations() {
-        let _router = router(Arc::new(
-            EnclaveState::boot().expect("should generate a key"),
-        ));
+        let _router = router(Arc::new(crate::test_support::state()));
     }
 }

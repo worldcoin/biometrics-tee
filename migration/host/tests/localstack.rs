@@ -20,18 +20,18 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use di_migration_enclave_types::{KeyAttestation, MigrateRequest, MigrateResponse};
+use di_migration_enclave_primitives::{KeyAttestation, MigrateRequest, MigrateResponse};
 use di_migration_host::{
     AppState,
     enclave::{self, EnclaveClient, Error},
+    job_runner::JobRunner,
     queue::JobQueue,
     readiness::Readiness,
     routes,
     store::{BlobStore, DynamoJobStore, JobStore, S3BlobStore, StoreError},
-    worker::Worker,
 };
 use di_migration_primitives::{JobId, Reason, host_api::JobRequest};
-use di_migration_storage::{JobTable, PcpBucket, schema::pcp_key};
+use di_migration_storage::{JobTable, NewJob, PcpBucket, schema::pcp_key};
 use tower::ServiceExt;
 
 const PUBLIC_KEY: [u8; 32] = [7; 32];
@@ -142,14 +142,28 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         .send()
         .await
         .expect("PCP should upload");
-    dynamodb
-        .put_item()
-        .table_name(&table)
-        .item("id", AttributeValue::S(format!("job#{job_id}")))
-        .item("status", AttributeValue::S("migrating".to_owned()))
-        .send()
+    // Init and migrate as the API does: the row is `migrating` with a deadline, the sub locked.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let deadline = now + 600;
+    let jobs = JobTable::new(dynamodb.clone(), table.clone());
+    jobs.create_job(&NewJob {
+        job_id: job_id.clone(),
+        sub: "sub".to_owned(),
+        device_public_key: "device-key".to_owned(),
+        host_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        enclave_id: enclave::enclave_id(&PUBLIC_KEY),
+        created_at: now,
+        active_until: now + 420,
+        expires_at: now + 172_800,
+    })
+    .await
+    .expect("job should be created");
+    jobs.claim(&job_id, "sub", now, deadline)
         .await
-        .expect("row should be written");
+        .expect("job should be claimed");
 
     let enclave_client: Arc<dyn EnclaveClient> = Arc::new(EchoEnclave);
     let blob_store = Arc::new(S3BlobStore::new(
@@ -167,13 +181,13 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         blob_store.clone(),
         job_store.clone(),
     ));
-    let worker = Worker::new(
+    let job_runner = JobRunner::new(
         Arc::clone(&queue),
         Arc::clone(&enclave_client),
         blob_store,
         job_store.clone(),
     );
-    let runner = tokio::spawn(worker.run());
+    let runner = tokio::spawn(job_runner.run());
     let state = AppState::new(
         enclave_client,
         Arc::clone(&readiness),
@@ -192,6 +206,7 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         sub: "sub".to_owned(),
         device_public_key: "device-key".to_owned(),
         enclave_id: enclave::enclave_id(&PUBLIC_KEY),
+        deadline,
     })
     .expect("job should serialize");
     let response = routes::handler()
@@ -248,8 +263,16 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
     assert_eq!(kept.as_ref(), b"sealed-blob");
 
     // A late outcome for a resolved job is refused by the row's condition.
+    let late = JobRequest {
+        job_id: job_id.clone(),
+        object_key: pcp_key(&job_id),
+        sub: "sub".to_owned(),
+        device_public_key: "device-key".to_owned(),
+        enclave_id: enclave::enclave_id(&PUBLIC_KEY),
+        deadline,
+    };
     assert_eq!(
-        job_store.mark_failed(&job_id, Reason::Timeout).await,
+        job_store.mark_failed(&late, Reason::Timeout).await,
         Err(StoreError::NotMigrating)
     );
     assert_eq!(

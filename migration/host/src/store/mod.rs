@@ -1,4 +1,4 @@
-//! Storage the host reads jobs from and writes results to, behind traits so the worker and
+//! Storage the host reads jobs from and writes results to, behind traits so the job runner and
 //! readiness can be tested without AWS.
 
 mod dynamo;
@@ -6,7 +6,7 @@ mod s3;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use di_migration_primitives::{JobId, Reason};
+use di_migration_primitives::{JobId, Reason, host_api::JobRequest};
 pub use di_migration_storage::StorageError as StoreError;
 
 pub use dynamo::DynamoJobStore;
@@ -31,9 +31,9 @@ pub trait JobStore: Send + Sync {
     /// Checks the table is reachable.
     async fn check_ready(&self) -> Result<(), StoreError>;
 
-    /// Marks a `migrating` job `migrated`.
-    async fn mark_migrated(&self, job_id: &JobId, result_key: &str) -> Result<(), StoreError>;
+    /// Marks a `migrating` job `migrated` and frees its `sub`, unless it is past its deadline.
+    async fn mark_migrated(&self, job: &JobRequest, result_key: &str) -> Result<(), StoreError>;
 
-    /// Marks a `migrating` job `failed`.
-    async fn mark_failed(&self, job_id: &JobId, reason: Reason) -> Result<(), StoreError>;
+    /// Marks a `migrating` job `failed` and frees its `sub`, unless it is past its deadline.
+    async fn mark_failed(&self, job: &JobRequest, reason: Reason) -> Result<(), StoreError>;
 }

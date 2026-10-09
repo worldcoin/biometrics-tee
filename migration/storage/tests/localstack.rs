@@ -187,6 +187,87 @@ async fn a_migrate_after_the_upload_window_is_refused() {
 
 #[tokio::test]
 #[ignore = "needs LocalStack"]
+async fn a_finished_job_frees_its_sub_but_a_late_one_stays_timed_out() {
+    let (jobs, client, name) = table().await;
+    let deadline = NOW + 600;
+
+    // Finishing in time records the outcome and lets the sub init again at once.
+    let done = new_job("sub-e", NOW);
+    jobs.create_job(&done).await.expect("created");
+    jobs.claim(&done.job_id, "sub-e", NOW + 60, deadline)
+        .await
+        .expect("claimed");
+    jobs.mark_migrated(&done.job_id, "sub-e", "result/done", deadline)
+        .await
+        .expect("the last second of the deadline still records");
+    let latest = jobs.latest_job("sub-e").await.expect("read").expect("job");
+    assert_eq!(latest.status, Status::Migrated);
+    assert_eq!(latest.result_key.as_deref(), Some("result/done"));
+    jobs.create_job(&new_job("sub-e", NOW + 120))
+        .await
+        .expect("a finished job no longer blocks its sub");
+
+    // Finishing after the deadline is refused, so `failed (timeout)` stays the answer.
+    let late = new_job("sub-f", NOW);
+    jobs.create_job(&late).await.expect("created");
+    jobs.claim(&late.job_id, "sub-f", NOW + 60, deadline)
+        .await
+        .expect("claimed");
+    assert_eq!(
+        jobs.mark_failed(&late.job_id, "sub-f", Reason::EnclaveError, deadline + 1)
+            .await,
+        Err(StorageError::NotMigrating)
+    );
+    let latest = jobs.latest_job("sub-f").await.expect("read").expect("job");
+    assert_eq!(latest.status, Status::Migrating);
+
+    client.delete_table().table_name(&name).send().await.ok();
+}
+
+#[tokio::test]
+#[ignore = "needs LocalStack"]
+async fn only_an_unclaimed_job_of_the_same_device_is_replaced() {
+    let (jobs, client, name) = table().await;
+
+    let lost = new_job("sub-g", NOW);
+    jobs.create_job(&lost).await.expect("created");
+
+    // Another device cannot take over the sub's job.
+    let mut stranger = new_job("sub-g", NOW + 10);
+    stranger.device_public_key = "other-device".to_owned();
+    assert_eq!(
+        jobs.replace_job(&stranger, &lost.job_id).await,
+        Err(StorageError::ActiveJob)
+    );
+
+    // The same device starts over: the lock moves to the new job.
+    let retry = new_job("sub-g", NOW + 10);
+    jobs.replace_job(&retry, &lost.job_id)
+        .await
+        .expect("an unclaimed job is replaced");
+    let latest = jobs.latest_job("sub-g").await.expect("read").expect("job");
+    assert_eq!(latest.job_id, retry.job_id);
+    assert_eq!(
+        jobs.claim(&lost.job_id, "sub-g", NOW + 20, NOW + 600).await,
+        Err(StorageError::UploadWindowPassed),
+        "the replaced job can no longer be claimed"
+    );
+
+    // Once claimed, the job runs on and is no longer replaced.
+    jobs.claim(&retry.job_id, "sub-g", NOW + 20, NOW + 600)
+        .await
+        .expect("claimed");
+    assert_eq!(
+        jobs.replace_job(&new_job("sub-g", NOW + 30), &retry.job_id)
+            .await,
+        Err(StorageError::ActiveJob)
+    );
+
+    client.delete_table().table_name(&name).send().await.ok();
+}
+
+#[tokio::test]
+#[ignore = "needs LocalStack"]
 async fn the_upload_check_sees_the_sealed_pcp() {
     let config = sdk_config().await;
     let s3 = aws_sdk_s3::Client::from_conf(
