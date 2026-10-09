@@ -1,5 +1,12 @@
 [workspace]
 members = [
+    "selfie-enrollment/host",
+    "selfie-enrollment/client",
+    "selfie-enrollment/enclave",
+    "selfie-enrollment/api-types",
+    "selfie-enrollment/sealed-types",
+    "selfie-enrollment/enclave-types",
+
     "dev/api-primitives",
     "dev/client",
     "dev/enclave",
@@ -24,8 +31,8 @@ edition = "2024"
 rust-version = "1.98.1"
 version = "0.1.0"
 license = "MIT"
-homepage = "https://github.com/worldcoin/di-migration-tee"
-repository = "https://github.com/worldcoin/di-migration-tee"
+homepage = "https://github.com/worldcoin/biometrics-tee"
+repository = "https://github.com/worldcoin/biometrics-tee"
 publish = false
 
 [workspace.dependencies]
@@ -74,3 +81,16 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+selfie-enrollment-api-types = { path = "selfie-enrollment/api-types" }
+selfie-enrollment-sealed-types = { path = "selfie-enrollment/sealed-types" }
+selfie-enrollment-enclave-types = { path = "selfie-enrollment/enclave-types" }
+ciborium = "0.2"
+
+selfie-enrollment-enclave = { path = "selfie-enrollment/enclave" }
+biometric-engines-protocol = "0.1.0"
+rand = "0.8"
+
+selfie-enrollment-client = { path = "selfie-enrollment/client" }
+
+selfie-enrollment-host = { path = "selfie-enrollment/host" }

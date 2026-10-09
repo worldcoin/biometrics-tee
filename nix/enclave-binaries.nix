@@ -47,5 +47,6 @@ let
 in
 {
   di-migration-enclave = buildEnclaveBin { pname = "di-migration-enclave"; };
+  selfie-enrollment-enclave = buildEnclaveBin { pname = "selfie-enrollment-enclave"; };
   di-dev-enclave = buildEnclaveBin { pname = "di-dev-enclave"; };
 }

@@ -1,0 +1,16 @@
+[package]
+name = "selfie-enrollment-sealed-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+selfie-enrollment-api-types.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+ciborium.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+

@@ -17,7 +17,7 @@ set -euo pipefail
 
 # A new workload is an entry here plus `di-<name>-oci` and `di-<name>-eif` outputs in
 # nix/enclave-images.nix.
-WORKLOADS=("migration" "dev")
+WORKLOADS=("migration" "dev" "selfie-enrollment")
 
 usage() {
   printf '%s\n' \
@@ -82,14 +82,18 @@ cd "$repo_root"
 mkdir -p "$out_dir"
 out_dir="$(cd "$out_dir" && pwd)"
 
-eif_name="di-$workload-enclave.eif"
-pcr_name="di-$workload-pcr.json"
+output_prefix="di-$workload"
+if [[ "$workload" == "selfie-enrollment" ]]; then
+  output_prefix="$workload"
+fi
+eif_name="$output_prefix-enclave.eif"
+pcr_name="$output_prefix-pcr.json"
 
 # --no-update-lock-file on the flake calls below: an input added to flake.nix without a
 # matching `nix flake update` would otherwise be resolved to whatever upstream serves right
 # now, and the lock silently rewritten. The PCRs must follow the committed lock or nothing.
 echo "Building reproducible $workload OCI image..."
-if ! oci_store=$(nix build ".#di-$workload-oci" --no-update-lock-file --no-link --print-out-paths); then
+if ! oci_store=$(nix build ".#$output_prefix-oci" --no-update-lock-file --no-link --print-out-paths); then
   echo >&2
   echo "[ERROR] OCI image build failed; the error above says why. A 'platform" >&2
   echo "        mismatch' for x86_64-linux means this host needs a remote builder." >&2
@@ -97,7 +101,7 @@ if ! oci_store=$(nix build ".#di-$workload-oci" --no-update-lock-file --no-link 
 fi
 
 echo "Building $workload EIF..."
-if ! eif_store=$(nix build ".#di-$workload-eif" --no-update-lock-file --no-link --print-out-paths); then
+if ! eif_store=$(nix build ".#$output_prefix-eif" --no-update-lock-file --no-link --print-out-paths); then
   echo >&2
   echo "[ERROR] EIF build failed; the error above says why." >&2
   exit 1

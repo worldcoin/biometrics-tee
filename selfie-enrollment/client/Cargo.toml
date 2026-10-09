@@ -1,0 +1,42 @@
+[package]
+name = "selfie-enrollment-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+selfie-enrollment-api-types.workspace = true
+selfie-enrollment-sealed-types.workspace = true
+pontifex = { workspace = true, features = ["channel", "attestation"] }
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+url = "2"
+futures-util = { version = "0.3", features = ["sink"] }
+web-time = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio.workspace = true
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "=0.4.76"
+js-sys = "=0.3.103"
+web-sys = { version = "=0.3.103", features = ["WebSocket", "MessageEvent", "Event", "BinaryType", "AbortSignal"] }
+serde-wasm-bindgen = "0.6"
+futures-channel = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+[dev-dependencies]
+selfie-enrollment-enclave-types.workspace = true
