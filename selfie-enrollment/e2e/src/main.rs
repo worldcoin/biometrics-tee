@@ -81,6 +81,35 @@ fn read_key(path: &Path) -> Result<SigningKey> {
     );
     SigningKey::from_slice(&bytes).map_err(|_| anyhow!("invalid admission key"))
 }
+fn generate_keypair(directory: &Path) -> Result<()> {
+    std::fs::create_dir_all(directory)?;
+    let staging = tempfile::tempdir_in(directory)?;
+    let key = SigningKey::random(&mut rand::rngs::OsRng);
+    let private_name = "admission-private.hex";
+    let public_name = "admission-public.hex";
+    let mut private = create_private(&staging.path().join(private_name))?;
+    let mut public = create_private(&staging.path().join(public_name))?;
+    let secret = Zeroizing::new(hex::encode(key.to_bytes()));
+    writeln!(private, "{}", secret.as_str())?;
+    writeln!(
+        public,
+        "{}",
+        hex::encode(key.verifying_key().to_encoded_point(false).as_bytes())
+    )?;
+    private.sync_all()?;
+    public.sync_all()?;
+    // Hard links publish complete files without replacing an existing key.
+    let private_path = directory.join(private_name);
+    std::fs::hard_link(staging.path().join(private_name), &private_path)?;
+    if let Err(error) = std::fs::hard_link(
+        staging.path().join(public_name),
+        directory.join(public_name),
+    ) {
+        std::fs::remove_file(private_path)?;
+        return Err(error.into());
+    }
+    Ok(())
+}
 fn read_config(path: &Path) -> Result<Config> {
     let config: Config = serde_json::from_slice(&std::fs::read(path)?)?;
     config.validate()?;
@@ -147,18 +176,7 @@ async fn artifact(
 async fn main() -> Result<()> {
     match Args::parse().command {
         Command::Keygen { directory } => {
-            std::fs::create_dir_all(&directory)?;
-            let key = SigningKey::random(&mut rand::rngs::OsRng);
-            // Reserve both names before writing key material.
-            let mut private = create_private(&directory.join("admission-private.hex"))?;
-            let mut public = create_private(&directory.join("admission-public.hex"))?;
-            let secret = Zeroizing::new(hex::encode(key.to_bytes()));
-            writeln!(private, "{}", secret.as_str())?;
-            writeln!(
-                public,
-                "{}",
-                hex::encode(key.verifying_key().to_encoded_point(false).as_bytes())
-            )?;
+            generate_keypair(&directory)?;
             println!("Created issuer key pair; configure only admission-public.hex on the host.");
         }
         Command::Extract {
@@ -284,6 +302,32 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keygen_preserves_existing_files_and_can_retry_after_a_failed_pair() {
+        let temp = tempfile::tempdir().unwrap();
+        let private = temp.path().join("admission-private.hex");
+        let public = temp.path().join("admission-public.hex");
+        std::fs::write(&public, "existing").unwrap();
+        assert!(generate_keypair(temp.path()).is_err());
+        assert!(!private.exists());
+        assert_eq!(std::fs::read_to_string(&public).unwrap(), "existing");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        std::fs::remove_file(&public).unwrap();
+        generate_keypair(temp.path()).unwrap();
+        let key = read_key(&private).unwrap();
+        let expected = hex::encode(key.verifying_key().to_encoded_point(false).as_bytes());
+        assert_eq!(std::fs::read_to_string(&public).unwrap().trim(), expected);
+        assert!(generate_keypair(temp.path()).is_err());
+        assert_eq!(read_key(&private).unwrap().to_bytes(), key.to_bytes());
+        assert_eq!(std::fs::read_to_string(&public).unwrap().trim(), expected);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for file in [private, public] {
+                assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+            }
+        }
+    }
     #[test]
     fn issuer_is_bound_to_loopback_origin_and_never_overwrites_a_key() {
         let temp = tempfile::tempdir().unwrap();
