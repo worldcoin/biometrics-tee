@@ -10,6 +10,7 @@ members = [
     "migration/host",
     "migration/primitives",
     "migration/storage",
+    "migration/shares",
     "migration/api",
     "migration/client",
     "migration/cli",

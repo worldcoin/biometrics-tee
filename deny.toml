@@ -65,7 +65,9 @@ license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# Minijail is the only Git dependency.
+# Minijail and DI secret sharing, including its AES PRNG dependency.
 allow-git = [
     "https://github.com/google/minijail",
+    "https://github.com/worldcoin/ampc-common",
+    "https://github.com/tf-encrypted/aes-prng.git",
 ]
