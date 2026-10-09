@@ -20,7 +20,7 @@ fastrand.workspace = true
 proof.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
-telemetry-batteries = { workspace = true, features = ["axum"] }
+telemetry-batteries = { workspace = true, features = ["axum", "metrics-statsd"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
