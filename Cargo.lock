@@ -960,6 +960,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadence"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca08f6db9f0c963249cf23a27820f9d973d2acaad4d6bfaeb858b58ebd58a6a"
+dependencies = [
+ "crossbeam-channel",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2591,6 +2600,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "metrics-exporter-statsd"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57971e32cdee88619fb6c673fd89cfd37c12f2dd7c187fb400b7aae0ede0ed9e"
+dependencies = [
+ "cadence",
+ "metrics",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "migration-api"
 version = "0.1.0"
 dependencies = [
@@ -4075,6 +4095,7 @@ dependencies = [
  "eyre",
  "http",
  "metrics",
+ "metrics-exporter-statsd",
  "opentelemetry",
  "opentelemetry-datadog",
  "opentelemetry-http",
