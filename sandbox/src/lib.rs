@@ -10,7 +10,7 @@ mod bundle;
 mod config;
 mod connection;
 pub mod host;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "worker"))]
 mod process;
 mod transport;
 
@@ -20,7 +20,7 @@ pub use bundle::{
 };
 pub use config::BootstrapConfig;
 pub use connection::{ConnectionConfig, ConnectionError};
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "worker"))]
 pub use process::{SandboxConfig, WORKER_UID, Worker, WorkerError};
 
 /// vsock port on which the enclave accepts the worker bundle, once, from the parent.
