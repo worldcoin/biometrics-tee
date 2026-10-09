@@ -7,7 +7,27 @@ use std::io::Read;
 
 use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
 use di_migration_pcp::*;
+use orb_pcp_defs::v1;
 use serde_json::json;
+
+/// Synthetic multiframe image IDs in their canonical form.
+pub const FRAME_A: &str = "0012a0b1c2d3e4f5a6b7c8d901000000";
+pub const FRAME_B: &str = "0012a0b1c2d3e4f5a6b7c8d902000000";
+/// The signup ID `context()` assigns to the new package.
+pub const NEW_SIGNUP_ID: &str = "0012a0b1c2d3e4f5a6b7c8d900000000";
+
+/// Source iris code files, in the compact sorted encoding real sources use.
+pub const IRIS_CODES: &[u8] = br#"{"IRIS_version":"old","left_iris_code":"old-left-code"}"#;
+
+pub fn iris_code_share(index: usize, with_shares_version: bool) -> Vec<u8> {
+    let version = if with_shares_version {
+        r#""IRIS_shares_version":"old-shares","#
+    } else {
+        ""
+    };
+    format!(r#"{{{version}"IRIS_version":"old","left_iris_code_shares":"old-share-{index}"}}"#)
+        .into_bytes()
+}
 
 pub fn source_files(version: &str) -> Files {
     let timestamp = if version.starts_with("0.") {
@@ -24,7 +44,7 @@ pub fn source_files(version: &str) -> Files {
         "thumbnail_image_id": "face-id", "id_commitment": "original-commitment",
         "left_iris_code_aggregate_image_ids": ["old-aggregate"]
     });
-    [
+    let mut files: Files = [
         (
             "hashes.json",
             serde_json::to_vec(&json!({"version": version})).unwrap(),
@@ -34,10 +54,7 @@ pub fn source_files(version: &str) -> Files {
         ("iris/left_ir.png", b"synthetic-left-png".to_vec()),
         ("iris/right_ir.png", b"synthetic-right-png".to_vec()),
         ("face/thumbnail.png", b"synthetic-face-png".to_vec()),
-        (
-            "iris_codes.json",
-            b"{ \"IRIS_version\": \"old\", \"left_iris_code\": null }\n".to_vec(),
-        ),
+        ("iris_codes.json", IRIS_CODES.to_vec()),
         (
             "face_embeddings.json",
             b"[{\"head_pose\":{\"yaw\":1}}]".to_vec(),
@@ -45,60 +62,71 @@ pub fn source_files(version: &str) -> Files {
     ]
     .into_iter()
     .map(|(p, b)| (p.to_owned(), b))
-    .collect()
+    .collect();
+    for index in 0..3 {
+        files.insert(
+            format!("iris_code_shares_{index}.json"),
+            iris_code_share(index, true),
+        );
+    }
+    files
 }
 
 pub fn context() -> MigrationContext {
     MigrationContext {
-        tee_version: "0.1.0-test".into(),
+        tee_software_version: "0.1.0-test".into(),
         migrated_ts: 1800000000,
+        signup_id: NEW_SIGNUP_ID.parse().unwrap(),
     }
 }
 
 // Fixed, invented values for mapping and encoding checks; no inference runs.
 pub fn pipeline() -> PreparedBiometrics<'static> {
-    let iris_eye = || orb_pcp::DaugmanEyeData {
-        iris_code: Some("new-code"),
-        mask_code: Some("new-mask"),
-        iris_code_shares: ["code-0", "code-1", "code-2"],
-        mask_code_shares: ["mask-0", "mask-1", "mask-2"],
-    };
-    let di_eye = || orb_pcp::DiEyeData {
-        embedding: &[1, 2],
-        mirror_embedding: &[3, 4],
-        embedding_f32: &[0.1, 0.2],
-        mirror_embedding_f32: &[0.3, 0.4],
-        embedding_shares: [&[11, 12], &[21, 22], &[31, 32]],
-        mirror_embedding_shares: [&[13, 14], &[23, 24], &[33, 34]],
-    };
     let normalized = || orb_pcp::NormalizedIrisFrame {
         image: &[1; 16],
         mask: &[2; 16],
         image_resized: &[3; 8],
         mask_resized: &[4; 8],
     };
+    let model = || "1.2.3".to_owned();
+    let encoding = || "test-di-encoding".to_owned();
     PreparedBiometrics {
         biometric_pipeline_version: "pipeline-1".into(),
-        face_embeddings: vec![orb_pcp::FaceEmbedding {
-            embedding: "new-face",
-            embedding_type: "test-face",
-            embedding_version: "face-2",
-            embedding_inference_backend: "test-runtime",
+        face_embeddings: vec![v1::FaceEmbedding {
+            embedding: Some("new-face".into()),
+            embedding_type: Some("test-face".into()),
+            embedding_version: Some("face-2".into()),
+            embedding_inference_backend: Some("test-runtime".into()),
         }],
-        daugman: orb_pcp::DaugmanData {
-            iris_version: Some("iris-1"),
-            shares_version: "test-iris-shares",
-            left: iris_eye(),
-            right: iris_eye(),
+        di_embeddings: v1::DiIrisEmbeddings {
+            embedding_v1: Some(v1::DiIrisEmbeddingV1 {
+                model_version: model(),
+                embedding_inference_backend: "test-runtime".into(),
+                embedding_version: encoding(),
+                left_embedding: vec![1, 2],
+                left_mirror_embedding: vec![3, 4],
+                right_embedding: vec![1, 2],
+                right_mirror_embedding: vec![3, 4],
+                left_embedding_f32: vec![0.1, 0.2],
+                left_mirror_embedding_f32: vec![0.3, 0.4],
+                right_embedding_f32: vec![0.1, 0.2],
+                right_mirror_embedding_f32: vec![0.3, 0.4],
+            }),
         },
-        di: orb_pcp::DiData {
-            model_version: "1.2.3",
-            inference_backend: "test-runtime",
-            embedding_version: "test-di-encoding",
-            shares_version: "test-di-shares",
-            left: Some(di_eye()),
-            right: Some(di_eye()),
-        },
+        di_embedding_shares: [1u32, 2, 3].map(|recipient| {
+            let base = 10 * recipient;
+            v1::DiIrisEmbeddingShares {
+                share_v1: Some(v1::DiIrisEmbeddingShareV1 {
+                    model_version: model(),
+                    shares_version: "test-di-shares".into(),
+                    embedding_version: encoding(),
+                    left_share: vec![base + 1, base + 2],
+                    left_mirror_share: vec![base + 3, base + 4],
+                    right_share: vec![base + 1, base + 2],
+                    right_mirror_share: vec![base + 3, base + 4],
+                }),
+            }
+        }),
         left_normalized: normalized(),
         right_normalized: normalized(),
         extra_normalized: Default::default(),
@@ -146,11 +174,9 @@ impl OutputKeys {
 }
 
 /// Opened package members. Inner-archive members use the logical
-/// `<archive stem>/<member>` paths of `SourcePcp`; `legacy/` members are keyed
-/// by basename in `legacy`.
+/// `<archive stem>/<member>` paths of `SourcePcp`.
 pub struct OpenedPcp {
     pub files: Files,
-    pub legacy: Files,
     pub signed_digest: [u8; 32],
 }
 
@@ -172,10 +198,8 @@ pub fn build_and_open(
     })
     .unwrap()
     .unwrap();
-    let (files, legacy) = open(&package, &keys);
     OpenedPcp {
-        files,
-        legacy,
+        files: open(&package, &keys),
         signed_digest: signed_digest.unwrap(),
     }
 }
@@ -195,9 +219,8 @@ pub fn check_request(
     )
 }
 
-/// Decrypt a v2-envelope package: everything is in tier 0, tiers 1 and 2 are
-/// empty archives. Returns opened members and `legacy/` members.
-pub fn open(package: &orb_pcp::Package, keys: &OutputKeys) -> (Files, Files) {
+/// Decrypt a package: everything is in tier 0, tiers 1 and 2 are empty archives.
+pub fn open(package: &orb_pcp::Package, keys: &OutputKeys) -> Files {
     let tier = |bytes: &[u8]| {
         let gzip = unseal(bytes, &keys.user);
         let mut tar = Vec::new();
@@ -208,12 +231,7 @@ pub fn open(package: &orb_pcp::Package, keys: &OutputKeys) -> (Files, Files) {
     };
     assert!(tier(&package.tier1).is_empty() && tier(&package.tier2).is_empty());
     let mut files = Files::new();
-    let mut legacy = Files::new();
     for (name, bytes) in tier(&package.tier0) {
-        if let Some(name) = name.strip_prefix("legacy/") {
-            assert!(legacy.insert(name.to_owned(), bytes).is_none());
-            continue;
-        }
         let Some(stem) = name.strip_suffix(".tar") else {
             assert!(files.insert(name, bytes).is_none());
             continue;
@@ -229,7 +247,7 @@ pub fn open(package: &orb_pcp::Package, keys: &OutputKeys) -> (Files, Files) {
             assert!(files.insert(format!("{stem}/{member}"), bytes).is_none());
         }
     }
-    (files, legacy)
+    files
 }
 
 fn unseal(ciphertext: &[u8], pair: &sealedbox::Keypair) -> Vec<u8> {

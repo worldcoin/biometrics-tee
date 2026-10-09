@@ -10,12 +10,12 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-base64.workspace = true
 sha2 = "0.10"
-# Shared PCP builder and protobuf definitions, pinned to one revision so both
-# use the same generated types. This revision supports migration builds.
-orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "b411f5dec7c9b3110f7a8038dec729d4b5153427" }
-orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "b411f5dec7c9b3110f7a8038dec729d4b5153427" }
+# Shared PCP builder, protobuf definitions and signup IDs, pinned to one
+# revision so they share the generated types.
+orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "9b86ab5cfeab1b0f2c936295be88a2040a49624b" }
+orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "9b86ab5cfeab1b0f2c936295be88a2040a49624b" }
+orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "9b86ab5cfeab1b0f2c936295be88a2040a49624b" }
 
 [dev-dependencies]
 alkali = { version = "0.3", features = ["use-pkg-config"] }

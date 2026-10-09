@@ -1608,10 +1608,10 @@ name = "di-migration-pcp"
 version = "0.1.0"
 dependencies = [
  "alkali",
- "base64 0.22.1",
  "flate2",
  "orb-pcp",
  "orb-pcp-defs",
+ "orb-wld-data-id",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -1735,6 +1735,12 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ecdsa"
@@ -3101,13 +3107,14 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orb-pcp"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=b411f5dec7c9b3110f7a8038dec729d4b5153427#b411f5dec7c9b3110f7a8038dec729d4b5153427"
+source = "git+https://github.com/worldcoin/orb-software?rev=9b86ab5cfeab1b0f2c936295be88a2040a49624b#9b86ab5cfeab1b0f2c936295be88a2040a49624b"
 dependencies = [
  "alkali",
  "data-encoding",
  "flate2",
  "hyrax",
  "orb-pcp-defs",
+ "orb-wld-data-id",
  "rand 0.8.8",
  "ring",
  "serde_json",
@@ -3119,13 +3126,26 @@ dependencies = [
 [[package]]
 name = "orb-pcp-defs"
 version = "0.0.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=b411f5dec7c9b3110f7a8038dec729d4b5153427#b411f5dec7c9b3110f7a8038dec729d4b5153427"
+source = "git+https://github.com/worldcoin/orb-software?rev=9b86ab5cfeab1b0f2c936295be88a2040a49624b#9b86ab5cfeab1b0f2c936295be88a2040a49624b"
 dependencies = [
  "pbjson",
  "pbjson-build",
  "prost",
  "prost-build",
  "serde",
+]
+
+[[package]]
+name = "orb-wld-data-id"
+version = "0.0.0"
+source = "git+https://github.com/worldcoin/orb-software?rev=9b86ab5cfeab1b0f2c936295be88a2040a49624b#9b86ab5cfeab1b0f2c936295be88a2040a49624b"
+dependencies = [
+ "eyre",
+ "rand 0.8.8",
+ "schemars",
+ "serde",
+ "sha2 0.10.9",
+ "uuid",
 ]
 
 [[package]]
@@ -3898,6 +3918,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
+dependencies = [
+ "dyn-clone",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e265784ad618884abaea0600a9adf15393368d840e0222d101a072f3f7534d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "sec1"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3986,6 +4030,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.29.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

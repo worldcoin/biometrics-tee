@@ -1,10 +1,10 @@
 //! Invented per-version profiles for mapping coverage, not captured packages.
 
-use super::source_files;
+use crate::support::{FRAME_A, iris_code_share, source_files};
 use di_migration_pcp::Files;
 use serde_json::{Value, json};
 
-pub fn legacy_profile(version: &str, optional: bool) -> Files {
+pub fn version_profile(version: &str, optional: bool) -> Files {
     let mut files = source_files(version);
     let face = if version == "0.3" {
         json!([
@@ -26,10 +26,9 @@ pub fn legacy_profile(version: &str, optional: bool) -> Files {
         info.remove("thumbnail_image_id");
     } else {
         info.insert("qr_code".into(), json!("synthetic-qr"));
-        // Standard Base64 of the synthetic bytes `synthetic-certificate`.
         info.insert(
             "orb_public_key_certificate".into(),
-            json!("c3ludGhldGljLWNlcnRpZmljYXRl"),
+            json!("synthetic-certificate"),
         );
     }
     if ("2.1"..="2.8").contains(&version) {
@@ -46,13 +45,14 @@ pub fn legacy_profile(version: &str, optional: bool) -> Files {
         files.remove("face/thumbnail.png");
         files.remove("face_embeddings.json");
     }
-    if version != "2.0" || optional {
-        for index in 0..3 {
-            files.insert(
-                format!("iris_code_shares_{index}.json"),
-                serde_json::to_vec(&json!({"IRIS_shares_version":"old", "recipient":index}))
-                    .unwrap(),
-            );
+    for index in 0..3 {
+        let name = format!("iris_code_shares_{index}.json");
+        // 2.0 packages may lack shares; 2.0 and 2.1 shares have no sharing version.
+        if version == "2.0" && !optional {
+            files.remove(&name);
+        } else {
+            let with_version = !matches!(version, "2.0" | "2.1");
+            files.insert(name, iris_code_share(index, with_version));
         }
     }
     if optional && ("2.5"..="2.8").contains(&version) {
@@ -66,18 +66,18 @@ pub fn legacy_profile(version: &str, optional: bool) -> Files {
         );
     }
     if ("2.6"..="2.8").contains(&version) {
-        info.insert("left_ir_multiframe_image_ids".into(), json!(["extra-left"]));
+        info.insert("left_ir_multiframe_image_ids".into(), json!([FRAME_A]));
         info.insert("right_ir_multiframe_image_ids".into(), json!([]));
         info.insert(
             "left_iris_code_aggregate_image_ids".into(),
-            json!(["left-id", "extra-left"]),
+            json!(["left-id", FRAME_A]),
         );
         files.insert(
-            "iris/extra-left.png".into(),
+            format!("iris/{FRAME_A}.png"),
             b"synthetic-extra-frame".to_vec(),
         );
         files.insert(
-            "normalized_iris/extra-left_normalized_image.bin".into(),
+            format!("normalized_iris/{FRAME_A}_normalized_image.bin"),
             b"old-extra-normalization".to_vec(),
         );
     }

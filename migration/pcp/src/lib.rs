@@ -1,4 +1,4 @@
-//! Migrate opened legacy PCPs to the shared builder's migration format.
+//! Migrate opened PCPs with the shared PCP builder.
 //!
 //! [`SourcePcp::parse`] reads an opened source, [`with_build_request`] turns it and
 //! this run's prepared biometrics into the shared builder's request, and
@@ -8,14 +8,12 @@
 
 mod builder;
 mod mapping;
-mod models;
 mod preservation;
-mod schema;
 mod source;
 
-pub use builder::{OUTPUT_VERSION, OutputRecipients, with_build_request};
-pub use mapping::{MigrationContext, PreparedBiometrics, generate_migration_signup_id};
-pub use models::*;
+pub use builder::{OutputRecipients, with_build_request};
+pub use mapping::{MigrationContext, PreparedBiometrics};
+pub use orb_wld_data_id::{S3Region, SignupId};
 pub use preservation::verify_completed_pcp;
 pub use source::{PipelineInputs, SourcePcp, SourceVersion};
 
@@ -40,7 +38,7 @@ pub enum Error {
     InvalidProtobuf(&'static str),
     #[error("invalid or missing field: {0}")]
     InvalidField(&'static str),
-    #[error("source lacks capture metadata the PCP builder requires: {0}")]
+    #[error("source lacks a required capture field: {0}")]
     MissingCaptureField(&'static str),
     #[error("artifact count or size exceeds the mapping limit")]
     SizeLimit,

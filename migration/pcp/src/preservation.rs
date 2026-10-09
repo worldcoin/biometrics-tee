@@ -5,34 +5,32 @@
 
 use std::collections::BTreeMap;
 
-use orb_pcp_defs::{prost::Message, v1::Migration};
+use orb_pcp_defs::{prost::Message, v1};
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-use crate::mapping::signup_ids;
-use crate::source::{legacy_artifact, raw_image, required};
-use crate::{
-    Error, Files, Info, MigrationContext, OUTPUT_VERSION, PreparedBiometrics, SourcePcp, parse_json,
-};
+use crate::source::{IRIS_CODE_FILES, normalized_artifact, raw_image, required};
+use crate::{Error, Files, MigrationContext, PreparedBiometrics, SourcePcp, parse_json};
 
 /// Check a completed migration package before returning or publishing it.
 ///
 /// `files` holds the opened package: top-level members by name and inner-archive
-/// members as `<archive stem>/<member>`, the logical paths of `SourcePcp`.
-/// `legacy` holds the members under `legacy/` by file name. The extractor must
-/// reject duplicate archive members before building either map.
+/// members as `<archive stem>/<member>`, the logical paths of `SourcePcp`. The
+/// extractor must reject duplicate archive members before building it.
 ///
-/// - Raw captures and `legacy/` members equal the source bytes, including JSON
+/// - Raw captures, iris codes and shares equal the source bytes, including JSON
 ///   formatting; none is missing or added.
-/// - `info.json` is compact with sorted keys, carries the derived signup ID, keeps
-///   every other capture field of the source after timestamp normalization, and
-///   has a 32-hex-digit salt exactly for each present salted value.
+/// - The normalized iris images and masks are exactly this run's.
+/// - `info.json` is compact with sorted keys, carries the context's signup ID,
+///   keeps every other field of the source that `pcp.v1.Info` defines, and has a
+///   32-hex-digit salt exactly for each present salted value.
 /// - `migration.pb` matches the source and the run's `context` and pipeline version.
-/// - `hashes.json` is compact with sorted keys, has `OUTPUT_VERSION`, and its entries
-///   match the SHA-256 of every emitted member and salted value one to one.
+/// - `hashes.json` is compact with sorted keys, has `orb_pcp::PCP_VERSION`, and
+///   its entries match the SHA-256 of every emitted member and salted value one
+///   to one.
 ///
 /// It does not verify `hashes.sign` against the enclave key, recipient
-/// encryption or fresh biometric values. Propagate any error as a migration
+/// encryption or fresh face and DI values. Propagate any error as a migration
 /// failure; never publish on failure. Errors contain bounded reason codes, not
 /// paths, identifiers or payloads.
 pub fn verify_completed_pcp(
@@ -40,36 +38,94 @@ pub fn verify_completed_pcp(
     biometrics: &PreparedBiometrics<'_>,
     context: &MigrationContext,
     files: &Files,
-    legacy: &Files,
 ) -> Result<(), Error> {
-    verify_artifacts(source, files, legacy)?;
-    let (source_signup_id, signup_id) = signup_ids(source, biometrics)?;
-    let info = verify_info(source, &signup_id, files)?;
-    let expected = Migration {
-        tee_version: Some(context.tee_version.clone()),
-        src_signup_id: Some(source_signup_id.to_owned()),
-        source_pcp_version: Some(source.version.as_str().to_owned()),
-        migrated_ts: Some(context.migrated_ts),
-        biometric_pipeline_version: Some(biometrics.biometric_pipeline_version.clone()),
-    };
-    verify_migration(source, &expected, files)?;
+    verify_preserved(source, files)?;
+    verify_normalized(biometrics, files)?;
+    let info = verify_info(source, &context.signup_id.to_string(), files)?;
+    let expected = crate::builder::migration(source, biometrics, context);
+    verify_migration(&expected, files)?;
     verify_manifest(&info, files)
 }
 
-fn verify_info(source: &SourcePcp, signup_id: &str, files: &Files) -> Result<Info, Error> {
+/// Members carried over byte for byte from the source.
+fn preserved(path: &str) -> bool {
+    raw_image(path) || IRIS_CODE_FILES.contains(&path)
+}
+
+fn verify_preserved(source: &SourcePcp, files: &Files) -> Result<(), Error> {
+    for (path, original) in source.files.iter().filter(|(path, _)| preserved(path)) {
+        let copy = files
+            .get(path)
+            .ok_or(Error::PreservationMismatch("preserved_artifact_missing"))?;
+        if copy != original {
+            return Err(Error::PreservationMismatch("preserved_artifact_changed"));
+        }
+    }
+    if files
+        .keys()
+        .any(|path| preserved(path) && !source.files.contains_key(path))
+    {
+        return Err(Error::PreservationMismatch("preserved_artifact_unexpected"));
+    }
+    Ok(())
+}
+
+/// The normalized images and masks are this run's, one set per normalized
+/// frame; the builder's commitments over them are covered by the manifest.
+fn verify_normalized(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Result<(), Error> {
+    let mut expected = BTreeMap::new();
+    let frames = [
+        ("left", &biometrics.left_normalized),
+        ("right", &biometrics.right_normalized),
+    ]
+    .into_iter()
+    .chain(
+        biometrics
+            .extra_normalized
+            .iter()
+            .map(|(id, frame)| (id.as_str(), frame)),
+    );
+    for (prefix, frame) in frames {
+        for (kind, bytes) in [
+            ("image", frame.image),
+            ("mask", frame.mask),
+            ("image_resized", frame.image_resized),
+            ("mask_resized", frame.mask_resized),
+        ] {
+            expected.insert(
+                format!("normalized_iris/{prefix}_normalized_{kind}.bin"),
+                bytes,
+            );
+        }
+    }
+    let actual: BTreeMap<_, _> = files
+        .iter()
+        .filter(|(path, _)| {
+            normalized_artifact(path)
+                && !path.contains("_commitment")
+                && !path.contains("_blinding_factors")
+        })
+        .map(|(path, bytes)| (path.clone(), bytes.as_slice()))
+        .collect();
+    if actual != expected {
+        return Err(Error::OutputMismatch("normalized_iris_mismatch"));
+    }
+    Ok(())
+}
+
+fn verify_info(source: &SourcePcp, signup_id: &str, files: &Files) -> Result<v1::Info, Error> {
     let bytes = required(files, "info.json")?;
     canonical::<BTreeMap<String, serde_json::Value>>(
         bytes,
         "info.json",
         "info_json_not_canonical",
     )?;
-    let info: Info = parse_json(bytes, "info.json")?;
-    if info.signup_id.as_deref() != Some(signup_id) {
+    let actual: v1::Info = parse_json(bytes, "info.json")?;
+    if actual.signup_id.as_deref() != Some(signup_id) {
         return Err(Error::OutputMismatch("signup_id_mismatch"));
     }
-    let actual: orb_pcp_defs::v1::Info = info.clone().into();
-    let mut expected: orb_pcp_defs::v1::Info = source.info.clone().into();
     // The signup ID changes and every salt is regenerated; both are checked separately.
+    let mut expected = source.info.clone();
     expected.signup_id.clone_from(&actual.signup_id);
     expected.signup_id_salt.clone_from(&actual.signup_id_salt);
     expected
@@ -96,7 +152,7 @@ fn verify_info(source: &SourcePcp, signup_id: &str, files: &Files) -> Result<Inf
     if actual != expected {
         return Err(Error::PreservationMismatch("capture_metadata_changed"));
     }
-    for (_, value, salt) in salted_values(&info) {
+    for (_, value, salt) in salted_values(&actual) {
         match (value, salt) {
             (None, None) => {}
             (Some(_), Some(salt))
@@ -104,17 +160,18 @@ fn verify_info(source: &SourcePcp, signup_id: &str, files: &Files) -> Result<Inf
             _ => return Err(Error::OutputMismatch("salt_invalid")),
         }
     }
-    Ok(info)
+    Ok(actual)
 }
 
-fn verify_migration(source: &SourcePcp, expected: &Migration, files: &Files) -> Result<(), Error> {
+fn verify_migration(expected: &v1::Migration, files: &Files) -> Result<(), Error> {
     let bytes = required(files, "migration.pb")?;
     if bytes.len() > 1024 * 1024 {
         return Err(Error::SizeLimit);
     }
-    let migration = Migration::decode(bytes).map_err(|_| Error::InvalidProtobuf("migration.pb"))?;
+    let migration =
+        v1::Migration::decode(bytes).map_err(|_| Error::InvalidProtobuf("migration.pb"))?;
     if migration.src_signup_id != expected.src_signup_id
-        || migration.source_pcp_version.as_deref() != Some(source.version.as_str())
+        || migration.source_pcp_version != expected.source_pcp_version
     {
         return Err(Error::PreservationMismatch("migration_source_mismatch"));
     }
@@ -125,16 +182,15 @@ fn verify_migration(source: &SourcePcp, expected: &Migration, files: &Files) -> 
 }
 
 /// Recompute every manifest entry: `value || salt` for each salted value, and
-/// each emitted member by its archive member name. `legacy/` members are
-/// covered by their original manifest instead.
-fn verify_manifest(info: &Info, files: &Files) -> Result<(), Error> {
+/// each emitted member by its archive member name.
+fn verify_manifest(info: &v1::Info, files: &Files) -> Result<(), Error> {
     let mut manifest: BTreeMap<String, String> = canonical(
         required(files, "hashes.json")?,
         "hashes.json",
         "manifest_not_canonical",
     )?;
     required(files, "hashes.sign")?;
-    if manifest.remove("version").as_deref() != Some(OUTPUT_VERSION.label()) {
+    if manifest.remove("version").as_deref() != Some(orb_pcp::PCP_VERSION) {
         return Err(Error::OutputMismatch("manifest_version"));
     }
     let mut expected = BTreeMap::new();
@@ -174,7 +230,7 @@ fn verify_manifest(info: &Info, files: &Files) -> Result<(), Error> {
 }
 
 /// The salted capture values, in the shared builder's manifest names.
-fn salted_values(info: &Info) -> [(&'static str, Option<&str>, Option<&str>); 10] {
+fn salted_values(info: &v1::Info) -> [(&'static str, Option<&str>, Option<&str>); 10] {
     [
         ("signup_id", &info.signup_id, &info.signup_id_salt),
         (
@@ -224,39 +280,4 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
-}
-
-fn verify_artifacts(source: &SourcePcp, files: &Files, legacy: &Files) -> Result<(), Error> {
-    required(&source.files, "hashes.json")?;
-    required(&source.files, "hashes.sign")?;
-    for (path, original) in &source.files {
-        let (target, missing, changed) = if raw_image(path) {
-            (files, "raw_image_missing", "raw_image_changed")
-        } else if legacy_artifact(path) {
-            (legacy, "legacy_artifact_missing", "legacy_artifact_changed")
-        } else {
-            // Byte preservation applies to raw captures and the legacy inventory.
-            // Capture metadata is checked field by field.
-            continue;
-        };
-        let copy = target
-            .get(path)
-            .ok_or(Error::PreservationMismatch(missing))?;
-        if copy.as_slice() != original.as_slice() {
-            return Err(Error::PreservationMismatch(changed));
-        }
-    }
-    if files
-        .keys()
-        .any(|path| raw_image(path) && !source.files.contains_key(path))
-    {
-        return Err(Error::PreservationMismatch("raw_image_unexpected"));
-    }
-    if legacy
-        .keys()
-        .any(|path| !legacy_artifact(path) || !source.files.contains_key(path))
-    {
-        return Err(Error::PreservationMismatch("legacy_artifact_unexpected"));
-    }
-    Ok(())
 }

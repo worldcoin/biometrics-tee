@@ -5,14 +5,17 @@
 mod profiles;
 mod support;
 
+use std::collections::BTreeMap;
+
 use di_migration_pcp::*;
 use orb_pcp_defs::prost::Message;
-use orb_pcp_defs::v1::Migration;
-use profiles::legacy_profile;
+use orb_pcp_defs::v1::{self, Migration};
+use profiles::version_profile;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use support::{
-    OutputKeys, SIGNATURE, build_and_open, check_request, context, pipeline, source_files,
+    FRAME_A, NEW_SIGNUP_ID, OutputKeys, SIGNATURE, build_and_open, check_request, context,
+    pipeline, source_files,
 };
 
 fn json_file(files: &Files, name: &str) -> Value {
@@ -30,27 +33,30 @@ fn json_file(files: &Files, name: &str) -> Value {
 /// - the signature callback received the digest of the new `hashes.json`;
 /// - each version's expected capture values, written out as literals;
 /// - every `migration.pb` field;
-/// - the fresh face, iris and DI outputs the builder encoded.
+/// - the fresh face and DI outputs the builder encoded.
 ///
 /// Inference outputs are the fixed synthetic values from `pipeline()`.
 fn round_trip(version: &str, optional: bool) {
-    let old = legacy_profile(version, optional);
+    let old = version_profile(version, optional);
     let source = SourcePcp::parse(old.clone()).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
     // This is the final gate, after the output has been built and reopened. The
     // reference is still the original source, not a copy from the new package.
-    verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
+    verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
 
     assert_eq!(
         new.signed_digest,
         <[u8; 32]>::from(Sha256::digest(&new.files["hashes.json"]))
     );
     assert_eq!(new.files["hashes.sign"], SIGNATURE);
+    assert_eq!(
+        json_file(&new.files, "hashes.json")["version"],
+        orb_pcp::PCP_VERSION
+    );
 
-    let info: orb_pcp_defs::v1::Info = serde_json::from_slice(&new.files["info.json"]).unwrap();
-    let signup_id = "synthetic-orb-signup_di_v1.2.3";
-    assert_eq!(info.signup_id.as_deref(), Some(signup_id));
+    let info: v1::Info = serde_json::from_slice(&new.files["info.json"]).unwrap();
+    assert_eq!(info.signup_id.as_deref(), Some(NEW_SIGNUP_ID));
     // The builder regenerates every salt; the final check verifies their hashes.
     assert_eq!(info.timestamp.as_deref(), Some("1700000000"));
     assert!(info.timestamp_salt.is_some());
@@ -79,7 +85,7 @@ fn round_trip(version: &str, optional: bool) {
         if version == "0.3" {
             None
         } else {
-            Some("c3ludGhldGljLWNlcnRpZmljYXRl")
+            Some("synthetic-certificate")
         }
     );
     assert_eq!(
@@ -117,7 +123,7 @@ fn round_trip(version: &str, optional: bool) {
     assert_eq!(
         info.left_iris_code_aggregate_image_ids,
         if ("2.6"..="2.8").contains(&version) {
-            vec!["left-id", "extra-left"]
+            vec!["left-id", FRAME_A]
         } else {
             vec![]
         }
@@ -126,7 +132,7 @@ fn round_trip(version: &str, optional: bool) {
     assert_eq!(
         info.left_ir_multiframe_image_ids,
         if ("2.6"..="2.8").contains(&version) {
-            vec!["extra-left"]
+            vec![FRAME_A]
         } else {
             vec![]
         }
@@ -139,7 +145,10 @@ fn round_trip(version: &str, optional: bool) {
         Some("synthetic-orb-signup")
     );
     assert_eq!(migration.source_pcp_version.as_deref(), Some(version));
-    assert_eq!(migration.tee_version.as_deref(), Some("0.1.0-test"));
+    assert_eq!(
+        migration.tee_software_version.as_deref(),
+        Some("0.1.0-test")
+    );
     assert_eq!(migration.migrated_ts, Some(1800000000));
     assert_eq!(
         migration.biometric_pipeline_version.as_deref(),
@@ -147,10 +156,9 @@ fn round_trip(version: &str, optional: bool) {
     );
 
     assert_ne!(new.files["hashes.json"], old["hashes.json"]);
-    assert!(
-        !new.files
-            .contains_key("normalized_iris/extra-left_normalized_image.bin"),
-        "old extra-frame normalization must not be relabeled as fresh output"
+    assert_eq!(
+        new.files.contains_key("iris_code_shares_0.json"),
+        version != "2.0" || optional
     );
 
     // Fresh outputs, encoded by the shared builder.
@@ -164,26 +172,8 @@ fn round_trip(version: &str, optional: bool) {
             "embedding_inference_backend": "test-runtime",
         }])
     );
-    let iris = json_file(&new.files, "iris_codes.json");
-    assert_eq!(iris["IRIS_version"], "iris-1");
-    for side in ["left", "right"] {
-        assert_eq!(iris[format!("{side}_iris_code")], "new-code");
-        assert_eq!(iris[format!("{side}_mask_code")], "new-mask");
-    }
     for i in 0..3 {
-        let share = json_file(&new.files, &format!("iris_code_shares_{i}.json"));
-        assert_eq!(share["IRIS_shares_version"], "test-iris-shares");
-        for side in ["left", "right"] {
-            assert_eq!(
-                share[format!("{side}_iris_code_shares")],
-                format!("code-{i}")
-            );
-            assert_eq!(
-                share[format!("{side}_mask_code_shares")],
-                format!("mask-{i}")
-            );
-        }
-        let di = orb_pcp_defs::v1::DiIrisEmbeddingShares::decode(
+        let di = v1::DiIrisEmbeddingShares::decode(
             new.files[&format!("di_iris_embeddings_shares_{i}.pb")].as_slice(),
         )
         .unwrap()
@@ -193,26 +183,16 @@ fn round_trip(version: &str, optional: bool) {
         assert_eq!(di.left_share, [first + 1, first + 2]);
         assert_eq!(di.right_mirror_share, [first + 3, first + 4]);
     }
-    let di =
-        orb_pcp_defs::v1::DiIrisEmbeddings::decode(new.files["di_iris_embeddings.pb"].as_slice())
-            .unwrap()
-            .embedding_v1
-            .unwrap();
+    let di = v1::DiIrisEmbeddings::decode(new.files["di_iris_embeddings.pb"].as_slice())
+        .unwrap()
+        .embedding_v1
+        .unwrap();
     assert_eq!(di.model_version, "1.2.3");
     assert_eq!(di.embedding_inference_backend, "test-runtime");
     assert_eq!(di.left_embedding, [1, 2]);
     assert_eq!(di.right_mirror_embedding, [3, 4]);
     assert_eq!(di.left_embedding_f32, [0.1, 0.2]);
     for side in ["left", "right"] {
-        for (kind, bytes) in [
-            ("image", &[1u8; 16][..]),
-            ("mask", &[2; 16]),
-            ("image_resized", &[3; 8]),
-            ("mask_resized", &[4; 8]),
-        ] {
-            let name = format!("normalized_iris/{side}_normalized_{kind}.bin");
-            assert_eq!(new.files[&name], bytes, "{name}");
-        }
         // Generated by the builder; Hyrax leaves them empty for inputs of at
         // most 256 bytes, such as these synthetic frames.
         for derived in ["commitment", "blinding_factors"] {
@@ -246,22 +226,38 @@ fn optional_artifacts_can_be_absent() {
     for version in ["2.0", "2.5", "2.6", "2.7", "2.8"] {
         round_trip(version, false);
     }
-    // Every optional legacy file of a complete source may be missing.
+    // Every file of a complete source other than the pipeline images, the
+    // signed manifest and `info.json` may be missing.
     let (bio, ctx) = (pipeline(), context());
-    let complete = SourcePcp::parse(legacy_profile("2.8", true)).unwrap();
-    let legacy = build_and_open(&complete, &bio, &ctx).legacy;
-    for name in legacy.keys().filter(|name| !name.starts_with("hashes.")) {
-        let mut old = legacy_profile("2.8", true);
+    let complete = version_profile("2.8", true);
+    for name in complete.keys().filter(|name| {
+        !matches!(
+            name.as_str(),
+            "iris/left_ir.png"
+                | "iris/right_ir.png"
+                | "face/thumbnail.png"
+                | "hashes.json"
+                | "hashes.sign"
+                | "info.json"
+        )
+    }) {
+        let mut old = complete.clone();
         old.remove(name);
+        if name.starts_with("iris/") {
+            // A missing multiframe capture is also no longer listed.
+            let mut info = json_file(&old, "info.json");
+            info["left_ir_multiframe_image_ids"] = json!([]);
+            old.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
+        }
         let source = SourcePcp::parse(old).unwrap();
         let new = build_and_open(&source, &bio, &ctx);
-        verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
+        verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
     }
 }
 
 #[test]
 fn opened_thermal_and_fraud_images_use_their_modality_archives() {
-    let mut old = legacy_profile("2.8", true);
+    let mut old = version_profile("2.8", true);
     for name in ["scc_rgb", "left_rgb", "right_rgb", "left_depth"] {
         old.insert(
             format!("fraud/{name}.png"),
@@ -271,7 +267,7 @@ fn opened_thermal_and_fraud_images_use_their_modality_archives() {
     let source = SourcePcp::parse(old.clone()).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
-    verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
+    verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
     for name in [
         "face_ir_and_thermal/face_ir.png",
         "face_ir_and_thermal/thermal.png",
@@ -293,80 +289,65 @@ fn opened_thermal_and_fraud_images_use_their_modality_archives() {
 
 #[test]
 fn v0_2_without_thumbnail_has_no_new_pcp() {
-    let source = SourcePcp::parse(legacy_profile("0.2", true)).unwrap();
     assert_eq!(
-        check_request(&source, &pipeline(), &context()).err(),
+        SourcePcp::parse(version_profile("0.2", true)).err(),
         Some(Error::MissingArtifact("face/thumbnail.png"))
     );
 }
 
 #[test]
 fn every_preserved_member_must_be_present_and_byte_identical_at_completion() {
-    let old = legacy_profile("2.8", true);
+    let old = version_profile("2.8", true);
     let source = SourcePcp::parse(old).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
-    for is_legacy in [false, true] {
-        let members = if is_legacy { &new.legacy } else { &new.files };
-        for name in members
-            .keys()
-            .filter(|name| is_legacy || name.ends_with(".png"))
-        {
-            for missing in [false, true] {
-                let mut files = new.files.clone();
-                let mut legacy = new.legacy.clone();
-                let target = if is_legacy { &mut legacy } else { &mut files };
-                if missing {
-                    target.remove(name);
-                } else {
-                    target.get_mut(name).unwrap()[0] ^= 1;
-                }
-                let reason = match (is_legacy, missing) {
-                    (true, true) => "legacy_artifact_missing",
-                    (true, false) => "legacy_artifact_changed",
-                    (false, true) => "raw_image_missing",
-                    (false, false) => "raw_image_changed",
-                };
-                assert_eq!(
-                    verify_completed_pcp(&source, &bio, &ctx, &files, &legacy),
-                    Err(Error::PreservationMismatch(reason))
-                );
+    for name in new
+        .files
+        .keys()
+        .filter(|name| name.ends_with(".png") || name.starts_with("iris_code"))
+    {
+        for missing in [false, true] {
+            let mut files = new.files.clone();
+            if missing {
+                files.remove(name);
+            } else {
+                files.get_mut(name).unwrap()[0] ^= 1;
             }
+            let reason = if missing {
+                "preserved_artifact_missing"
+            } else {
+                "preserved_artifact_changed"
+            };
+            assert_eq!(
+                verify_completed_pcp(&source, &bio, &ctx, &files),
+                Err(Error::PreservationMismatch(reason)),
+                "{name}"
+            );
         }
     }
     // Even semantically equivalent original JSON must remain byte-identical.
-    let mut legacy = new.legacy.clone();
-    legacy.get_mut("iris_codes.json").unwrap().push(b' ');
+    let mut files = new.files.clone();
+    files.get_mut("iris_codes.json").unwrap().push(b' ');
     assert_eq!(
-        verify_completed_pcp(&source, &bio, &ctx, &new.files, &legacy),
-        Err(Error::PreservationMismatch("legacy_artifact_changed"))
+        verify_completed_pcp(&source, &bio, &ctx, &files),
+        Err(Error::PreservationMismatch("preserved_artifact_changed"))
     );
 }
 
 #[test]
-fn completion_rejects_fabricated_history_and_changed_capture_fields() {
-    let source = SourcePcp::parse(legacy_profile("2.0", false)).unwrap();
+fn completion_rejects_fabricated_members_and_changed_capture_fields() {
+    let source = SourcePcp::parse(version_profile("2.0", false)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
-    for name in [
-        "iris_code_shares_0.json",
-        "info.json",
-        "backend_keys.json",
-        "face_ir_and_thermal.tar",
-    ] {
-        let mut legacy = new.legacy.clone();
-        legacy.insert(name.into(), vec![1]);
+    for name in ["iris/invented.png", "iris_code_shares_0.json"] {
+        let mut files = new.files.clone();
+        files.insert(name.into(), vec![1]);
         assert_eq!(
-            verify_completed_pcp(&source, &bio, &ctx, &new.files, &legacy),
-            Err(Error::PreservationMismatch("legacy_artifact_unexpected"))
+            verify_completed_pcp(&source, &bio, &ctx, &files),
+            Err(Error::PreservationMismatch("preserved_artifact_unexpected")),
+            "{name}"
         );
     }
-    let mut files = new.files.clone();
-    files.insert("iris/invented.png".into(), vec![1]);
-    assert_eq!(
-        verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy),
-        Err(Error::PreservationMismatch("raw_image_unexpected"))
-    );
     for field in [
         "orb_id",
         "operator_id",
@@ -380,15 +361,41 @@ fn completion_rejects_fabricated_history_and_changed_capture_fields() {
         info[field] = json!("123456");
         files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
         assert_eq!(
-            verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy),
-            Err(Error::PreservationMismatch("capture_metadata_changed"))
+            verify_completed_pcp(&source, &bio, &ctx, &files),
+            Err(Error::PreservationMismatch("capture_metadata_changed")),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn completion_requires_exactly_this_runs_normalization() {
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    let new = build_and_open(&source, &bio, &ctx);
+    let mut changed = new.files.clone();
+    changed
+        .get_mut("normalized_iris/right_normalized_mask_resized.bin")
+        .unwrap()[0] ^= 1;
+    let mut missing = new.files.clone();
+    missing.remove("normalized_iris/left_normalized_image.bin");
+    // The source's own normalization of its multiframe capture.
+    let mut extra = new.files.clone();
+    extra.insert(
+        format!("normalized_iris/{FRAME_A}_normalized_image.bin"),
+        b"old-extra-normalization".to_vec(),
+    );
+    for files in [changed, missing, extra] {
+        assert_eq!(
+            verify_completed_pcp(&source, &bio, &ctx, &files),
+            Err(Error::OutputMismatch("normalized_iris_mismatch"))
         );
     }
 }
 
 #[test]
 fn completion_rejects_missing_or_malformed_migration_metadata() {
-    let source = SourcePcp::parse(legacy_profile("2.8", true)).unwrap();
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
     for replacement in [None, Some(Vec::new()), Some(vec![0x12, 0x05, b'x'])] {
@@ -402,7 +409,7 @@ fn completion_rejects_missing_or_malformed_migration_metadata() {
                 files.remove("migration.pb");
             }
         }
-        let error = verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy).unwrap_err();
+        let error = verify_completed_pcp(&source, &bio, &ctx, &files).unwrap_err();
         if malformed {
             assert_eq!(error, Error::InvalidProtobuf("migration.pb"));
         } else {
@@ -413,7 +420,7 @@ fn completion_rejects_missing_or_malformed_migration_metadata() {
 
 #[test]
 fn completion_checks_migration_source_references_against_original() {
-    let source = SourcePcp::parse(legacy_profile("2.8", true)).unwrap();
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
     for source_id in [true, false] {
@@ -427,7 +434,7 @@ fn completion_checks_migration_source_references_against_original() {
             }
             files.insert("migration.pb".into(), migration.encode_to_vec());
             assert_eq!(
-                verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy),
+                verify_completed_pcp(&source, &bio, &ctx, &files),
                 Err(Error::PreservationMismatch("migration_source_mismatch"))
             );
         }
@@ -436,13 +443,13 @@ fn completion_checks_migration_source_references_against_original() {
 
 #[test]
 fn completion_bounds_binary_migration_metadata() {
-    let source = SourcePcp::parse(legacy_profile("2.8", true)).unwrap();
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let mut new = build_and_open(&source, &bio, &ctx);
     new.files
         .insert("migration.pb".into(), vec![0; 1024 * 1024 + 1]);
     assert_eq!(
-        verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy),
+        verify_completed_pcp(&source, &bio, &ctx, &new.files),
         Err(Error::SizeLimit)
     );
 }
@@ -450,7 +457,7 @@ fn completion_bounds_binary_migration_metadata() {
 #[test]
 fn migration_time_must_fit_the_archive_headers() {
     // The builder writes the migration time into 32-bit gzip headers.
-    let source = SourcePcp::parse(legacy_profile("2.8", true)).unwrap();
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
     let mut ctx = context();
     ctx.migrated_ts = u64::from(u32::MAX) + 1;
     let bio = pipeline();
@@ -470,26 +477,23 @@ fn migration_time_must_fit_the_archive_headers() {
 }
 
 #[test]
-fn source_signature_is_required_for_mapping_and_completion() {
-    for bytes in [None, Some(vec![])] {
-        let mut old = legacy_profile("2.8", true);
-        let source = SourcePcp::parse(old.clone()).unwrap();
-        let (bio, ctx) = (pipeline(), context());
-        let new = build_and_open(&source, &bio, &ctx);
-        if let Some(bytes) = bytes {
-            old.insert("hashes.sign".into(), bytes);
-        } else {
-            old.remove("hashes.sign");
+fn source_manifest_and_signature_are_required() {
+    for name in ["hashes.json", "hashes.sign"] {
+        for bytes in [None, Some(vec![])] {
+            let mut old = version_profile("2.8", true);
+            match bytes {
+                Some(bytes) => {
+                    old.insert(name.into(), bytes);
+                }
+                None => {
+                    old.remove(name);
+                }
+            }
+            assert_eq!(
+                SourcePcp::parse(old).err(),
+                Some(Error::MissingArtifact(name))
+            );
         }
-        let source = SourcePcp::parse(old).unwrap();
-        assert_eq!(
-            check_request(&source, &pipeline(), &context()).err(),
-            Some(Error::MissingArtifact("hashes.sign"))
-        );
-        assert_eq!(
-            verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy),
-            Err(Error::MissingArtifact("hashes.sign"))
-        );
     }
 }
 
@@ -517,7 +521,7 @@ fn aggregate_ids_pass_through_and_cannot_change_at_completion() {
         let source = SourcePcp::parse(files).unwrap();
         let (bio, ctx) = (pipeline(), context());
         let new = build_and_open(&source, &bio, &ctx);
-        verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
+        verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
         for field in [
             "left_iris_code_aggregate_image_ids",
             "right_iris_code_aggregate_image_ids",
@@ -527,7 +531,7 @@ fn aggregate_ids_pass_through_and_cannot_change_at_completion() {
             info[field] = json!(["left-id"]);
             files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
             assert_eq!(
-                verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy),
+                verify_completed_pcp(&source, &bio, &ctx, &files),
                 Err(Error::PreservationMismatch("capture_metadata_changed"))
             );
         }
@@ -538,31 +542,42 @@ fn aggregate_ids_pass_through_and_cannot_change_at_completion() {
 fn capture_metadata_changes_are_limited_to_the_signup_id() {
     let mut files = source_files("2.8");
     let mut info = json_file(&files, "info.json");
-    // Populate all passthrough scalars, including fields absent in the basic fixture.
-    let empty = serde_json::to_value(Info::default()).unwrap();
-    for field in empty.as_object().unwrap().keys() {
-        if !info.as_object().unwrap().contains_key(field) && !field.ends_with("_image_ids") {
+    // Populate every scalar field the shared schema defines.
+    for field in [
+        "signup_reason",
+        "orb_id",
+        "operator_id",
+        "timestamp",
+        "qr_code",
+        "orb_public_key_certificate",
+        "left_ir_image_id",
+        "right_ir_image_id",
+        "thumbnail_image_id",
+        "software_version",
+        "orb_country",
+        "id_commitment",
+        "device_public_key",
+    ] {
+        if info.get(field).is_none() {
             info[field] = json!(format!("source-{field}"));
         }
     }
-    info["orb_public_key_certificate"] = json!("c3ludGhldGljLWNlcnRpZmljYXRl");
-    info["left_ir_multiframe_image_ids"] = json!(["frame-b", "frame-a"]);
+    info["left_ir_multiframe_image_ids"] = json!([FRAME_A]);
     info["right_ir_multiframe_image_ids"] = json!([]);
     info["right_iris_code_aggregate_image_ids"] = json!(["frame-c"]);
     files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
-    files.insert("iris/frame-a.png".into(), b"synthetic-frame-a".to_vec());
-    files.insert("iris/frame-b.png".into(), b"synthetic-frame-b".to_vec());
+    files.insert(format!("iris/{FRAME_A}.png"), b"synthetic-frame".to_vec());
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
-    verify_completed_pcp(&source, &bio, &ctx, &new.files, &new.legacy).unwrap();
-    let source_fields = serde_json::to_value(source.info()).unwrap();
-    for (field, value) in source_fields.as_object().unwrap() {
+    verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
+    let output = json_file(&new.files, "info.json");
+    for (field, value) in output.as_object().unwrap() {
         if field == "signup_id" || field.ends_with("_salt") {
             continue;
         }
         let mut files = new.files.clone();
-        let mut info = json_file(&files, "info.json");
+        let mut info = output.clone();
         info[field] = if value.is_array() {
             json!(["changed"])
         } else {
@@ -570,7 +585,7 @@ fn capture_metadata_changes_are_limited_to_the_signup_id() {
         };
         files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
         assert_eq!(
-            verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy),
+            verify_completed_pcp(&source, &bio, &ctx, &files),
             Err(Error::PreservationMismatch("capture_metadata_changed")),
             "{field}"
         );
@@ -586,9 +601,9 @@ fn with_info(files: &Files, edit: impl FnOnce(&mut Value)) -> Files {
 }
 
 #[test]
-fn completion_requires_the_derived_signup_id_and_well_formed_salts() {
+fn completion_requires_the_context_signup_id_and_well_formed_salts() {
     // 2.0 lacks country, software, commitment and device key in this profile.
-    let source = SourcePcp::parse(legacy_profile("2.0", true)).unwrap();
+    let source = SourcePcp::parse(version_profile("2.0", true)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
     let fresh_salt = "0123456789abcdef0123456789abcdef";
@@ -614,7 +629,7 @@ fn completion_requires_the_derived_signup_id_and_well_formed_salts() {
             }
         });
         assert_eq!(
-            verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy),
+            verify_completed_pcp(&source, &bio, &ctx, &files),
             Err(Error::OutputMismatch(reason)),
             "{edit}"
         );
@@ -623,13 +638,13 @@ fn completion_requires_the_derived_signup_id_and_well_formed_salts() {
 
 #[test]
 fn completion_recomputes_every_manifest_entry() {
-    let source = SourcePcp::parse(legacy_profile("2.8", true)).unwrap();
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
-    let manifest = || -> std::collections::BTreeMap<String, String> {
+    let manifest = || -> BTreeMap<String, String> {
         serde_json::from_slice(&new.files["hashes.json"]).unwrap()
     };
-    let with_manifest = |edit: &dyn Fn(&mut std::collections::BTreeMap<String, String>)| {
+    let with_manifest = |edit: &dyn Fn(&mut BTreeMap<String, String>)| {
         let mut entries = manifest();
         edit(&mut entries);
         let mut files = new.files.clone();
@@ -638,11 +653,14 @@ fn completion_recomputes_every_manifest_entry() {
     };
     let mut changed_output = new.files.clone();
     changed_output
-        .get_mut("iris_codes.json")
+        .get_mut("face_embeddings.json")
         .unwrap()
         .push(b' ');
     let mut unlisted_member = new.files.clone();
-    unlisted_member.insert("normalized_iris/extra.bin".into(), vec![1]);
+    unlisted_member.insert(
+        "normalized_iris/left_normalized_image_extra.bin".into(),
+        vec![1],
+    );
     let mut pretty = new.files.clone();
     pretty.insert(
         "hashes.json".into(),
@@ -665,7 +683,7 @@ fn completion_recomputes_every_manifest_entry() {
         ),
         (
             with_manifest(&|entries| {
-                entries.insert("version".into(), "2.8".into());
+                entries.insert("version".into(), "2.7".into());
             }),
             "manifest_version",
         ),
@@ -681,7 +699,7 @@ fn completion_recomputes_every_manifest_entry() {
         ),
     ] {
         assert_eq!(
-            verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy),
+            verify_completed_pcp(&source, &bio, &ctx, &files),
             Err(Error::OutputMismatch(reason)),
             "{reason}"
         );
@@ -690,15 +708,15 @@ fn completion_recomputes_every_manifest_entry() {
 
 #[test]
 fn completion_checks_migration_metadata_against_the_mapping() {
-    let source = SourcePcp::parse(legacy_profile("2.8", true)).unwrap();
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
     let mut files = new.files.clone();
     let mut migration = Migration::decode(files["migration.pb"].as_slice()).unwrap();
-    migration.tee_version = Some("other-tee".into());
+    migration.tee_software_version = Some("other-tee".into());
     files.insert("migration.pb".into(), migration.encode_to_vec());
     assert_eq!(
-        verify_completed_pcp(&source, &bio, &ctx, &files, &new.legacy),
+        verify_completed_pcp(&source, &bio, &ctx, &files),
         Err(Error::OutputMismatch("migration_metadata_mismatch"))
     );
 }
