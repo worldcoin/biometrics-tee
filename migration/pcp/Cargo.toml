@@ -1,0 +1,24 @@
+[package]
+name = "di-migration-pcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2 = "0.10"
+# Shared PCP builder, protobuf definitions and signup IDs, pinned to one
+# revision so they share the generated types.
+orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "3158787b4509d36fd4edc73c27fbdc410c6d894d" }
+orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "3158787b4509d36fd4edc73c27fbdc410c6d894d" }
+orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "3158787b4509d36fd4edc73c27fbdc410c6d894d" }
+
+[dev-dependencies]
+alkali = { version = "0.3", features = ["use-pkg-config"] }
+flate2.workspace = true
+tar = "0.4"
+rand = "0.8"

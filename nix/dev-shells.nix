@@ -28,6 +28,8 @@ lib.genAttrs
           (rust-bin.fromRustupToolchainFile (root + "/rust-toolchain.toml"))
           jq
           protobuf
+          pkg-config
+          libsodium
         ];
       };
     }
