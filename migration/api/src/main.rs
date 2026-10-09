@@ -1178,16 +1178,23 @@ mod tests {
             di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
                 .unwrap()
                 .with_device_public_key("device-key");
+        let signer = test_signer();
+        let token = test_integrity_token(&signer);
 
-        let migrating = client.migrate("test-sub").await.unwrap();
+        let migrating = client.migrate(&token, &signer, "test-sub").await.unwrap();
         // The fake table keeps serving the `created` row.
-        let status = client.migration_status("test-sub").await.unwrap();
+        let status = client
+            .migration_status(&token, &signer, "test-sub")
+            .await
+            .unwrap();
 
         assert_eq!(migrating.status, di_migration_primitives::Status::Migrating);
         assert_eq!(status.status, di_migration_primitives::Status::Created);
         let other = client.with_device_public_key("other-key");
         assert!(matches!(
-            other.migration_status("test-sub").await,
+            other
+                .migration_status(&token, &signer, "test-sub")
+                .await,
             Err(di_migration_client::Error::Api { code, .. }) if code == "device_key_mismatch"
         ));
     }

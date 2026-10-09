@@ -322,14 +322,17 @@ async fn a_migration_runs_from_init_to_download() {
 
     // Migrate waits for the upload.
     assert!(matches!(
-        client.migrate(&sub).await,
+        client.migrate(&token, &signer, &sub).await,
         Err(Error::Api { code, .. }) if code == "not_uploaded"
     ));
     client
         .upload_pcp(&init.upload_url, PCP.to_vec())
         .await
         .expect("upload should succeed");
-    let migrating = client.migrate(&sub).await.expect("migrate should dispatch");
+    let migrating = client
+        .migrate(&token, &signer, &sub)
+        .await
+        .expect("migrate should dispatch");
     assert_eq!(migrating.status, Status::Migrating);
     assert!(matches!(
         client
@@ -345,7 +348,11 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(job.enclave_id, enclave_id());
     assert_eq!(job.device_public_key, DEVICE_KEY);
     assert_eq!(
-        client.migration_status(&sub).await.expect("status").status,
+        client
+            .migration_status(&token, &signer, &sub)
+            .await
+            .expect("status")
+            .status,
         Status::Migrating
     );
 
@@ -365,7 +372,10 @@ async fn a_migration_runs_from_init_to_download() {
         .expect("the host marks the job migrated");
 
     // Status hands out the result, readable only by the right device.
-    let done = client.migration_status(&sub).await.expect("status");
+    let done = client
+        .migration_status(&token, &signer, &sub)
+        .await
+        .expect("status");
     assert_eq!(done.status, Status::Migrated);
     let download = reqwest::get(done.download_url.expect("download url"))
         .await
@@ -373,7 +383,7 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(download.status(), StatusCode::OK);
     assert_eq!(download.bytes().await.expect("body").as_ref(), PCP);
     assert!(matches!(
-        other.migration_status(&sub).await,
+        other.migration_status(&token, &signer, &sub).await,
         Err(Error::Api { code, .. }) if code == "device_key_mismatch"
     ));
 

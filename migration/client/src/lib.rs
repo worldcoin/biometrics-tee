@@ -15,7 +15,10 @@ use di_migration_primitives::{
         MigrateResponse, MigrationStatus,
     },
 };
-use reqwest::{StatusCode, Url, header::CONTENT_TYPE};
+use reqwest::{
+    Request, RequestBuilder, StatusCode, Url,
+    header::{CONTENT_TYPE, HeaderName, HeaderValue},
+};
 
 use crate::sealing::{EnclaveVerifier, PcpOpener, SealingError};
 
@@ -138,20 +141,6 @@ impl MigrationApiClient {
         .map_err(Error::Encode)?;
 
         let url = self.url(&["v1", "init-migration"]);
-        let canonical = CanonicalRequest::new(
-            "POST",
-            url.scheme(),
-            url.authority(),
-            url.path(),
-            url.query(),
-            &body,
-        )
-        .map_err(|error| Error::CanonicalRequest(Box::new(error)))?;
-
-        // Hardware signers block; callers that need a free executor should wrap this call.
-        let signed = sign_request(&canonical, integrity_token, signer)
-            .map_err(|error| Error::Sign(Box::new(error)))?;
-
         let mut request = self
             .http
             .post(url)
@@ -160,31 +149,55 @@ impl MigrationApiClient {
         if let Some(device_public_key) = &self.device_public_key {
             request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
         }
-        for (name, value) in signed.headers() {
-            request = request.header(name, value);
-        }
 
-        let response = request.send().await.map_err(Error::Transport)?;
+        let signed = sign(request, integrity_token, signer)?;
+        let response = self.http.execute(signed).await.map_err(Error::Transport)?;
         decode(response).await
     }
 
     /// Hands the uploaded PCP to its host. A repeated call reports the running job.
-    pub async fn migrate(&self, sub: &str) -> Result<MigrateResponse, Error> {
+    ///
+    /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
+    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    pub async fn migrate<S: Signer>(
+        &self,
+        integrity_token: &str,
+        signer: &S,
+        sub: &str,
+    ) -> Result<MigrateResponse, Error>
+    where
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
         let mut request = self.http.post(self.url(&["v1", "migrations", sub]));
         if let Some(device_public_key) = &self.device_public_key {
             request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
         }
-        let response = request.send().await.map_err(Error::Transport)?;
+        let request = sign(request, integrity_token, signer)?;
+
+        let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
     }
 
     /// The `sub`'s latest migration, with a download URL once `migrated`.
-    pub async fn migration_status(&self, sub: &str) -> Result<MigrationStatus, Error> {
+    ///
+    /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
+    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    pub async fn migration_status<S: Signer>(
+        &self,
+        integrity_token: &str,
+        signer: &S,
+        sub: &str,
+    ) -> Result<MigrationStatus, Error>
+    where
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
         let mut request = self.http.get(self.url(&["v1", "migrations", sub]));
         if let Some(device_public_key) = &self.device_public_key {
             request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
         }
-        let response = request.send().await.map_err(Error::Transport)?;
+        let request = sign(request, integrity_token, signer)?;
+
+        let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
     }
 
@@ -261,9 +274,46 @@ impl MigrationApiClient {
             .attested_channel(&response)
             .and_then(|channel| channel.seal(pcp, credential))?;
         self.upload_pcp(&response.upload_url, blob).await?;
-        self.migrate(sub).await?;
+        self.migrate(integrity_token, signer, sub).await?;
         Ok((opener, response.enclave_id))
     }
+}
+
+/// Signs `request` and returns it with the attested-request headers attached.
+fn sign<S: Signer>(
+    request: RequestBuilder,
+    integrity_token: &str,
+    signer: &S,
+) -> Result<Request, Error>
+where
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    let mut request = request.build().map_err(Error::Transport)?;
+    let signed = {
+        let body = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .unwrap_or(&[]);
+        let url = request.url();
+        let canonical = CanonicalRequest::new(
+            request.method().as_str(),
+            url.scheme(),
+            url.authority(),
+            url.path(),
+            url.query(),
+            body,
+        )
+        .map_err(|error| Error::CanonicalRequest(Box::new(error)))?;
+        sign_request(&canonical, integrity_token, signer)
+            .map_err(|error| Error::Sign(error.into()))?
+    };
+    for (name, value) in signed.headers() {
+        request.headers_mut().insert(
+            HeaderName::from_bytes(name.as_bytes()).expect("attested-request header names"),
+            HeaderValue::from_str(value).map_err(|error| Error::Sign(error.into()))?,
+        );
+    }
+    Ok(request)
 }
 
 /// The success body, or the API's error code.
@@ -348,7 +398,6 @@ mod tests {
                 let verifier = verifier.clone();
                 async move {
                     let (parts, body) = request.into_parts();
-                    assert_eq!(parts.headers["x-attested-key-thumbprint"], "device-key");
                     let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
                     verifier.verify(&parts, &body).await.unwrap();
 

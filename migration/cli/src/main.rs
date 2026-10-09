@@ -13,7 +13,7 @@ use attested_request::{
 };
 use clap::{Args, Parser, Subcommand};
 use di_migration_client::{
-    MigrationApiClient, StartMigration,
+    MigrationApiClient,
     sealing::{EnclaveVerifier, PcpOpener},
 };
 use di_migration_primitives::Status;
@@ -180,7 +180,7 @@ async fn init_migration(
     client: &MigrationApiClient,
     init: &InitArgs,
 ) -> Result<di_migration_primitives::app_api::InitMigrationResponse, String> {
-    let signer = SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android);
+    let signer = device_signer(init);
     client
         .init_migration(
             &init.integrity_token,
@@ -193,6 +193,10 @@ async fn init_migration(
         .map_err(|error| format!("init-migration failed: {error}"))
 }
 
+fn device_signer(init: &InitArgs) -> SoftwareSigner {
+    SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android)
+}
+
 /// Inits, verifies the enclave, uploads the sealed PCP and starts the job.
 async fn start(
     client: &MigrationApiClient,
@@ -201,29 +205,32 @@ async fn start(
     pcp: &[u8],
     credential: &str,
 ) -> Result<PcpOpener, String> {
-    let signer = SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android);
-    let (opener, enclave_id) = client
-        .start_migration(StartMigration {
-            integrity_token: &init.integrity_token,
-            signer: &signer,
-            verifier,
-            sub: &init.sub,
-            proof: &init.proof,
-            challenge_id: &init.challenge_id,
-            pcp,
-            credential,
-        })
+    let response = init_migration(client, init).await?;
+    let (blob, opener) = verifier
+        .attested_channel(&response)
+        .and_then(|channel| channel.seal(pcp, credential))
+        .map_err(|error| error.to_string())?;
+    eprintln!("enclave {} verified", response.enclave_id.as_str());
+
+    client
+        .upload_pcp(&response.upload_url, blob)
+        .await
+        .map_err(|error| format!("upload failed: {error}"))?;
+    let signer = device_signer(init);
+    client
+        .migrate(&init.integrity_token, &signer, &init.sub)
         .await
         .map_err(|error| error.to_string())?;
-    eprintln!("enclave {} verified", enclave_id.as_str());
+    eprintln!("enclave {} verified", response.enclave_id.as_str());
     Ok(opener)
 }
 
 /// Polls until the job ends, returning the download URL of the migrated PCP.
 async fn wait(client: &MigrationApiClient, init: &InitArgs) -> Result<String, String> {
+    let signer = device_signer(init);
     loop {
         let status = client
-            .migration_status(&init.sub)
+            .migration_status(&init.integrity_token, &signer, &init.sub)
             .await
             .map_err(|error| format!("status failed: {error}"))?;
         match status.status {
