@@ -107,8 +107,8 @@ jobs:
       - name: Evaluate the enclave image and converter derivations
         run: |
           set -euo pipefail
-          for workload in migration dev; do
-            for output in "di-$workload-enclave" "di-$workload-oci" "di-$workload-eif"; do
+          for workload in di-migration di-dev selfie-enrollment; do
+            for output in "$workload-enclave" "$workload-oci" "$workload-eif"; do
               drv="$(nix eval --raw --no-update-lock-file ".#packages.x86_64-linux.$output.drvPath")"
               echo "$output -> $drv"
             done
@@ -118,6 +118,35 @@ jobs:
       - name: Build the enclave images
         run: |
           set -euo pipefail
-          for workload in migration dev; do
-            nix build --no-link --no-update-lock-file ".#packages.x86_64-linux.di-$workload-oci"
+          for workload in di-migration di-dev selfie-enrollment; do
+            nix build --no-link --no-update-lock-file ".#packages.x86_64-linux.$workload-oci"
           done
+
+  enrollment:
+    name: Enrollment native and browser client
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install WASM C toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang llvm
+      - name: Link browser client and generate bindings
+        env:
+          CC_wasm32_unknown_unknown: clang
+          AR_wasm32_unknown_unknown: llvm-ar
+        run: |
+          cargo build --locked -p selfie-enrollment-client --target wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.126 --locked
+          wasm-bindgen --target web --out-dir target/enrollment-web target/wasm32-unknown-unknown/debug/selfie_enrollment_client.wasm
+      - name: Install browser test dependencies
+        working-directory: selfie-enrollment/e2e/browser
+        run: |
+          npm ci --ignore-scripts
+          npx playwright install --with-deps chromium webkit
+      - name: Verify browser cancellation, bounds and attestation rejection
+        run: node selfie-enrollment/e2e/browser/test.cjs

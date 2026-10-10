@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Selfie Check enrollment test</title>
+<style>body{font:18px system-ui;max-width:720px;margin:64px auto;padding:0 24px}button,input{font:inherit;margin:8px 12px 8px 0}pre{white-space:pre-wrap;font:14px monospace}p{line-height:1.6}</style>
+<h1>Selfie Check enrollment test</h1>
+<p>Select an approved test image. The client verifies the enclave and worker before encrypting and sending it. This test extracts an embedding; it does not issue a credential.</p>
+<input id="image" type="file" accept="image/jpeg,image/png"><br>
+<button id="run" disabled>Extract embedding</button><button id="cancel" disabled>Cancel</button>
+<pre id="result">Loading client…</pre>
+<script type="module">
+import init, {extractEmbedding} from '/pkg/selfie_enrollment_client.js';
+const run=document.querySelector('#run'),cancel=document.querySelector('#cancel'),result=document.querySelector('#result');
+let controller;
+try { await init(); window.config=await (await fetch('/config')).json(); run.disabled=false; result.textContent='Ready'; }
+catch(e){result.textContent=String(e)}
+cancel.onclick=()=>controller?.abort();
+run.onclick=async()=>{
+ const file=document.querySelector('#image').files[0];
+ if(!file||file.size>8*1024*1024){result.textContent='Select an image up to 8 MiB.';return}
+ controller=new AbortController();run.disabled=true;cancel.disabled=false;result.textContent='Verifying enclave and extracting…';
+ let bytes;
+ try {
+  bytes=new Uint8Array(await file.arrayBuffer());
+  const output=await extractEmbedding(JSON.stringify(window.config),bytes,controller.signal);
+  if(output.status!=='success')throw new Error('Enclave rejected image: '+output.reason);
+  const {vector,...metadata}=output.embedding;output.embedding.vector='';
+  result.textContent=JSON.stringify({status:'success',...metadata},null,2);
+ }catch(e){result.textContent=String(e)}finally{bytes?.fill(0);run.disabled=false;cancel.disabled=true;controller=null}
+};
+</script>

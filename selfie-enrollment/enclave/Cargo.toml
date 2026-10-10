@@ -1,0 +1,30 @@
+[package]
+name = "selfie-enrollment-enclave"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+selfie-enrollment-api-types.workspace = true
+selfie-enrollment-enclave-types.workspace = true
+selfie-enrollment-sealed-types.workspace = true
+pontifex = { workspace = true, features = ["channel", "nsm"] }
+biometric-engines-protocol.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+biometrics-sandbox = { package = "di-sandbox", path = "../../sandbox" }
+pontifex = { workspace = true, features = ["server"] }
+libc.workspace = true
+vsock.workspace = true
+
+[dev-dependencies]
+pontifex = { workspace = true, features = ["attestation"] }
+tokio = { workspace = true, features = ["test-util"] }
