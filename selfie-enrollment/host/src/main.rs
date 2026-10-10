@@ -7,12 +7,6 @@ struct Config {
     cid: u32,
     #[arg(long, env = "ENCLAVE_PORT", default_value_t = 1000)]
     port: u32,
-    #[arg(long, env = "ADMISSION_PUBLIC_KEY")]
-    admission_public_key: String,
-    #[arg(long, env = "ADMISSION_AUDIENCE")]
-    admission_audience: String,
-    #[arg(long, env = "ALLOWED_ORIGINS", value_delimiter = ',')]
-    allowed_origins: Vec<String>,
     #[arg(long, env = "WS_MAX_CONNECTIONS", default_value_t = 8)]
     max_connections: usize,
 }
@@ -35,9 +29,6 @@ async fn main() -> anyhow::Result<()> {
                 cid: config.cid,
                 port: config.port,
             }),
-            &config.admission_public_key,
-            config.admission_audience,
-            config.allowed_origins,
             config.max_connections,
         )?;
         let listener = tokio::net::TcpListener::bind(&config.address).await?;

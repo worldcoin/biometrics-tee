@@ -1,9 +1,8 @@
 //! Native diagnostic transport; the browser uses the same exchange and verification code.
-use crate::{Config, Error, Frame, Transport};
+use crate::{Config, EnrollmentClient, EnrollmentSession, Error, Frame, Transport};
 use futures_util::{SinkExt, StreamExt};
-use selfie_enrollment_api_types::{AdmissionChallenge, AdmissionTicket, MAX_RESPONSE_BYTES};
-use selfie_enrollment_sealed_types::EmbeddingResult;
-use std::{future::Future, sync::Arc, time::Duration};
+use selfie_enrollment_api_types::MAX_RESPONSE_BYTES;
+use std::{sync::Arc, time::Duration};
 use tokio_tungstenite::{
     Connector, MaybeTlsStream, WebSocketStream,
     tungstenite::{Message, protocol::WebSocketConfig},
@@ -65,23 +64,14 @@ impl Transport for NativeTransport {
             }
         }
     }
+    async fn close(&mut self) {
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.0.close(None)).await;
+    }
 }
-pub async fn extract<F, Fut>(
-    config: &Config,
-    image: Vec<u8>,
-    issuer: F,
-) -> Result<EmbeddingResult, Error>
-where
-    F: FnOnce(AdmissionChallenge) -> Fut,
-    Fut: Future<Output = Result<AdmissionTicket, Error>>,
-{
-    let mut socket = NativeTransport::connect(config).await?;
-    let result = tokio::time::timeout(
-        Duration::from_secs(100),
-        crate::exchange(&mut socket, config, image, issuer),
-    )
-    .await
-    .map_err(|_| Error::Timeout)?;
-    let _ = tokio::time::timeout(Duration::from_secs(1), socket.0.close(None)).await;
-    result
+
+impl EnrollmentClient {
+    pub async fn connect(&self) -> Result<EnrollmentSession<NativeTransport>, Error> {
+        self.connect_transport(NativeTransport::connect(&self.config).await?)
+            .await
+    }
 }

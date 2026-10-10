@@ -1,23 +1,18 @@
-//! Ciphertext relay and browser-compatible, single-connection test admission.
+//! Bounded ciphertext relay: one assignment and one encrypted extraction per socket.
 use axum::{
     Router,
     extract::{
         State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use p256::ecdsa::VerifyingKey;
-use rand::RngCore;
 use selfie_enrollment_api_types::*;
 use selfie_enrollment_enclave_types::{ExtractRequest, ExtractResponse, KeyAttestation};
-use std::{
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     time::{Instant, timeout, timeout_at},
@@ -32,34 +27,18 @@ pub trait Enclave: Send + Sync {
 #[derive(Clone)]
 pub struct AppState {
     pub enclave: Arc<dyn Enclave>,
-    pub admission_key: VerifyingKey,
-    pub audience: String,
-    pub allowed_origins: Vec<String>,
     pub connections: Arc<Semaphore>,
     max_connections: usize,
     session_finished: Arc<Notify>,
 }
 impl AppState {
-    pub fn new(
-        enclave: Arc<dyn Enclave>,
-        key: &str,
-        audience: String,
-        allowed_origins: Vec<String>,
-        connections: usize,
-    ) -> anyhow::Result<Self> {
+    pub fn new(enclave: Arc<dyn Enclave>, connections: usize) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            !audience.is_empty() && audience.len() <= 256 && (1..=32).contains(&connections),
+            (1..=32).contains(&connections),
             "invalid enrollment host limits"
         );
-        let admission_key = VerifyingKey::from_sec1_bytes(
-            &hex::decode(key).map_err(|_| anyhow::anyhow!("invalid admission public key"))?,
-        )
-        .map_err(|_| anyhow::anyhow!("invalid admission public key"))?;
         Ok(Self {
             enclave,
-            admission_key,
-            audience,
-            allowed_origins,
             connections: Arc::new(Semaphore::new(connections)),
             max_connections: connections,
             session_finished: Arc::new(Notify::new()),
@@ -112,18 +91,7 @@ async fn ready(State(state): State<AppState>) -> StatusCode {
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
-async fn upgrade(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    upgrade: WebSocketUpgrade,
-) -> Response {
-    if let Some(origin) = headers.get("origin")
-        && !origin
-            .to_str()
-            .is_ok_and(|o| state.allowed_origins.iter().any(|allowed| allowed == o))
-    {
-        return StatusCode::FORBIDDEN.into_response();
-    }
+async fn upgrade(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
     let Ok(permit) = state.connections.clone().try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -141,9 +109,9 @@ async fn upgrade(
                 .unwrap_or(Err(ErrorCode::Timeout));
             let close_deadline = Instant::now() + Duration::from_secs(1);
             if let Err(code) = result {
-                // Codes contain no payloads, tickets or underlying dependency errors.
+                // Codes contain no payloads or underlying dependency errors.
                 tracing::debug!(code=?code,"enrollment session ended");
-                if let Ok(body) = serde_json::to_string(&ServerMessage::Error { code }) {
+                if let Ok(body) = serde_json::to_string(&ErrorEnvelope::from(code)) {
                     let _ =
                         timeout_at(close_deadline, socket.send(Message::Text(body.into()))).await;
                 }
@@ -152,7 +120,7 @@ async fn upgrade(
         })
         .into_response()
 }
-async fn send_control(socket: &mut WebSocket, message: ServerMessage) -> Result<(), ErrorCode> {
+async fn send_control(socket: &mut WebSocket, message: HostMessage) -> Result<(), ErrorCode> {
     let body = serde_json::to_string(&message).map_err(|_| ErrorCode::Unavailable)?;
     if body.len() > MAX_CONTROL_BYTES {
         return Err(ErrorCode::Unavailable);
@@ -179,32 +147,20 @@ async fn next(socket: &mut WebSocket, duration: Duration) -> Result<Message, Err
     }
 }
 async fn serve(socket: &mut WebSocket, state: &AppState) -> Result<(), ErrorCode> {
-    let mut nonce = [0; 32];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
-    let challenge = AdmissionChallenge {
-        audience: state.audience.clone(),
-        nonce,
-    };
-    send_control(socket, ServerMessage::Admission(challenge.clone())).await?;
     let Message::Text(text) = next(socket, Duration::from_secs(15)).await? else {
-        return Err(ErrorCode::Unauthorized);
+        return Err(ErrorCode::InvalidMessage);
     };
-    if text.len() > MAX_TICKET_BYTES {
-        return Err(ErrorCode::Unauthorized);
+    if text.len() > MAX_CONTROL_BYTES {
+        return Err(ErrorCode::InvalidMessage);
     }
-    let ticket: AdmissionTicket =
-        serde_json::from_str(&text).map_err(|_| ErrorCode::Unauthorized)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ErrorCode::Unavailable)?
-        .as_secs();
-    verify_ticket(&state.admission_key, &challenge, &ticket, now)?;
+    let ClientMessage::AssignmentRequest =
+        serde_json::from_str(&text).map_err(|_| ErrorCode::InvalidMessage)?;
     let assignment = timeout(Duration::from_secs(3), state.enclave.assignment())
         .await
         .map_err(|_| ErrorCode::Timeout)??;
     send_control(
         socket,
-        ServerMessage::Assignment(Assignment {
+        HostMessage::Assignment(Assignment {
             attestation: STANDARD.encode(assignment.document),
             public_key: STANDARD.encode(assignment.public_key),
         }),

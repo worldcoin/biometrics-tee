@@ -2,13 +2,12 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use pontifex::{
     ChannelConsumer, ChannelDomain, ResponseOpener,
-    attestation::{PcrConfig, Verifier},
+    attestation::{PcrConfig, VerifiedAttestation, Verifier},
 };
 use selfie_enrollment_api_types::*;
 use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult, WorkerIdentity};
 use serde::{Deserialize, Serialize};
-use std::{future::Future, time::Duration};
-use zeroize::Zeroizing;
+use std::time::Duration;
 
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
@@ -27,19 +26,14 @@ pub struct Release {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub endpoint: String,
-    pub audience: String,
     pub releases: Vec<Release>,
 }
 impl Config {
     pub fn validate(&self) -> Result<(), Error> {
         self.verifier()?;
-        if self.audience.is_empty() || self.audience.len() > 256 {
-            return Err(Error::Config);
-        }
         let url = url::Url::parse(&self.endpoint).map_err(|_| Error::Config)?;
         let local = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
         if (url.scheme() != "wss" && !(url.scheme() == "ws" && local))
-            || url.path() != "/v1/embeddings"
             || url.query().is_some()
             || url.fragment().is_some()
             || !url.username().is_empty()
@@ -102,12 +96,11 @@ pub enum Error {
     Authentication,
     #[error("enrollment host: {0}")]
     Host(ErrorCode),
-    #[error("test admission failed")]
-    Admission,
 }
 
 /// Holds the verified boot key and attested worker identity.
 pub struct VerifiedAssignment {
+    attestation: VerifiedAttestation,
     consumer: ChannelConsumer,
     identity: WorkerIdentity,
 }
@@ -151,9 +144,22 @@ impl VerifiedAssignment {
         ) {
             return Err(Error::Attestation);
         }
-        Ok(Self { consumer, identity })
+        Ok(Self {
+            attestation: verified,
+            consumer,
+            identity,
+        })
     }
-    pub fn seal(self, image: Vec<u8>) -> Result<(Vec<u8>, PendingResult), Error> {
+    pub fn attestation(&self) -> &VerifiedAttestation {
+        &self.attestation
+    }
+    pub fn consumer(&self) -> &ChannelConsumer {
+        &self.consumer
+    }
+    pub fn worker(&self) -> &WorkerIdentity {
+        &self.identity
+    }
+    fn seal(&self, image: Vec<u8>) -> Result<(Vec<u8>, PendingResult), Error> {
         let request = EmbeddingRequest {
             version: PROTOCOL_VERSION,
             image,
@@ -170,7 +176,7 @@ impl VerifiedAssignment {
             sealed,
             PendingResult {
                 opener,
-                identity: self.identity,
+                identity: self.identity.clone(),
             },
         ))
     }
@@ -191,12 +197,12 @@ fn matches_release(
                 })
     })
 }
-pub struct PendingResult {
+struct PendingResult {
     opener: ResponseOpener,
     identity: WorkerIdentity,
 }
 impl PendingResult {
-    pub fn open(self, ciphertext: &[u8]) -> Result<EmbeddingResult, Error> {
+    fn open(self, ciphertext: &[u8]) -> Result<EmbeddingResult, Error> {
         if ciphertext.len() > MAX_RESPONSE_BYTES {
             return Err(Error::Protocol);
         }
@@ -218,71 +224,91 @@ pub enum Frame {
     Text(String),
     Binary(Vec<u8>),
 }
-/// A bounded transport. Dropping it must close the socket and release listeners/resources.
+/// A bounded transport. Dropping it must close the socket and release its resources.
 #[allow(async_fn_in_trait)]
 pub trait Transport {
     async fn send(&mut self, frame: Frame, timeout: Duration) -> Result<(), Error>;
     async fn receive(&mut self, timeout: Duration) -> Result<Frame, Error>;
+    async fn close(&mut self);
 }
 
-/// Shared browser/native session sequencing. The issuer signs a server nonce for this socket;
-/// it receives no biometric data. A captured ticket cannot be reused on another connection.
-pub async fn exchange<T, F, Fut>(
-    socket: &mut T,
-    config: &Config,
-    image: Vec<u8>,
-    issuer: F,
-) -> Result<EmbeddingResult, Error>
-where
-    T: Transport,
-    F: FnOnce(AdmissionChallenge) -> Fut,
-    Fut: Future<Output = Result<AdmissionTicket, Error>>,
-{
-    config.validate()?;
-    let image = Zeroizing::new(image);
-    if image.is_empty() || image.len() > MAX_IMAGE_BYTES {
-        return Err(Error::Protocol);
+/// Opens sessions whose enclave assignment has been verified before they are returned.
+pub struct EnrollmentClient {
+    config: Config,
+}
+impl EnrollmentClient {
+    pub fn new(config: Config) -> Result<Self, Error> {
+        config.validate()?;
+        Ok(Self { config })
     }
-    let challenge = match server_message(socket.receive(Duration::from_secs(10)).await?)? {
-        ServerMessage::Admission(c) if c.audience == config.audience => c,
-        _ => return Err(Error::Admission),
-    };
-    let ticket = issuer(challenge).await?;
-    let encoded = serde_json::to_string(&ticket).map_err(|_| Error::Protocol)?;
-    if encoded.len() > MAX_TICKET_BYTES {
-        return Err(Error::Admission);
-    }
-    socket
-        .send(Frame::Text(encoded), Duration::from_secs(5))
-        .await?;
-    let assignment = match server_message(socket.receive(Duration::from_secs(10)).await?)? {
-        ServerMessage::Assignment(a) => a,
-        _ => return Err(Error::Protocol),
-    };
-    let verified = VerifiedAssignment::verify(config, &assignment)?;
-    let (request, pending) = verified.seal(image.to_vec())?;
-    socket
-        .send(Frame::Binary(request), Duration::from_secs(10))
-        .await?;
-    match socket.receive(Duration::from_secs(40)).await? {
-        Frame::Binary(response) => pending.open(&response),
-        frame => {
-            server_message(frame)?;
-            Err(Error::Protocol)
+
+    async fn connect_transport<T: Transport>(
+        &self,
+        mut socket: T,
+    ) -> Result<EnrollmentSession<T>, Error> {
+        let result = async {
+            let request = serde_json::to_string(&ClientMessage::AssignmentRequest)
+                .map_err(|_| Error::Protocol)?;
+            socket
+                .send(Frame::Text(request), Duration::from_secs(5))
+                .await?;
+            let HostMessage::Assignment(assignment) =
+                host_message(socket.receive(Duration::from_secs(10)).await?)?;
+            VerifiedAssignment::verify(&self.config, &assignment)
+        }
+        .await;
+        match result {
+            Ok(assignment) => Ok(EnrollmentSession { socket, assignment }),
+            Err(error) => {
+                socket.close().await;
+                Err(error)
+            }
         }
     }
 }
-fn server_message(frame: Frame) -> Result<ServerMessage, Error> {
+
+/// Owns one socket and the verified assignment received on that socket, as in Flamingo.
+pub struct EnrollmentSession<T: Transport> {
+    socket: T,
+    assignment: VerifiedAssignment,
+}
+impl<T: Transport> EnrollmentSession<T> {
+    pub fn assignment(&self) -> &VerifiedAssignment {
+        &self.assignment
+    }
+
+    /// Consumes the session: one encrypted extraction, followed by socket cleanup on any result.
+    pub async fn extract(mut self, image: Vec<u8>) -> Result<EmbeddingResult, Error> {
+        let result = async {
+            let (request, pending) = self.assignment.seal(image)?;
+            self.socket
+                .send(Frame::Binary(request), Duration::from_secs(10))
+                .await?;
+            match self.socket.receive(Duration::from_secs(40)).await? {
+                Frame::Binary(response) => pending.open(&response),
+                frame => {
+                    host_message(frame)?;
+                    Err(Error::Protocol)
+                }
+            }
+        }
+        .await;
+        self.socket.close().await;
+        result
+    }
+}
+fn host_message(frame: Frame) -> Result<HostMessage, Error> {
     let Frame::Text(text) = frame else {
         return Err(Error::Protocol);
     };
     if text.len() > MAX_CONTROL_BYTES {
         return Err(Error::Protocol);
     }
-    match serde_json::from_str(&text).map_err(|_| Error::Protocol)? {
-        ServerMessage::Error { code } => Err(Error::Host(code)),
-        message => Ok(message),
+    if let Ok(message) = serde_json::from_str::<HostMessage>(&text) {
+        return Ok(message);
     }
+    Err(serde_json::from_str::<ErrorEnvelope>(&text)
+        .map_or(Error::Protocol, |envelope| Error::Host(envelope.error.code)))
 }
 #[cfg(test)]
 mod tests {
@@ -290,7 +316,6 @@ mod tests {
     fn config() -> Config {
         Config {
             endpoint: "wss://example.com/v1/embeddings".into(),
-            audience: "stage".into(),
             releases: vec![Release {
                 pcr0: "1".repeat(96),
                 pcr1: "2".repeat(96),
@@ -302,6 +327,9 @@ mod tests {
     #[test]
     fn rejects_missing_zero_and_malformed_measurements_and_insecure_remote() {
         assert!(config().validate().is_ok());
+        let mut prefixed = config();
+        prefixed.endpoint = "wss://example.com/proxy/enrollment/v1/embeddings".into();
+        assert!(prefixed.validate().is_ok());
         let mut c = config();
         c.releases.clear();
         assert!(c.validate().is_err());

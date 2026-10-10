@@ -21,10 +21,7 @@ run.onclick=async()=>{
  let bytes;
  try {
   bytes=new Uint8Array(await file.arrayBuffer());
-  const output=await extractEmbedding(JSON.stringify(window.config),bytes,async challenge=>{
-   const response=await fetch('/issue-ticket',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(challenge),signal:controller.signal});
-   if(!response.ok)throw new Error('Admission rejected');return response.json();
-  },controller.signal);
+  const output=await extractEmbedding(JSON.stringify(window.config),bytes,controller.signal);
   if(output.status!=='success')throw new Error('Enclave rejected image: '+output.reason);
   const {vector,...metadata}=output.embedding;output.embedding.vector='';
   result.textContent=JSON.stringify({status:'success',...metadata},null,2);

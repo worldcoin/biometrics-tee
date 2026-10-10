@@ -8,8 +8,7 @@ publish = false
 
 [dependencies]
 serde.workspace = true
-serde_bytes.workspace = true
 thiserror.workspace = true
-p256.workspace = true
-hex.workspace = true
+
+[dev-dependencies]
 serde_json.workspace = true

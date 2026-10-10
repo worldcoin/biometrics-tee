@@ -3781,10 +3781,7 @@ dependencies = [
 name = "selfie-enrollment-api-types"
 version = "0.1.0"
 dependencies = [
- "hex",
- "p256",
  "serde",
- "serde_bytes",
  "serde_json",
  "thiserror 2.0.20",
 ]
@@ -3826,9 +3823,6 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
- "hex",
- "p256",
- "rand 0.8.8",
  "selfie-enrollment-api-types",
  "selfie-enrollment-client",
  "selfie-enrollment-sealed-types",
@@ -3878,10 +3872,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "futures-util",
- "hex",
- "p256",
  "pontifex",
- "rand 0.8.8",
  "selfie-enrollment-api-types",
  "selfie-enrollment-client",
  "selfie-enrollment-enclave-types",

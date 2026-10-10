@@ -10,13 +10,12 @@ publish = false
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
-hex.workspace = true
-p256.workspace = true
-rand.workspace = true
 selfie-enrollment-api-types.workspace = true
 selfie-enrollment-client.workspace = true
 selfie-enrollment-sealed-types.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
