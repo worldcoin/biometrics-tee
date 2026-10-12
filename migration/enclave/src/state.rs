@@ -10,9 +10,9 @@ use world_id_primitives::EdDSAPublicKey;
 
 use crate::attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
 
-/// Decimal BabyJubJub affine X coordinate of the credential issuer pubkey.
+/// Decimal `BabyJubJub` affine X coordinate of the credential issuer pubkey.
 pub const ISSUER_PUBKEY_X_ENV: &str = "ISSUER_PUBKEY_X";
-/// Decimal BabyJubJub affine Y coordinate of the credential issuer pubkey.
+/// Decimal `BabyJubJub` affine Y coordinate of the credential issuer pubkey.
 pub const ISSUER_PUBKEY_Y_ENV: &str = "ISSUER_PUBKEY_Y";
 /// When `false`/`0`/`off`, migrate skips credential verification (staging convenience).
 ///
@@ -116,7 +116,7 @@ impl EnclaveState {
     }
 }
 
-/// Reads the issuer EdDSA pubkey affine coordinates from the environment.
+/// Reads the issuer `EdDSA` pubkey affine coordinates from the environment.
 ///
 /// # Errors
 ///
@@ -130,10 +130,12 @@ fn issuer_pubkey_from_env() -> anyhow::Result<EdDSAPublicKey> {
 }
 
 fn issuer_pubkey_from_decimals(x: &str, y: &str) -> anyhow::Result<EdDSAPublicKey> {
-    let x = Fq::from_str(x)
-        .map_err(|_| anyhow::anyhow!("{ISSUER_PUBKEY_X_ENV} is not a valid decimal Fq element"))?;
-    let y = Fq::from_str(y)
-        .map_err(|_| anyhow::anyhow!("{ISSUER_PUBKEY_Y_ENV} is not a valid decimal Fq element"))?;
+    let x = Fq::from_str(x).map_err(|()| {
+        anyhow::anyhow!("{ISSUER_PUBKEY_X_ENV} is not a valid decimal Fq element")
+    })?;
+    let y = Fq::from_str(y).map_err(|()| {
+        anyhow::anyhow!("{ISSUER_PUBKEY_Y_ENV} is not a valid decimal Fq element")
+    })?;
     Ok(EdDSAPublicKey {
         pk: EdwardsAffine { x, y },
     })
