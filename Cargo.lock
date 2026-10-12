@@ -8713,9 +8713,9 @@ dependencies = [
 
 [[package]]
 name = "world-id-primitives"
-version = "0.14.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d76ac44fcbb959d6460462b29ee8798ef28baa13cea47ac8e2e9ea4edb22be3b"
+checksum = "8d1fa4236b4ba0ba4a9268e9d2bb94bd1a12ba39424dbaa7228cf2bfcf025016"
 dependencies = [
  "alloy",
  "alloy-primitives",

@@ -72,7 +72,7 @@ thiserror = "2"
 tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-vsock = "0.7.2"
 vsock = "0.5"
-world-id-primitives = "=0.14.0"
+world-id-primitives = "0.14.1"
 zeroize = "1"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
