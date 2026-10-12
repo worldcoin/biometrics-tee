@@ -9,4 +9,12 @@ pub enum Error {
     RequestNotOpened,
     /// The enclave failed while producing a response; detail stays in its log.
     Internal,
+    /// The credential sub mismatch.
+    CredentialSubMismatch,
+    /// Failed to deserialize a World ID credential.
+    CredentialDeserializationFailed,
+    /// Credential signature verification failed.
+    CredentialSignatureVerificationFailed,
+    /// Credential claims mismatch.
+    CredentialClaimsMismatch,
 }

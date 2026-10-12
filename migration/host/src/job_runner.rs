@@ -96,6 +96,18 @@ impl JobRunner {
             .await
             .map_err(|error| {
                 let reason = match &error {
+                    enclave::Error::Operation(enclave_primitives::Error::CredentialSubMismatch) => {
+                        Reason::CredentialSubMismatch
+                    }
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::CredentialDeserializationFailed,
+                    ) => Reason::CredentialDeserializationFailed,
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::CredentialSignatureVerificationFailed,
+                    ) => Reason::CredentialSignatureVerificationFailed,
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::CredentialClaimsMismatch,
+                    ) => Reason::CredentialClaimsMismatch,
                     enclave::Error::Timeout => Reason::Timeout,
                     // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
                     enclave::Error::Operation(enclave_primitives::Error::RequestNotOpened) => {

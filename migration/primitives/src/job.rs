@@ -105,6 +105,14 @@ pub enum Reason {
     EnclaveChanged,
     /// The enclave rejected or failed the migration.
     EnclaveError,
+    /// The credential sub mismatch.
+    CredentialSubMismatch,
+    /// The credential deserialization failed.
+    CredentialDeserializationFailed,
+    /// The credential signature verification failed.
+    CredentialSignatureVerificationFailed,
+    /// The credential claims did not match the PCP `hashes.json`.
+    CredentialClaimsMismatch,
     /// Reading the PCP or writing the result failed.
     S3Error,
     /// The job did not finish before its deadline.
@@ -113,10 +121,14 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, for parsing.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 9] = [
         Self::HostBusy,
         Self::EnclaveChanged,
         Self::EnclaveError,
+        Self::CredentialSubMismatch,
+        Self::CredentialDeserializationFailed,
+        Self::CredentialSignatureVerificationFailed,
+        Self::CredentialClaimsMismatch,
         Self::S3Error,
         Self::Timeout,
     ];
@@ -128,6 +140,12 @@ impl Reason {
             Self::HostBusy => "host_busy",
             Self::EnclaveChanged => "enclave_changed",
             Self::EnclaveError => "enclave_error",
+            Self::CredentialSubMismatch => "credential_sub_mismatch",
+            Self::CredentialDeserializationFailed => "credential_deserialization_failed",
+            Self::CredentialSignatureVerificationFailed => {
+                "credential_signature_verification_failed"
+            }
+            Self::CredentialClaimsMismatch => "credential_claims_mismatch",
             Self::S3Error => "s3_error",
             Self::Timeout => "timeout",
         }
@@ -230,6 +248,16 @@ mod tests {
             (Reason::HostBusy, "host_busy"),
             (Reason::EnclaveChanged, "enclave_changed"),
             (Reason::EnclaveError, "enclave_error"),
+            (Reason::CredentialSubMismatch, "credential_sub_mismatch"),
+            (
+                Reason::CredentialDeserializationFailed,
+                "credential_deserialization_failed",
+            ),
+            (
+                Reason::CredentialSignatureVerificationFailed,
+                "credential_signature_verification_failed",
+            ),
+            (Reason::CredentialClaimsMismatch, "credential_claims_mismatch"),
             (Reason::S3Error, "s3_error"),
             (Reason::Timeout, "timeout"),
         ];
