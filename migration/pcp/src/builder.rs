@@ -20,12 +20,9 @@ pub struct OutputRecipients<'a> {
 /// Validate one migration run and pass its build request to `build`,
 /// normally `orb_pcp::build` with a CSPRNG and the enclave signer.
 ///
-/// `info.json` is the source's with the context's signup ID. Raw images, iris
-/// codes and shares come from `source` unchanged; face, DI and normalized iris
-/// outputs come from `biometrics`.
-/// Iris and DI files use the builder's explicit presence inputs: source iris
-/// files are supplied only when present, and all validated fresh DI outputs
-/// are supplied for every successful migration.
+/// `info.json` is the source's with the context's signup ID. Raw images and
+/// available iris code files come from `source` unchanged; face, DI and
+/// normalized iris outputs are required from `biometrics`.
 /// Fails without calling `build` when the prepared biometrics are incomplete or
 /// inconsistent, the context reuses the source signup ID, a multiframe image ID
 /// is not a canonical image ID, or a raw image has no builder input. The builder

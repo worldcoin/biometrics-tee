@@ -13,9 +13,9 @@ thiserror.workspace = true
 sha2 = "0.10"
 # Shared PCP builder, protobuf definitions and signup IDs, pinned to one
 # revision so they share the generated types.
-orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "2323f1b8bb40957165aab503e272c359cc9efec7" }
-orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "2323f1b8bb40957165aab503e272c359cc9efec7" }
-orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "2323f1b8bb40957165aab503e272c359cc9efec7" }
+orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
+orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
+orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
 
 [dev-dependencies]
 alkali = { version = "0.3", features = ["use-pkg-config"] }
