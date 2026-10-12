@@ -15,6 +15,7 @@ members = [
     "migration/client",
     "migration/cli",
     "migration/proof",
+    "migration/pcp",
     "sandbox",
     "worker-protocol",
 ]
