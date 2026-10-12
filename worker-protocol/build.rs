@@ -6,6 +6,7 @@ fn main() -> std::io::Result<()> {
             "MigrationRequest",
             "FaceEmbedding",
             "EyeResult",
+            "NormalizedIris",
             ".biometric_engines.migration.v1.Failure",
         ])
         .boxed(".biometric_engines.v1.Response.outcome.migration")

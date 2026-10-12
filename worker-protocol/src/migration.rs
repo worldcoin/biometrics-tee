@@ -9,6 +9,10 @@ pub const ENCODED_CODE_LEN: usize = 2136;
 pub const MAX_ENCODED_FACE_EMBEDDING_BYTES: usize = 4 * 1024;
 /// `DeepIdentifier` embedding dimension.
 pub const EMBEDDING_SIZE: usize = 512;
+/// Normalized iris pixels: 128 x 1024, the Orb engine's `res_in_r` x `res_in_phi`.
+pub const NORMALIZED_IRIS_LEN: usize = 128 * 1024;
+/// Resized normalized iris pixels: 100 x 400.
+pub const NORMALIZED_IRIS_RESIZED_LEN: usize = 100 * 400;
 /// Value range of an int4-quantized embedding element.
 pub const I4_RANGE: std::ops::RangeInclusive<i8> = -8..=7;
 
@@ -96,6 +100,12 @@ impl std::fmt::Debug for FaceEmbedding {
             .field("version", &self.version)
             .field("inference_backend", &self.inference_backend)
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for NormalizedIris {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NormalizedIris").finish_non_exhaustive()
     }
 }
 
