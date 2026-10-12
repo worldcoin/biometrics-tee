@@ -14,7 +14,8 @@ use profiles::version_profile;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use support::{
-    FRAME_A, NEW_SIGNUP_ID, OutputKeys, SIGNATURE, build_and_open, context, pipeline, source_files,
+    FRAME_A, NEW_SIGNUP_ID, OutputKeys, SIGNATURE, build_and_open, context, pipeline,
+    refresh_source_manifest, source_files,
 };
 
 fn json_file(files: &Files, name: &str) -> Value {
@@ -225,8 +226,7 @@ fn optional_artifacts_can_be_absent() {
     for version in ["2.0", "2.5", "2.6", "2.7", "2.8"] {
         round_trip(version, false);
     }
-    // Every file of a complete source other than the pipeline images, the
-    // signed manifest and `info.json` may be missing.
+    // Optional files may be absent from both the source and its manifest.
     let (bio, ctx) = (pipeline(), context());
     let complete = version_profile("2.8", true);
     for name in complete.keys().filter(|name| {
@@ -248,6 +248,7 @@ fn optional_artifacts_can_be_absent() {
             info["left_ir_multiframe_image_ids"] = json!([]);
             old.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
         }
+        refresh_source_manifest(&mut old);
         let source = SourcePcp::parse(old).unwrap();
         let new = build_and_open(&source, &bio, &ctx);
         verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
@@ -263,6 +264,7 @@ fn opened_thermal_and_fraud_images_use_their_modality_archives() {
             format!("synthetic-{name}").into_bytes(),
         );
     }
+    refresh_source_manifest(&mut old);
     let source = SourcePcp::parse(old.clone()).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
@@ -281,6 +283,7 @@ fn opened_thermal_and_fraud_images_use_their_modality_archives() {
     for name in ["scc_rgb", "left_rgb", "right_rgb"] {
         old.remove(&format!("fraud/{name}.png"));
     }
+    refresh_source_manifest(&mut old);
     let source = SourcePcp::parse(old).unwrap();
     let new = build_and_open(&source, &bio, &ctx);
     verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
@@ -572,6 +575,7 @@ fn capture_metadata_changes_are_limited_to_the_signup_id() {
     info["right_iris_code_aggregate_image_ids"] = json!(["frame-c"]);
     files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
     files.insert(format!("iris/{FRAME_A}.png"), b"synthetic-frame".to_vec());
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);

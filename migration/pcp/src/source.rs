@@ -3,6 +3,7 @@ use std::str::FromStr;
 use orb_pcp_defs::v1;
 use serde::{Deserialize, de::IntoDeserializer};
 
+use crate::integrity::{JsonObject, Manifest};
 use crate::{Error, Files, parse_json, validate_files};
 
 /// Source versions accepted by the opened-artifact mapper.
@@ -59,18 +60,10 @@ impl FromStr for SourceVersion {
     }
 }
 
-// Historical hashes.json files encode the PCP version as a string, or as a
-// number in 0.2 and 0.3.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum LegacyVersionValue {
-    Text(String),
-    Number(serde_json::Number),
-}
-
-/// An opened source package that has everything a migration requires: the raw
-/// iris and face images the pipeline reads, `signup_id`, `orb_id`, and the
-/// signed manifest. Everything else is optional and carried over when present.
+/// An opened source package whose artifacts and protected metadata match its
+/// manifest. It contains the pipeline images, `signup_id`, `orb_id`, and a
+/// signature. Optional content must match the manifest when present.
+/// The signature's authenticity must be verified separately against a trusted key.
 pub struct SourcePcp {
     pub(crate) version: SourceVersion,
     pub(crate) info: v1::Info,
@@ -80,28 +73,20 @@ pub struct SourcePcp {
 }
 
 impl SourcePcp {
-    /// Parse an opened source. Inner-archive members use logical paths: the
-    /// `iris.tar` member `left_ir.png` is `iris/left_ir.png`, and so on.
+    /// Parse and hash-check an opened source. Inner-archive members use logical
+    /// paths: the `iris.tar` member `left_ir.png` is `iris/left_ir.png`, and so on.
+    ///
+    /// Artifact bytes and salted capture values must match `hashes.json` one to
+    /// one. Duplicate manifest/metadata keys and ambiguous member names fail.
+    /// Protected values require their original salts. No signature verification
+    /// is performed here; the original manifest bytes are retained unchanged.
     ///
     /// `info.json` fields that the shared `pcp.v1.Info` message does not define
-    /// are dropped. Missing and `null` fields read as unset.
+    /// are dropped after hash validation. Missing and `null` fields read as unset.
+    /// Unlisted metadata, including image IDs, is not protected by the manifest.
     pub fn parse(files: Files) -> Result<Self, Error> {
         validate_files(&files)?;
-        #[derive(Deserialize)]
-        struct Manifest {
-            version: LegacyVersionValue,
-        }
-        let manifest: Manifest = parse_json(required(&files, "hashes.json")?, "hashes.json")?;
-        let version = match manifest.version {
-            LegacyVersionValue::Text(s) => s.parse()?,
-            // A number is rendered as the shortest float, so restrict it to the
-            // versions that used numbers; `2.10` would otherwise become `2.1`.
-            LegacyVersionValue::Number(n) => match n.to_string().as_str() {
-                "0.2" => SourceVersion::V0_2,
-                "0.3" => SourceVersion::V0_3,
-                _ => return Err(Error::UnsupportedVersion),
-            },
-        };
+        let manifest = Manifest::parse(required(&files, "hashes.json")?)?;
         required(&files, "hashes.sign")?;
         if files.contains_key("face_ir_and_thermal.tar") {
             return Err(Error::UnopenedArtifact("face_ir_and_thermal.tar"));
@@ -113,13 +98,19 @@ impl SourcePcp {
         for path in PIPELINE_IMAGES {
             required(&files, path)?;
         }
-        let info: v1::Info =
-            parse_json::<SourceInfo>(required(&files, "info.json")?, "info.json")?.into();
-        for (field, value) in [("signup_id", &info.signup_id), ("orb_id", &info.orb_id)] {
-            if value.as_deref().is_none_or(str::is_empty) {
+        let info_bytes = required(&files, "info.json")?;
+        let raw_info: JsonObject = parse_json(info_bytes, "info.json")?;
+        for field in ["signup_id", "orb_id"] {
+            if raw_info
+                .0
+                .get(field)
+                .is_none_or(|value| value.is_null() || value.as_str().is_some_and(str::is_empty))
+            {
                 return Err(Error::MissingCaptureField(field));
             }
         }
+        manifest.verify(&files, &raw_info)?;
+        let info: v1::Info = parse_json::<SourceInfo>(info_bytes, "info.json")?.into();
         let iris_codes = optional_json(&files, "iris_codes.json")?;
         let iris_code_shares = [
             optional_json(&files, "iris_code_shares_0.json")?,
@@ -127,7 +118,7 @@ impl SourcePcp {
             optional_json(&files, "iris_code_shares_2.json")?,
         ];
         Ok(Self {
-            version,
+            version: manifest.version,
             info,
             iris_codes,
             iris_code_shares,
@@ -303,8 +294,8 @@ fn known_source_artifact(path: &str) -> bool {
         || normalized_artifact(path)
         || IRIS_CODE_FILES.contains(&path)
         || REPLACED_OUTPUTS.contains(&path)
-        // The manifest and signature authenticate the source; the backend keys
-        // only open its inner archives, which the new package replaces.
+        // The manifest covers source hashes; signature authentication is external.
+        // Backend keys open the source's inner archives.
         || matches!(
             path,
             "info.json" | "hashes.json" | "hashes.sign" | "backend_keys.json"

@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 mod support;
 use support::{
     FRAME_A, FRAME_B, IRIS_CODES, NEW_SIGNUP_ID, OutputKeys, SIGNATURE, build_and_open,
-    check_request, context, iris_code_share, open, pipeline, source_files,
+    check_request, context, iris_code_share, open, pipeline, refresh_source_manifest, source_files,
 };
 
 const VERSIONS: [&str; 11] = [
@@ -84,6 +84,7 @@ fn only_signup_and_orb_ids_are_required_capture_fields() {
         "info.json".into(),
         br#"{"signup_id":"s","orb_id":"o","signup_reason":"","software_version":null,"left_ir_multiframe_image_ids":null}"#.to_vec(),
     );
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let info = source.info();
     assert_eq!(info.signup_reason.as_deref(), Some(""));
@@ -128,6 +129,7 @@ fn missing_primary_and_thumbnail_ids_stay_absent_in_the_new_pcp() {
             info.remove(field);
         }
     });
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
@@ -146,6 +148,7 @@ fn capture_values_are_written_as_the_source_has_them() {
         i["timestamp"] = json!("01700000000");
         i["orb_public_key_certificate"] = json!("not base64\n");
     });
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
@@ -165,6 +168,7 @@ fn fields_outside_the_shared_schema_do_not_block_migration() {
         i["latitude"] = json!(1.5);
         i["latitude_salt"] = json!("salt");
     });
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
@@ -205,6 +209,7 @@ fn iris_code_files_are_carried_unchanged_or_left_out() {
     let mut files = source_files("2.5");
     files.remove("iris_codes.json");
     files.remove("iris_code_shares_1.json");
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files.clone()).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
@@ -238,6 +243,7 @@ fn iris_code_files_are_carried_unchanged_or_left_out() {
 
     let mut files = source_files("2.8");
     files.insert("iris_codes.json".into(), b"{\"IRIS_version\":".to_vec());
+    refresh_source_manifest(&mut files);
     assert!(matches!(
         SourcePcp::parse(files).err(),
         Some(Error::InvalidJson {
@@ -256,6 +262,7 @@ fn replaced_outputs_are_not_carried_and_opened_thermal_images_are() {
         b"obsolete".to_vec(),
     );
     files.insert("di_iris_embeddings.pb".into(), b"obsolete".to_vec());
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
@@ -280,16 +287,13 @@ fn malformed_fields_versions_and_duplicates_are_rejected_without_payloads() {
         let error = SourcePcp::parse(files).err().unwrap();
         assert!(matches!(
             error,
-            Error::InvalidJson {
-                artifact: "info.json",
-                ..
-            }
+            Error::SourceIntegrity("metadata_value_invalid")
         ));
     }
     let mut files = source_files("2.8");
     edit_info(&mut files, |i| i["orb_id"] = json!(["private-orb"]));
     let error = SourcePcp::parse(files).err().unwrap();
-    assert!(matches!(error, Error::InvalidJson { .. }));
+    assert_eq!(error, Error::SourceIntegrity("metadata_value_invalid"));
     assert!(!format!("{error:?}").contains("private-orb"));
     for version in [
         "3.0", "2.99", "0.1", "1.0", "2.10", "", "V2_8", "2.8.0", " 2.8", "2.8 ",
@@ -336,6 +340,7 @@ fn numeric_manifest_and_large_integer_timestamp_are_exact() {
     edit_info(&mut files, |i| {
         i["timestamp"] = json!(18446744073709551615u64)
     });
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     assert_eq!(source.version(), SourceVersion::V0_2);
     assert_eq!(
@@ -446,6 +451,7 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
         i["left_ir_multiframe_image_ids"] = json!([FRAME_A])
     });
     files.insert(format!("iris/{FRAME_A}.png"), vec![9]);
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
     with_build_request(
@@ -499,6 +505,7 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
 fn builder_bridge_rejects_unmapped_or_duplicate_images() {
     let mut files = source_files("2.8");
     files.insert(format!("iris/{FRAME_A}.png"), vec![9]);
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files.clone()).unwrap();
     assert_eq!(
         check_request(&source, &pipeline(), &context()),
@@ -513,6 +520,7 @@ fn builder_bridge_rejects_unmapped_or_duplicate_images() {
             i["left_ir_multiframe_image_ids"] = left;
             i["right_ir_multiframe_image_ids"] = right;
         });
+        refresh_source_manifest(&mut files);
         let source = SourcePcp::parse(files).unwrap();
         assert_eq!(
             check_request(&source, &pipeline(), &context()),
@@ -537,6 +545,7 @@ fn multiframe_ids_must_be_canonical_image_ids() {
             i["left_ir_multiframe_image_ids"] = json!([id])
         });
         files.insert(format!("iris/{id}.png"), vec![9]);
+        refresh_source_manifest(&mut files);
         let source = SourcePcp::parse(files).unwrap();
         let result = check_request(&source, &pipeline(), &context());
         if valid {
@@ -570,6 +579,7 @@ fn the_new_signup_id_comes_from_the_context() {
     // The context must not reuse the source signup ID.
     let mut files = source_files("2.8");
     edit_info(&mut files, |i| i["signup_id"] = json!(NEW_SIGNUP_ID));
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     assert_eq!(
         check_request(&source, &bio, &context()),
@@ -676,6 +686,7 @@ fn builder_bridge_carries_fresh_multiframe_normalization_and_rejects_unmapped_ou
     files.insert(format!("iris/{FRAME_B}.png"), vec![8]);
     let mut bio = pipeline();
     bio.extra_normalized.insert(FRAME_A.into(), frame(5));
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let ctx = context();
     with_build_request(
@@ -723,9 +734,12 @@ fn numeric_manifest_versions_are_limited_to_0_2_and_0_3() {
         ("3", None),
     ] {
         let mut files = source_files("2.8");
+        let manifest = String::from_utf8(files["hashes.json"].clone()).unwrap();
         files.insert(
             "hashes.json".into(),
-            format!("{{\"version\":{version}}}").into_bytes(),
+            manifest
+                .replace("\"version\":\"2.8\"", &format!("\"version\":{version}"))
+                .into_bytes(),
         );
         let parsed = SourcePcp::parse(files).map(|source| source.version());
         match expected {
@@ -744,6 +758,7 @@ fn source_shares_without_a_sharing_version_are_carried_as_they_are() {
             iris_code_share(index, false),
         );
     }
+    refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files.clone()).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);

@@ -1,6 +1,6 @@
 //! Invented per-version profiles for mapping coverage, not captured packages.
 
-use crate::support::{FRAME_A, iris_code_share, source_files};
+use crate::support::{FRAME_A, iris_code_share, refresh_source_manifest, source_files};
 use di_migration_pcp::Files;
 use serde_json::{Value, json};
 
@@ -96,10 +96,11 @@ pub fn version_profile(version: &str, optional: bool) -> Files {
         b"old-normalization".to_vec(),
     );
     files.insert("info.json".into(), serde_json::to_vec(info).unwrap());
-    // Present in real sources; its contents are never read.
+    // Backend key envelopes are covered by the source manifest.
     files.insert(
         "backend_keys.json".into(),
         b"synthetic-backend-keys".to_vec(),
     );
+    refresh_source_manifest(&mut files);
     files
 }

@@ -1,12 +1,15 @@
 //! Migrate opened PCPs with the shared PCP builder.
 //!
-//! [`SourcePcp::parse`] reads an opened source, [`with_build_request`] turns it and
-//! this run's prepared biometrics into the shared builder's request, and
+//! [`SourcePcp::parse`] checks an opened source against its manifest.
+//! [`with_build_request`] turns it and this run's prepared biometrics into the
+//! shared builder's request, and
 //! [`verify_completed_pcp`] checks the opened result. This crate does not decrypt,
-//! authenticate the source, run inference, generate shares, sign or encrypt.
+//! verify source signatures, run inference, generate shares, sign or encrypt.
+//! Hash consistency does not authenticate the source manifest or unlisted metadata.
 //! Sensitive types deliberately do not implement `Debug`; never log their JSON.
 
 mod builder;
+mod integrity;
 mod mapping;
 mod preservation;
 mod source;
@@ -48,6 +51,8 @@ pub enum Error {
     UnopenedArtifact(&'static str),
     #[error("unsupported source artifact; an explicit mapping is required")]
     UnsupportedArtifact,
+    #[error("source PCP integrity check failed: {0}")]
+    SourceIntegrity(&'static str),
     #[error("raw image has no corresponding shared-builder input")]
     UnmappedImage,
     #[error("source PCP preservation check failed: {0}")]

@@ -69,7 +69,58 @@ pub fn source_files(version: &str) -> Files {
             iris_code_share(index, true),
         );
     }
+    refresh_source_manifest(&mut files);
     files
+}
+
+/// Finish an intentionally edited synthetic source: populate salts for its
+/// protected values and hash the exact artifacts. Corruption tests edit only
+/// after this step, leaving the manifest unchanged.
+pub fn refresh_source_manifest(files: &mut Files) {
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
+
+    let mut info: Value = serde_json::from_slice(&files["info.json"]).unwrap();
+    let mut manifest = json!({
+        "version": serde_json::from_slice::<Value>(&files["hashes.json"]).unwrap()["version"]
+    });
+    for name in [
+        "signup_id",
+        "signup_reason",
+        "orb_id",
+        "operator_id",
+        "timestamp",
+        "qr_code",
+        "id_commitment",
+        "software_version",
+        "orb_country",
+        "device_public_key",
+    ] {
+        let salt_name = format!("{name}_salt");
+        if info[name].is_null() {
+            info.as_object_mut().unwrap().remove(&salt_name);
+            continue;
+        }
+        if info[&salt_name].is_null() {
+            info[&salt_name] = json!("synthetic-salt");
+        }
+        let value = match &info[name] {
+            Value::String(value) => value.clone(),
+            Value::Number(value) => value.to_string(),
+            _ => panic!("unsupported synthetic metadata value"),
+        };
+        let input = format!("{value}{}", info[&salt_name].as_str().unwrap());
+        manifest[name] = json!(format!("{:x}", Sha256::digest(input.as_bytes())));
+    }
+    files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
+    for (path, bytes) in files.iter() {
+        if !matches!(path.as_str(), "info.json" | "hashes.json" | "hashes.sign") {
+            let name = path.rsplit('/').next().unwrap();
+            assert!(manifest.get(name).is_none(), "duplicate synthetic member");
+            manifest[name] = json!(format!("{:x}", Sha256::digest(bytes)));
+        }
+    }
+    files.insert("hashes.json".into(), serde_json::to_vec(&manifest).unwrap());
 }
 
 pub fn context() -> MigrationContext {
