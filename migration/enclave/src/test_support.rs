@@ -12,8 +12,6 @@ use world_id_primitives::EdDSAPublicKey;
 use crate::attestation::Attestor;
 
 /// Staging issuer pubkey coordinates for tests.
-///
-/// See <https://app.notion.com/p/worldcoin/Issuer-Public-Keys-Recovery-Addresses-3218614bdf8c80d88a3fc0fb5f632594>.
 const STAGING_ISSUER_PUBKEY_X: &str =
     "8764755626041608914298444081069238835505190105048545592330271001420004184714";
 const STAGING_ISSUER_PUBKEY_Y: &str =
@@ -76,18 +74,18 @@ pub fn state() -> crate::state::EnclaveState {
 
 /// Boot state that verifies credentials against `issuer_pubkey`.
 pub fn state_with_issuer_pubkey(issuer_pubkey: EdDSAPublicKey) -> crate::state::EnclaveState {
-    state_with_issuer_pubkey_and_verify(issuer_pubkey, true)
+    state_with_issuer_pubkey_and_credential_verification(issuer_pubkey, true)
 }
 
-/// Boot state with an explicit credential-verification flag.
-pub fn state_with_issuer_pubkey_and_verify(
+/// Boot state with an explicit credential-verification feature flag.
+pub fn state_with_issuer_pubkey_and_credential_verification(
     issuer_pubkey: EdDSAPublicKey,
-    verify_credential: bool,
+    credential_verification_enabled: bool,
 ) -> crate::state::EnclaveState {
     crate::state::EnclaveState::generate(
         std::sync::Arc::new(CountingAttestor::default()),
         issuer_pubkey,
-        verify_credential,
+        credential_verification_enabled,
     )
     .expect("should generate a key")
 }

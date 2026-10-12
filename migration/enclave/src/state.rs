@@ -14,10 +14,9 @@ use crate::attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
 pub const ISSUER_PUBKEY_X_ENV: &str = "ISSUER_PUBKEY_X";
 /// Decimal `BabyJubJub` affine Y coordinate of the credential issuer pubkey.
 pub const ISSUER_PUBKEY_Y_ENV: &str = "ISSUER_PUBKEY_Y";
-/// When `false`/`0`/`off`, migrate skips credential verification (staging convenience).
-///
-/// Defaults to enabled when unset.
-pub const VERIFY_CREDENTIAL_ENV: &str = "VERIFY_CREDENTIAL";
+/// Feature flag: when `false`/`0`/`off`, migrate skips credential verification
+/// (staging convenience). Defaults to enabled when unset.
+pub const CREDENTIAL_VERIFICATION_ENABLED_ENV: &str = "CREDENTIAL_VERIFICATION_ENABLED";
 
 /// State fixed for the life of one enclave boot.
 pub struct EnclaveState {
@@ -26,8 +25,8 @@ pub struct EnclaveState {
     attested_channel_key: AttestedKey,
     /// Signup-service credential signer key used to verify PCP credentials.
     issuer_pubkey: EdDSAPublicKey,
-    /// When false, migrate echoes without checking the credential (staging only).
-    verify_credential: bool,
+    /// Feature flag: when false, migrate skips credential checks (staging only).
+    credential_verification_enabled: bool,
 }
 
 impl EnclaveState {
@@ -40,7 +39,7 @@ impl EnclaveState {
     pub fn generate(
         attestor: Arc<dyn Attestor>,
         issuer_pubkey: EdDSAPublicKey,
-        verify_credential: bool,
+        credential_verification_enabled: bool,
     ) -> Result<Self, enclave_primitives::Error> {
         let channel = ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))
             .map_err(|error| {
@@ -57,14 +56,12 @@ impl EnclaveState {
             channel,
             attested_channel_key,
             issuer_pubkey,
-            verify_credential,
+            credential_verification_enabled,
         })
     }
 
     /// Loads [`Self::generate`] with the issuer pubkey from [`ISSUER_PUBKEY_X_ENV`] /
-    /// [`ISSUER_PUBKEY_Y_ENV`] and [`VERIFY_CREDENTIAL_ENV`].
-    ///
-    /// See <https://app.notion.com/p/worldcoin/Issuer-Public-Keys-Recovery-Addresses-3218614bdf8c80d88a3fc0fb5f632594>.
+    /// [`ISSUER_PUBKEY_Y_ENV`] and the [`CREDENTIAL_VERIFICATION_ENABLED_ENV`] feature flag.
     ///
     /// # Errors
     ///
@@ -72,14 +69,14 @@ impl EnclaveState {
     /// attestation fails.
     pub fn from_env(attestor: Arc<dyn Attestor>) -> anyhow::Result<Self> {
         let issuer_pubkey = issuer_pubkey_from_env()?;
-        let verify_credential = verify_credential_from_env()?;
-        if !verify_credential {
+        let credential_verification_enabled = credential_verification_enabled_from_env()?;
+        if !credential_verification_enabled {
             tracing::warn!(
-                env = VERIFY_CREDENTIAL_ENV,
-                "credential verification is disabled"
+                env = CREDENTIAL_VERIFICATION_ENABLED_ENV,
+                "credential verification feature flag is disabled"
             );
         }
-        Self::generate(attestor, issuer_pubkey, verify_credential)
+        Self::generate(attestor, issuer_pubkey, credential_verification_enabled)
             .map_err(|error| anyhow::anyhow!("failed to generate and attest the channel key: {error:?}"))
     }
 
@@ -95,10 +92,10 @@ impl EnclaveState {
         &self.issuer_pubkey
     }
 
-    /// Whether migrate checks the credential's subject, signature, and claims.
+    /// Feature flag: whether migrate checks the credential's subject, signature, and claims.
     #[must_use]
-    pub const fn verify_credential(&self) -> bool {
-        self.verify_credential
+    pub const fn credential_verification_enabled(&self) -> bool {
+        self.credential_verification_enabled
     }
 
     /// The latest document attesting the channel key's commitment.
@@ -141,20 +138,20 @@ fn issuer_pubkey_from_decimals(x: &str, y: &str) -> anyhow::Result<EdDSAPublicKe
     })
 }
 
-/// Reads [`VERIFY_CREDENTIAL_ENV`]; unset means verification is enabled.
+/// Reads [`CREDENTIAL_VERIFICATION_ENABLED_ENV`]; unset means the feature is on.
 ///
 /// # Errors
 ///
 /// When the value is set but not a recognized boolean.
-fn verify_credential_from_env() -> anyhow::Result<bool> {
-    match env::var(VERIFY_CREDENTIAL_ENV) {
+fn credential_verification_enabled_from_env() -> anyhow::Result<bool> {
+    match env::var(CREDENTIAL_VERIFICATION_ENABLED_ENV) {
         Err(env::VarError::NotPresent) => Ok(true),
-        Err(error) => Err(anyhow::anyhow!("{VERIFY_CREDENTIAL_ENV}: {error}")),
+        Err(error) => Err(anyhow::anyhow!("{CREDENTIAL_VERIFICATION_ENABLED_ENV}: {error}")),
         Ok(value) => match value.to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => Ok(true),
             "0" | "false" | "no" | "off" => Ok(false),
             other => Err(anyhow::anyhow!(
-                "{VERIFY_CREDENTIAL_ENV} must be true or false, got {other:?}"
+                "{CREDENTIAL_VERIFICATION_ENABLED_ENV} must be true or false, got {other:?}"
             )),
         },
     }

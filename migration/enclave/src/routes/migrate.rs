@@ -39,7 +39,7 @@ pub async fn handler(
         let pcp_with_credential = pcp_payload::decode(&plaintext).inspect_err(|_| {
             tracing::warn!("migrate request carried an unknown payload");
         })?;
-        if state.verify_credential() {
+        if state.credential_verification_enabled() {
             verify_credential(
                 state.issuer_pubkey(),
                 &request.sub,
@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn credential_verification_can_be_disabled() {
-        let state = Arc::new(test_support::state_with_issuer_pubkey_and_verify(
+        let state = Arc::new(test_support::state_with_issuer_pubkey_and_credential_verification(
             EdDSAPrivateKey::from_bytes([7u8; 32]).public(),
             false,
         ));
