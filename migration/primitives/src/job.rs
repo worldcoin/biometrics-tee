@@ -257,7 +257,10 @@ mod tests {
                 Reason::CredentialSignatureVerificationFailed,
                 "credential_signature_verification_failed",
             ),
-            (Reason::CredentialClaimsMismatch, "credential_claims_mismatch"),
+            (
+                Reason::CredentialClaimsMismatch,
+                "credential_claims_mismatch",
+            ),
             (Reason::S3Error, "s3_error"),
             (Reason::Timeout, "timeout"),
         ];

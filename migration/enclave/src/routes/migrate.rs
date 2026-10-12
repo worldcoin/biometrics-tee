@@ -1,8 +1,4 @@
-use std::{
-    io::Read,
-    path::Path,
-    sync::Arc,
-};
+use std::{io::Read, path::Path, sync::Arc};
 
 use di_migration_enclave_primitives::{
     self as enclave_primitives, MigrateRequest, MigrateResponse, pcp_payload,
@@ -157,7 +153,6 @@ fn hashes_json_from_pcp(pcp: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error
     Err(enclave_primitives::Error::InvalidInput)
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::{io::Write, sync::Arc};
@@ -259,10 +254,12 @@ mod tests {
 
     #[tokio::test]
     async fn credential_verification_can_be_disabled() {
-        let state = Arc::new(test_support::state_with_issuer_pubkey_and_credential_verification(
-            EdDSAPrivateKey::from_bytes([7u8; 32]).public(),
-            false,
-        ));
+        let state = Arc::new(
+            test_support::state_with_issuer_pubkey_and_credential_verification(
+                EdDSAPrivateKey::from_bytes([7u8; 32]).public(),
+                false,
+            ),
+        );
         let payload = pcp_payload::encode(b"old pcp", "not-a-credential").expect("encode");
         let (request, opener) = sealed(&state, &payload, "sub");
 

@@ -76,8 +76,9 @@ impl EnclaveState {
                 "credential verification feature flag is disabled"
             );
         }
-        Self::generate(attestor, issuer_pubkey, credential_verification_enabled)
-            .map_err(|error| anyhow::anyhow!("failed to generate and attest the channel key: {error:?}"))
+        Self::generate(attestor, issuer_pubkey, credential_verification_enabled).map_err(|error| {
+            anyhow::anyhow!("failed to generate and attest the channel key: {error:?}")
+        })
     }
 
     /// The boot-scoped channel the app seals PCPs to.
@@ -127,12 +128,10 @@ fn issuer_pubkey_from_env() -> anyhow::Result<EdDSAPublicKey> {
 }
 
 fn issuer_pubkey_from_decimals(x: &str, y: &str) -> anyhow::Result<EdDSAPublicKey> {
-    let x = Fq::from_str(x).map_err(|()| {
-        anyhow::anyhow!("{ISSUER_PUBKEY_X_ENV} is not a valid decimal Fq element")
-    })?;
-    let y = Fq::from_str(y).map_err(|()| {
-        anyhow::anyhow!("{ISSUER_PUBKEY_Y_ENV} is not a valid decimal Fq element")
-    })?;
+    let x = Fq::from_str(x)
+        .map_err(|()| anyhow::anyhow!("{ISSUER_PUBKEY_X_ENV} is not a valid decimal Fq element"))?;
+    let y = Fq::from_str(y)
+        .map_err(|()| anyhow::anyhow!("{ISSUER_PUBKEY_Y_ENV} is not a valid decimal Fq element"))?;
     Ok(EdDSAPublicKey {
         pk: EdwardsAffine { x, y },
     })
@@ -146,7 +145,9 @@ fn issuer_pubkey_from_decimals(x: &str, y: &str) -> anyhow::Result<EdDSAPublicKe
 fn credential_verification_enabled_from_env() -> anyhow::Result<bool> {
     match env::var(CREDENTIAL_VERIFICATION_ENABLED_ENV) {
         Err(env::VarError::NotPresent) => Ok(true),
-        Err(error) => Err(anyhow::anyhow!("{CREDENTIAL_VERIFICATION_ENABLED_ENV}: {error}")),
+        Err(error) => Err(anyhow::anyhow!(
+            "{CREDENTIAL_VERIFICATION_ENABLED_ENV}: {error}"
+        )),
         Ok(value) => match value.to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => Ok(true),
             "0" | "false" | "no" | "off" => Ok(false),
