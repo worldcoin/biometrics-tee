@@ -15,7 +15,7 @@ fn edit_json(files: &mut Files, name: &str, edit: impl FnOnce(&mut Value)) {
     files.insert(name.into(), serde_json::to_vec(&value).unwrap());
 }
 
-fn fails(files: Files, reason: &'static str) {
+fn parse_fails(files: Files, reason: &'static str) {
     assert_eq!(
         SourcePcp::parse(files).err(),
         Some(Error::SourceIntegrity(reason))
@@ -75,7 +75,7 @@ fn every_source_artifact_is_checked_including_replaced_outputs_and_keys() {
     {
         let mut files = original.clone();
         files.get_mut(name).unwrap().push(b' ');
-        fails(files, "manifest_hash_mismatch");
+        parse_fails(files, "manifest_hash_mismatch");
     }
 }
 
@@ -93,7 +93,7 @@ fn every_present_digest_is_required() {
         edit_json(&mut files, "hashes.json", |manifest| {
             manifest.as_object_mut().unwrap().remove(name);
         });
-        fails(files, "manifest_entry_missing");
+        parse_fails(files, "manifest_entry_missing");
     }
 }
 
@@ -107,7 +107,7 @@ fn optional_files_can_only_be_absent_when_unlisted() {
     ] {
         let mut files = version_profile("2.8", true);
         files.remove(name);
-        fails(files.clone(), "manifest_entry_unexpected");
+        parse_fails(files.clone(), "manifest_entry_unexpected");
         edit_json(&mut files, "hashes.json", |manifest| {
             manifest.as_object_mut().unwrap().remove(name);
         });
@@ -119,7 +119,7 @@ fn optional_files_can_only_be_absent_when_unlisted() {
 fn unlisted_files_unknown_entries_and_unresolved_metadata_fail() {
     let mut files = source_files("2.8");
     files.insert("normalized_iris/left_normalized_image.bin".into(), vec![1]);
-    fails(files, "manifest_entry_missing");
+    parse_fails(files, "manifest_entry_missing");
     for name in ["unknown.png", "info.json", "hashes.sign", "latitude"] {
         let mut files = source_files("2.8");
         edit_json(&mut files, "info.json", |info| {
@@ -129,7 +129,7 @@ fn unlisted_files_unknown_entries_and_unresolved_metadata_fail() {
         edit_json(&mut files, "hashes.json", |manifest| {
             manifest[name] = json!("00".repeat(32))
         });
-        fails(files, "manifest_entry_unexpected");
+        parse_fails(files, "manifest_entry_unexpected");
     }
 }
 
@@ -148,7 +148,7 @@ fn all_protected_metadata_and_salts_are_checked() {
             edit_json(&mut files, "info.json", |info| {
                 info[name] = json!("changed")
             });
-            fails(files, "manifest_hash_mismatch");
+            parse_fails(files, "manifest_hash_mismatch");
         }
     }
 }
@@ -165,17 +165,17 @@ fn metadata_requires_valid_value_and_salt_pairs() {
     ] {
         let mut files = source_files("2.8");
         edit_json(&mut files, "info.json", |info| info["orb_id_salt"] = salt);
-        fails(files, "metadata_salt_invalid");
+        parse_fails(files, "metadata_salt_invalid");
     }
     let mut files = source_files("2.8");
     edit_json(&mut files, "info.json", |info| {
         info.as_object_mut().unwrap().remove("orb_id_salt");
     });
-    fails(files, "metadata_salt_invalid");
+    parse_fails(files, "metadata_salt_invalid");
     for value in [json!(1), json!([]), json!({}), json!(true)] {
         let mut files = source_files("2.8");
         edit_json(&mut files, "info.json", |info| info["orb_id"] = value);
-        fails(files, "metadata_value_invalid");
+        parse_fails(files, "metadata_value_invalid");
     }
     for missing in [false, true] {
         let mut files = source_files("2.8");
@@ -186,7 +186,7 @@ fn metadata_requires_valid_value_and_salt_pairs() {
                 info["operator_id"] = Value::Null;
             }
         });
-        fails(files, "metadata_salt_without_value");
+        parse_fails(files, "metadata_salt_without_value");
     }
 }
 
@@ -199,7 +199,7 @@ fn null_and_missing_optional_metadata_have_no_digest() {
         info.as_object_mut().unwrap().remove("timestamp");
         info.as_object_mut().unwrap().remove("timestamp_salt");
     });
-    fails(files.clone(), "manifest_entry_unexpected");
+    parse_fails(files.clone(), "manifest_entry_unexpected");
     edit_json(&mut files, "hashes.json", |manifest| {
         manifest.as_object_mut().unwrap().remove("operator_id");
         manifest.as_object_mut().unwrap().remove("timestamp");
@@ -213,7 +213,7 @@ fn duplicate_member_basenames_fail_even_with_identical_bytes() {
     files.insert("iris/duplicate.png".into(), b"same".to_vec());
     refresh_source_manifest(&mut files);
     files.insert("face/duplicate.png".into(), b"same".to_vec());
-    fails(files, "manifest_name_duplicate");
+    parse_fails(files, "manifest_name_duplicate");
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn invalid_digests_and_manifest_shapes_fail_without_payloads() {
         edit_json(&mut files, "hashes.json", |manifest| {
             manifest["left_ir.png"] = digest
         });
-        fails(files, "manifest_digest_invalid");
+        parse_fails(files, "manifest_digest_invalid");
     }
     for bytes in [
         b"[]".as_slice(),
@@ -271,11 +271,11 @@ fn invalid_digests_and_manifest_shapes_fail_without_payloads() {
         edit_json(&mut files, "hashes.json", |manifest| {
             manifest["version"] = version
         });
-        fails(files, "manifest_version_invalid");
+        parse_fails(files, "manifest_version_invalid");
     }
     let mut files = source_files("2.8");
     files.insert("hashes.json".into(), b"{}".to_vec());
-    fails(files, "manifest_version_invalid");
+    parse_fails(files, "manifest_version_invalid");
 }
 
 #[test]
