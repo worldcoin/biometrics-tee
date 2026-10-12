@@ -76,9 +76,18 @@ pub fn state() -> crate::state::EnclaveState {
 
 /// Boot state that verifies credentials against `issuer_pubkey`.
 pub fn state_with_issuer_pubkey(issuer_pubkey: EdDSAPublicKey) -> crate::state::EnclaveState {
+    state_with_issuer_pubkey_and_verify(issuer_pubkey, true)
+}
+
+/// Boot state with an explicit credential-verification flag.
+pub fn state_with_issuer_pubkey_and_verify(
+    issuer_pubkey: EdDSAPublicKey,
+    verify_credential: bool,
+) -> crate::state::EnclaveState {
     crate::state::EnclaveState::generate(
         std::sync::Arc::new(CountingAttestor::default()),
         issuer_pubkey,
+        verify_credential,
     )
     .expect("should generate a key")
 }

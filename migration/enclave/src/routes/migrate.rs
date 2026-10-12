@@ -39,12 +39,14 @@ pub async fn handler(
         let pcp_with_credential = pcp_payload::decode(&plaintext).inspect_err(|_| {
             tracing::warn!("migrate request carried an unknown payload");
         })?;
-        verify_credential(
-            state.issuer_pubkey(),
-            &request.sub,
-            &pcp_with_credential.credential,
-            &pcp_with_credential.pcp,
-        )?;
+        if state.verify_credential() {
+            verify_credential(
+                state.issuer_pubkey(),
+                &request.sub,
+                &pcp_with_credential.credential,
+                &pcp_with_credential.pcp,
+            )?;
+        }
 
         let blob = sealer
             .seal(
@@ -252,6 +254,31 @@ mod tests {
         assert_eq!(
             pcp_payload::decode(&plaintext).expect("decode"),
             PcpWithCredential { pcp, credential }
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_verification_can_be_disabled() {
+        let state = Arc::new(test_support::state_with_issuer_pubkey_and_verify(
+            EdDSAPrivateKey::from_bytes([7u8; 32]).public(),
+            false,
+        ));
+        let payload = pcp_payload::encode(b"old pcp", "not-a-credential").expect("encode");
+        let (request, opener) = sealed(&state, &payload, "sub");
+
+        let response = handler(state, request)
+            .await
+            .expect("migrate should skip credential checks");
+
+        let plaintext = opener
+            .open_from_enclave(&response.blob)
+            .expect("the app should open it");
+        assert_eq!(
+            pcp_payload::decode(&plaintext).expect("decode"),
+            PcpWithCredential {
+                pcp: b"old pcp".to_vec(),
+                credential: "not-a-credential".to_owned(),
+            }
         );
     }
 

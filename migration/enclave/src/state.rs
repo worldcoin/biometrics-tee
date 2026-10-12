@@ -14,6 +14,10 @@ use crate::attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
 pub const ISSUER_PUBKEY_X_ENV: &str = "ISSUER_PUBKEY_X";
 /// Decimal BabyJubJub affine Y coordinate of the credential issuer pubkey.
 pub const ISSUER_PUBKEY_Y_ENV: &str = "ISSUER_PUBKEY_Y";
+/// When `false`/`0`/`off`, migrate skips credential verification (staging convenience).
+///
+/// Defaults to enabled when unset.
+pub const VERIFY_CREDENTIAL_ENV: &str = "VERIFY_CREDENTIAL";
 
 /// State fixed for the life of one enclave boot.
 pub struct EnclaveState {
@@ -22,6 +26,8 @@ pub struct EnclaveState {
     attested_channel_key: AttestedKey,
     /// Signup-service credential signer key used to verify PCP credentials.
     issuer_pubkey: EdDSAPublicKey,
+    /// When false, migrate echoes without checking the credential (staging only).
+    verify_credential: bool,
 }
 
 impl EnclaveState {
@@ -34,6 +40,7 @@ impl EnclaveState {
     pub fn generate(
         attestor: Arc<dyn Attestor>,
         issuer_pubkey: EdDSAPublicKey,
+        verify_credential: bool,
     ) -> Result<Self, enclave_primitives::Error> {
         let channel = ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))
             .map_err(|error| {
@@ -50,11 +57,12 @@ impl EnclaveState {
             channel,
             attested_channel_key,
             issuer_pubkey,
+            verify_credential,
         })
     }
 
     /// Loads [`Self::generate`] with the issuer pubkey from [`ISSUER_PUBKEY_X_ENV`] /
-    /// [`ISSUER_PUBKEY_Y_ENV`].
+    /// [`ISSUER_PUBKEY_Y_ENV`] and [`VERIFY_CREDENTIAL_ENV`].
     ///
     /// See <https://app.notion.com/p/worldcoin/Issuer-Public-Keys-Recovery-Addresses-3218614bdf8c80d88a3fc0fb5f632594>.
     ///
@@ -64,7 +72,14 @@ impl EnclaveState {
     /// attestation fails.
     pub fn from_env(attestor: Arc<dyn Attestor>) -> anyhow::Result<Self> {
         let issuer_pubkey = issuer_pubkey_from_env()?;
-        Self::generate(attestor, issuer_pubkey)
+        let verify_credential = verify_credential_from_env()?;
+        if !verify_credential {
+            tracing::warn!(
+                env = VERIFY_CREDENTIAL_ENV,
+                "credential verification is disabled"
+            );
+        }
+        Self::generate(attestor, issuer_pubkey, verify_credential)
             .map_err(|error| anyhow::anyhow!("failed to generate and attest the channel key: {error:?}"))
     }
 
@@ -78,6 +93,12 @@ impl EnclaveState {
     #[must_use]
     pub const fn issuer_pubkey(&self) -> &EdDSAPublicKey {
         &self.issuer_pubkey
+    }
+
+    /// Whether migrate checks the credential's subject, signature, and claims.
+    #[must_use]
+    pub const fn verify_credential(&self) -> bool {
+        self.verify_credential
     }
 
     /// The latest document attesting the channel key's commitment.
@@ -116,6 +137,25 @@ fn issuer_pubkey_from_decimals(x: &str, y: &str) -> anyhow::Result<EdDSAPublicKe
     Ok(EdDSAPublicKey {
         pk: EdwardsAffine { x, y },
     })
+}
+
+/// Reads [`VERIFY_CREDENTIAL_ENV`]; unset means verification is enabled.
+///
+/// # Errors
+///
+/// When the value is set but not a recognized boolean.
+fn verify_credential_from_env() -> anyhow::Result<bool> {
+    match env::var(VERIFY_CREDENTIAL_ENV) {
+        Err(env::VarError::NotPresent) => Ok(true),
+        Err(error) => Err(anyhow::anyhow!("{VERIFY_CREDENTIAL_ENV}: {error}")),
+        Ok(value) => match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            other => Err(anyhow::anyhow!(
+                "{VERIFY_CREDENTIAL_ENV} must be true or false, got {other:?}"
+            )),
+        },
+    }
 }
 
 #[cfg(test)]
