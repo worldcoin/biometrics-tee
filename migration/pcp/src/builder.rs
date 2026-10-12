@@ -23,6 +23,9 @@ pub struct OutputRecipients<'a> {
 /// `info.json` is the source's with the context's signup ID. Raw images, iris
 /// codes and shares come from `source` unchanged; face, DI and normalized iris
 /// outputs come from `biometrics`.
+/// Iris and DI files use the builder's explicit presence inputs: source iris
+/// files are supplied only when present, and all validated fresh DI outputs
+/// are supplied for every successful migration.
 /// Fails without calling `build` when the prepared biometrics are incomplete or
 /// inconsistent, the context reuses the source signup ID, a multiframe image ID
 /// is not a canonical image ID, or a raw image has no builder input. The builder
@@ -95,8 +98,8 @@ pub fn with_build_request<T>(
             face_embeddings: &biometrics.face_embeddings,
             iris_codes: source.iris_codes.as_ref(),
             iris_code_shares: source.iris_code_shares.each_ref().map(Option::as_ref),
-            di_embeddings: &biometrics.di_embeddings,
-            di_embedding_shares: &biometrics.di_embedding_shares,
+            di_embeddings: Some(&biometrics.di_embeddings),
+            di_embedding_shares: biometrics.di_embedding_shares.each_ref().map(Some),
         },
         migration: Some(&migration),
     };

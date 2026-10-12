@@ -217,6 +217,24 @@ fn iris_code_files_are_carried_unchanged_or_left_out() {
         assert!(!new.files.contains_key(name), "{name}");
         assert!(manifest.get(name).is_none(), "{name}");
     }
+    for (name, expected) in std::iter::once((
+        "di_iris_embeddings.pb".to_owned(),
+        bio.di_embeddings.encode_to_vec(),
+    ))
+    .chain(
+        bio.di_embedding_shares
+            .iter()
+            .enumerate()
+            .map(|(i, share)| {
+                (
+                    format!("di_iris_embeddings_shares_{i}.pb"),
+                    share.encode_to_vec(),
+                )
+            }),
+    ) {
+        assert_eq!(new.files[&name], expected, "{name}");
+        assert!(manifest.get(&name).is_some(), "{name}");
+    }
 
     let mut files = source_files("2.8");
     files.insert("iris_codes.json".into(), b"{\"IRIS_version\":".to_vec());
@@ -439,6 +457,7 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
             let orb_pcp::BiometricPolicy::Included {
                 images,
                 iris_code_shares,
+                di_embeddings,
                 di_embedding_shares,
                 face_embeddings,
                 ..
@@ -456,8 +475,18 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
                     .as_deref(),
                 Some("old-share-2")
             );
+            assert_eq!(di_embeddings.unwrap(), &bio.di_embeddings);
             assert_eq!(
-                di_embedding_shares[2].share_v1.as_ref().unwrap().left_share,
+                di_embedding_shares.map(Option::unwrap),
+                bio.di_embedding_shares.each_ref(),
+            );
+            assert_eq!(
+                di_embedding_shares[2]
+                    .unwrap()
+                    .share_v1
+                    .as_ref()
+                    .unwrap()
+                    .left_share,
                 [31, 32]
             );
             assert_eq!(face_embeddings[0].embedding.as_deref(), Some("new-face"));
