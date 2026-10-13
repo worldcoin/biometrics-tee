@@ -28,21 +28,14 @@ pub trait Attestor: Send + Sync {
 
 /// [`Attestor`] backed by the real Nitro Secure Module.
 #[derive(Debug, Clone)]
-pub struct NsmAttestor {
-    /// CBOR worker identity fixed for this boot.
-    pub user_data: Vec<u8>,
-}
+pub struct NsmAttestor;
 
 impl Attestor for NsmAttestor {
     fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_types::Error> {
         let secure_module = SecureModule::try_global().ok_or(enclave_types::Error::Unavailable)?;
 
         secure_module
-            .raw_attest(
-                Some(self.user_data.clone()),
-                None::<Vec<u8>>,
-                Some(public_key.to_vec()),
-            )
+            .raw_attest(None::<Vec<u8>>, None::<Vec<u8>>, Some(public_key.to_vec()))
             .map_err(|error| {
                 tracing::error!(?error, "failed to attest public key");
                 enclave_types::Error::Unavailable

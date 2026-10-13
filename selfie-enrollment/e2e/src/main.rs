@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
                 EmbeddingResult::Success { embedding } => println!(
                     "{}",
                     serde_json::json!({"status":"success", "embedding_type":embedding.embedding_type,
-                    "version":embedding.version,"inference_backend":embedding.inference_backend,"worker":embedding.worker})
+                    "embedding_version":embedding.embedding_version,"embedding_inference_backend":embedding.embedding_inference_backend})
                 ),
                 EmbeddingResult::Failed { reason } => bail!("enclave rejected image: {reason:?}"),
             }

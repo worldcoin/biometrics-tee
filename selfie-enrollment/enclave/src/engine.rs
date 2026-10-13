@@ -1,14 +1,10 @@
 //! Typed adapter over the shared byte-oriented sandbox. Only VanillaSelfie extraction is exposed.
 use biometric_engines_protocol::{self as protocol, failure::Kind, response::Outcome};
 use selfie_enrollment_enclave_types::Error;
-use selfie_enrollment_sealed_types::{Embedding, Failure, WorkerIdentity};
+use selfie_enrollment_sealed_types::{FaceEmbedding, Failure};
 use zeroize::Zeroize;
 pub trait Engine: Send {
-    fn extract(
-        &mut self,
-        image: &[u8],
-        identity: &WorkerIdentity,
-    ) -> Result<Result<Embedding, Failure>, Error>;
+    fn extract(&mut self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error>;
     fn check_health(&self) -> Result<(), Error>;
 }
 
@@ -16,8 +12,7 @@ pub trait Engine: Send {
 pub fn decode_result(
     bytes: &[u8],
     expected_id: u64,
-    identity: &WorkerIdentity,
-) -> Result<Result<Embedding, Failure>, Error> {
+) -> Result<Result<FaceEmbedding, Failure>, Error> {
     let response = protocol::protobuf::decode_response(bytes).map_err(|_| Error::Unavailable)?;
     if expected_id == 0 || response.request_id != expected_id {
         return Err(Error::Unavailable);
@@ -39,12 +34,11 @@ pub fn decode_result(
                 result.vector.zeroize();
                 return Err(Error::Unavailable);
             }
-            Ok(Ok(Embedding {
-                vector: result.vector,
+            Ok(Ok(FaceEmbedding {
+                embedding: result.vector,
                 embedding_type: result.r#type,
-                version: result.version,
-                inference_backend: result.inference_backend,
-                worker: identity.clone(),
+                embedding_version: result.version,
+                embedding_inference_backend: result.inference_backend,
             }))
         }
         Outcome::Failure(failure) => match failure.kind {
@@ -75,11 +69,7 @@ pub struct SandboxEngine {
 }
 #[cfg(target_os = "linux")]
 impl Engine for SandboxEngine {
-    fn extract(
-        &mut self,
-        image: &[u8],
-        identity: &WorkerIdentity,
-    ) -> Result<Result<Embedding, Failure>, Error> {
+    fn extract(&mut self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
         use protocol::{
             face::{EmbeddingRequest, FaceImage, face_image::Source},
             request::Operation,
@@ -114,7 +104,7 @@ impl Engine for SandboxEngine {
                 .exchange(&encoded)
                 .unwrap_or_else(|_| self.worker.fail()),
         );
-        decode_result(&response, id, identity).or_else(|_| self.worker.fail())
+        decode_result(&response, id).or_else(|_| self.worker.fail())
     }
     fn check_health(&self) -> Result<(), Error> {
         self.worker.check_alive();
@@ -126,10 +116,6 @@ mod tests {
     use super::*;
     #[test]
     fn worker_response_must_match_id_and_operation() {
-        let identity = WorkerIdentity {
-            profile: selfie_enrollment_api_types::PROFILE.into(),
-            executable_sha384: "a".repeat(96),
-        };
         let result = protocol::face::EmbeddingResult {
             vector: "AA==".into(),
             r#type: "face".into(),
@@ -141,8 +127,8 @@ mod tests {
             1,
             Outcome::Embedding(result),
         ));
-        assert!(decode_result(&response, 1, &identity).unwrap().is_ok());
-        assert!(decode_result(&response, 2, &identity).is_err());
+        assert!(decode_result(&response, 1).unwrap().is_ok());
+        assert!(decode_result(&response, 2).is_err());
         let wrong = protocol::protobuf::encode_response(&protocol::Response::new(
             1,
             Outcome::GrayBadge(protocol::face::GrayBadgeResult {
@@ -150,6 +136,6 @@ mod tests {
                 debug_report: None,
             }),
         ));
-        assert!(decode_result(&wrong, 1, &identity).is_err());
+        assert!(decode_result(&wrong, 1).is_err());
     }
 }

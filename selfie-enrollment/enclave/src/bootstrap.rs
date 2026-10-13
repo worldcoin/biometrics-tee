@@ -88,7 +88,7 @@ pub fn receive() -> anyhow::Result<BootWorker> {
     let runtime =
         biometrics_sandbox::receive(&mut provisioner, config.max_bundle_bytes, runtime_parent)
             .context("worker bundle verification failed")?;
-    tracing::info!(release_id = %runtime.release_id, worker_sha384 = %runtime.sha384, "worker executable provisioned");
+    tracing::info!(release_id = %runtime.release_id, "worker executable provisioned");
 
     Ok(BootWorker {
         runtime,

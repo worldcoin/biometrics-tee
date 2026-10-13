@@ -1,5 +1,5 @@
 //! Plaintext types used only by the client and enclave. Sensitive buffers are redacted and erased.
-use selfie_enrollment_api_types::{MAX_IMAGE_BYTES, MAX_REQUEST_BYTES, PROFILE, PROTOCOL_VERSION};
+use selfie_enrollment_api_types::{MAX_IMAGE_BYTES, MAX_REQUEST_BYTES, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::Cursor;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -37,50 +37,14 @@ impl EmbeddingRequest {
     }
 }
 
-/// The executable digest is SHA-384 of the verified binary, not the S3 archive hash.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkerIdentity {
-    pub profile: String,
-    pub executable_sha384: String,
-}
-impl WorkerIdentity {
-    pub fn validate(&self) -> Result<(), Error> {
-        if self.profile != PROFILE
-            || self.executable_sha384.len() != 96
-            || !self
-                .executable_sha384
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            || self.executable_sha384.bytes().all(|b| b == b'0')
-        {
-            return Err(Error);
-        }
-        Ok(())
-    }
-    pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, Error> {
-        self.validate()?;
-        encode(self)
-    }
-    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() > 512 {
-            return Err(Error);
-        }
-        let result: Self = decode(bytes)?;
-        result.validate()?;
-        Ok(result)
-    }
-}
-
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
-pub struct Embedding {
+pub struct FaceEmbedding {
     /// Existing worker vector encoding, retained verbatim.
-    pub vector: String,
+    pub embedding: String,
     pub embedding_type: String,
-    pub version: String,
-    pub inference_backend: String,
-    pub worker: WorkerIdentity,
+    pub embedding_version: String,
+    pub embedding_inference_backend: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
@@ -89,31 +53,28 @@ pub enum Failure {
     InvalidImage,
     QualityRejected,
     ExtractionFailed,
-    Busy,
     InvalidRequest,
 }
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EmbeddingResult {
-    Success { embedding: Embedding },
+    Success { embedding: FaceEmbedding },
     Failed { reason: Failure },
 }
 impl EmbeddingResult {
     fn validate(&self) -> Result<(), Error> {
-        if let Self::Success { embedding: e } = self {
-            e.worker.validate()?;
-            if e.vector.is_empty()
-                || e.vector.len() > 4096
+        if let Self::Success { embedding: e } = self
+            && (e.embedding.is_empty()
+                || e.embedding.len() > 4096
                 || e.embedding_type.is_empty()
                 || e.embedding_type.len() > 128
-                || e.version.is_empty()
-                || e.version.len() > 128
-                || e.inference_backend.is_empty()
-                || e.inference_backend.len() > 128
-            {
-                return Err(Error);
-            }
+                || e.embedding_version.is_empty()
+                || e.embedding_version.len() > 128
+                || e.embedding_inference_backend.is_empty()
+                || e.embedding_inference_backend.len() > 128)
+        {
+            return Err(Error);
         }
         Ok(())
     }
@@ -174,6 +135,23 @@ mod tests {
         assert!(request.encode().is_err());
         request.image.resize(MAX_IMAGE_BYTES + 1, 0);
         assert!(request.encode().is_err());
+    }
+    #[test]
+    fn face_pcp_success_schema_roundtrips() {
+        // Frozen CBOR using the existing Face PCP embedding field names.
+        let body = b"\xa2fstatusgsuccessiembedding\xa4iembeddingdAQ==nembedding_typex\x19ghostfacenet_flipped_meanqembedding_versione2.0.0x\x1bembedding_inference_backendkface-engine";
+        let mut frame = vec![0; PADDED_RESULT_BYTES];
+        frame[..4].copy_from_slice(&(body.len() as u32).to_be_bytes());
+        frame[4..4 + body.len()].copy_from_slice(body);
+        let result = EmbeddingResult::decode(&frame).unwrap();
+        let EmbeddingResult::Success { embedding } = &result else {
+            panic!("expected embedding")
+        };
+        assert_eq!(embedding.embedding, "AQ==");
+        assert_eq!(embedding.embedding_type, "ghostfacenet_flipped_mean");
+        assert_eq!(embedding.embedding_version, "2.0.0");
+        assert_eq!(embedding.embedding_inference_backend, "face-engine");
+        assert_eq!(&*result.encode().unwrap(), &frame);
     }
     #[test]
     fn responses_are_padded_and_reject_corruption() {

@@ -11,7 +11,6 @@ use biometrics_sandbox::{ConnectionConfig, ConnectionError, SandboxConfig, Worke
 use selfie_enrollment_enclave_types::{
     AssignmentRequest, Error, ExtractRequest, HealthRequest, PONTIFEX_PORT,
 };
-use selfie_enrollment_sealed_types::WorkerIdentity;
 use std::{sync::Arc, time::Duration};
 pub fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -40,22 +39,15 @@ pub fn run() -> anyhow::Result<()> {
         "unsupported worker protocol"
     );
     worker.check_alive();
-    let identity = WorkerIdentity {
-        profile: selfie_enrollment_api_types::PROFILE.into(),
-        executable_sha384: boot.runtime.sha384.clone(),
-    };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(async {
             attestation::connect().await?;
-            let attestor = NsmAttestor {
-                user_data: identity.encode()?.to_vec(),
-            };
+            let attestor = NsmAttestor;
             let mut state = State::new(
                 Arc::new(attestor),
                 Box::new(SandboxEngine { worker, next_id: 1 }),
-                identity,
             )?;
             let refresh = state.refresh();
             let state = Arc::new(state);

@@ -6,7 +6,6 @@ pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_REQUEST_BYTES: usize = MAX_IMAGE_BYTES + 8192;
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 + 8192;
 pub const MAX_CONTROL_BYTES: usize = 32 * 1024;
-pub const PROFILE: &str = "selfie-enrollment/vanilla-selfie/v1";
 pub const CHANNEL_DOMAIN: &str = "selfie-enrollment/embedding/v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

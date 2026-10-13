@@ -6,7 +6,7 @@ const path = require('node:path');
 const {chromium, webkit} = require('playwright');
 const bindings = path.resolve(process.env.ENROLLMENT_BINDINGS || 'target/enrollment-web');
 const config = {endpoint:'ws://127.0.0.1:8000/v1/embeddings',releases:[
-  {pcr0:'1'.repeat(96),pcr1:'2'.repeat(96),pcr2:'3'.repeat(96),worker_sha384:'4'.repeat(96)}]};
+  {pcr0:'1'.repeat(96),pcr1:'2'.repeat(96),pcr2:'3'.repeat(96)}]};
 async function main() {
   const server=http.createServer(async (request,response)=>{
     if(request.url==='/'){response.end('<!doctype html><title>Enrollment transport tests</title>');return}

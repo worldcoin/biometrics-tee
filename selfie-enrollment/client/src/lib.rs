@@ -1,11 +1,11 @@
-//! Fail-closed enrollment client. Measurement and worker allowlists always come from the caller.
+//! Fail-closed enrollment client. Measurement allowlists always come from the caller.
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use pontifex::{
     ChannelConsumer, ChannelDomain, ResponseOpener,
     attestation::{PcrConfig, VerifiedAttestation, Verifier},
 };
 use selfie_enrollment_api_types::*;
-use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult, WorkerIdentity};
+use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -20,7 +20,6 @@ pub struct Release {
     pub pcr0: String,
     pub pcr1: String,
     pub pcr2: String,
-    pub worker_sha384: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,7 +53,6 @@ impl Config {
                 let pcr0 = hash(&r.pcr0)?;
                 let pcr1 = hash(&r.pcr1)?;
                 let pcr2 = hash(&r.pcr2)?;
-                hash(&r.worker_sha384)?;
                 Ok(PcrConfig::new(pcr0)
                     .with_pcr(1, pcr1.to_vec())
                     .with_pcr(2, pcr2.to_vec()))
@@ -84,7 +82,7 @@ fn hash(value: &str) -> Result<[u8; 48], Error> {
 pub enum Error {
     #[error("invalid enrollment configuration")]
     Config,
-    #[error("enclave or worker attestation rejected")]
+    #[error("enclave attestation rejected")]
     Attestation,
     #[error("invalid enrollment message")]
     Protocol,
@@ -98,11 +96,10 @@ pub enum Error {
     Host(ErrorCode),
 }
 
-/// Holds the verified boot key and attested worker identity.
+/// Holds the verified attestation and boot-scoped channel key.
 pub struct VerifiedAssignment {
     attestation: VerifiedAttestation,
     consumer: ChannelConsumer,
-    identity: WorkerIdentity,
 }
 impl VerifiedAssignment {
     pub fn verify(config: &Config, assignment: &Assignment) -> Result<Self, Error> {
@@ -123,31 +120,9 @@ impl VerifiedAssignment {
             &public_key,
         )
         .map_err(|_| Error::Attestation)?;
-        let identity = WorkerIdentity::decode(
-            verified
-                .document()
-                .user_data
-                .as_deref()
-                .ok_or(Error::Attestation)?,
-        )
-        .map_err(|_| Error::Attestation)?;
-        if !matches_release(
-            &config.releases,
-            &identity,
-            std::array::from_fn(|index| {
-                verified
-                    .document()
-                    .pcrs
-                    .get(&index)
-                    .map(|pcr| pcr.as_slice())
-            }),
-        ) {
-            return Err(Error::Attestation);
-        }
         Ok(Self {
             attestation: verified,
             consumer,
-            identity,
         })
     }
     pub fn attestation(&self) -> &VerifiedAttestation {
@@ -155,9 +130,6 @@ impl VerifiedAssignment {
     }
     pub fn consumer(&self) -> &ChannelConsumer {
         &self.consumer
-    }
-    pub fn worker(&self) -> &WorkerIdentity {
-        &self.identity
     }
     fn seal(&self, image: Vec<u8>) -> Result<(Vec<u8>, PendingResult), Error> {
         let request = EmbeddingRequest {
@@ -172,34 +144,11 @@ impl VerifiedAssignment {
         if sealed.len() > MAX_REQUEST_BYTES {
             return Err(Error::Protocol);
         }
-        Ok((
-            sealed,
-            PendingResult {
-                opener,
-                identity: self.identity.clone(),
-            },
-        ))
+        Ok((sealed, PendingResult { opener }))
     }
-}
-// Called only after signature/chain, timestamp and channel commitment verification.
-fn matches_release(
-    releases: &[Release],
-    identity: &WorkerIdentity,
-    pcrs: [Option<&[u8]>; 3],
-) -> bool {
-    releases.iter().any(|release| {
-        release.worker_sha384 == identity.executable_sha384
-            && [&release.pcr0, &release.pcr1, &release.pcr2]
-                .iter()
-                .zip(pcrs)
-                .all(|(expected, actual)| {
-                    actual.is_some_and(|actual| hex::encode(actual) == **expected)
-                })
-    })
 }
 struct PendingResult {
     opener: ResponseOpener,
-    identity: WorkerIdentity,
 }
 impl PendingResult {
     fn open(self, ciphertext: &[u8]) -> Result<EmbeddingResult, Error> {
@@ -211,11 +160,6 @@ impl PendingResult {
             .open_from_enclave(ciphertext)
             .map_err(|_| Error::Authentication)?;
         let result = EmbeddingResult::decode(&plaintext).map_err(|_| Error::Protocol)?;
-        if let EmbeddingResult::Success { embedding } = &result
-            && embedding.worker != self.identity
-        {
-            return Err(Error::Attestation);
-        }
         Ok(result)
     }
 }
@@ -320,7 +264,6 @@ mod tests {
                 pcr0: "1".repeat(96),
                 pcr1: "2".repeat(96),
                 pcr2: "3".repeat(96),
-                worker_sha384: "4".repeat(96),
             }],
         }
     }
@@ -337,49 +280,10 @@ mod tests {
         c.releases[0].pcr0 = "0".repeat(96);
         assert!(c.validate().is_err());
         let mut c = config();
-        c.releases[0].worker_sha384 = "x".repeat(96);
+        c.releases[0].pcr1 = "x".repeat(96);
         assert!(c.validate().is_err());
         let mut c = config();
         c.endpoint = "ws://example.com/v1/embeddings".into();
         assert!(c.validate().is_err());
-    }
-    #[test]
-    fn authenticated_worker_and_measurements_must_belong_to_the_same_release() {
-        let mut config = config();
-        let first = config.releases[0].clone();
-        let second = Release {
-            pcr0: "5".repeat(96),
-            pcr1: "6".repeat(96),
-            pcr2: "7".repeat(96),
-            worker_sha384: "8".repeat(96),
-        };
-        config.releases.push(second.clone());
-        let mut identity = WorkerIdentity {
-            profile: PROFILE.into(),
-            executable_sha384: first.worker_sha384.clone(),
-        };
-        let pcr0 = hex::decode(&first.pcr0).unwrap();
-        let pcr1 = hex::decode(&first.pcr1).unwrap();
-        let pcr2 = hex::decode(&first.pcr2).unwrap();
-        let pcrs = [
-            Some(pcr0.as_slice()),
-            Some(pcr1.as_slice()),
-            Some(pcr2.as_slice()),
-        ];
-        assert!(matches_release(&config.releases, &identity, pcrs));
-        identity.executable_sha384 = second.worker_sha384;
-        assert!(!matches_release(&config.releases, &identity, pcrs));
-        identity.executable_sha384 = first.worker_sha384;
-        let other_pcr = hex::decode(&second.pcr1).unwrap();
-        assert!(!matches_release(
-            &config.releases,
-            &identity,
-            [pcrs[0], Some(&other_pcr), pcrs[2]]
-        ));
-        assert!(!matches_release(
-            &config.releases,
-            &identity,
-            [pcrs[0], None, pcrs[2]]
-        ));
     }
 }

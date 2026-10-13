@@ -11,24 +11,18 @@ use engine::Engine;
 use pontifex::{ChannelDomain, ChannelEnclave};
 use selfie_enrollment_api_types::{CHANNEL_DOMAIN, MAX_REQUEST_BYTES};
 use selfie_enrollment_enclave_types::{Error, ExtractRequest, ExtractResponse, KeyAttestation};
-use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult, Failure, WorkerIdentity};
+use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult, Failure};
 use std::sync::{Arc, Mutex};
 
 /// No worker replacement or key rotation occurs inside an enclave boot.
 pub struct State {
     channel: ChannelEnclave,
     attested: AttestedKey,
-    identity: WorkerIdentity,
     engine: Mutex<Box<dyn Engine>>,
     processing: Arc<tokio::sync::Semaphore>,
 }
 impl State {
-    pub fn new(
-        attestor: Arc<dyn Attestor>,
-        engine: Box<dyn Engine>,
-        identity: WorkerIdentity,
-    ) -> Result<Self, Error> {
-        identity.validate().map_err(|_| Error::Unavailable)?;
+    pub fn new(attestor: Arc<dyn Attestor>, engine: Box<dyn Engine>) -> Result<Self, Error> {
         let channel = ChannelEnclave::generate(ChannelDomain::new(CHANNEL_DOMAIN))
             .map_err(|_| Error::Unavailable)?;
         let attested = AttestedKey::new(
@@ -39,7 +33,6 @@ impl State {
         Ok(Self {
             channel,
             attested,
-            identity,
             engine: Mutex::new(engine),
             processing: Arc::new(tokio::sync::Semaphore::new(1)),
         })
@@ -87,7 +80,7 @@ impl State {
                 },
                 Ok(input) => {
                     let mut engine = state.engine.lock().map_err(|_| Error::Unavailable)?;
-                    match engine.extract(&input.image, &state.identity)? {
+                    match engine.extract(&input.image)? {
                         Ok(embedding) => EmbeddingResult::Success { embedding },
                         Err(reason) => EmbeddingResult::Failed { reason },
                     }
@@ -106,7 +99,7 @@ impl State {
 mod tests {
     use super::*;
     use pontifex::ChannelConsumer;
-    use selfie_enrollment_sealed_types::Embedding;
+    use selfie_enrollment_sealed_types::FaceEmbedding;
     struct TestAttestor;
     impl Attestor for TestAttestor {
         fn attest_public_key(&self, key: &[u8]) -> Result<Vec<u8>, Error> {
@@ -115,17 +108,12 @@ mod tests {
     }
     struct FakeEngine;
     impl Engine for FakeEngine {
-        fn extract(
-            &mut self,
-            _: &[u8],
-            identity: &WorkerIdentity,
-        ) -> Result<Result<Embedding, Failure>, Error> {
-            Ok(Ok(Embedding {
-                vector: "AA==".into(),
+        fn extract(&mut self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
+            Ok(Ok(FaceEmbedding {
+                embedding: "AA==".into(),
                 embedding_type: "test".into(),
-                version: "1".into(),
-                inference_backend: "test".into(),
-                worker: identity.clone(),
+                embedding_version: "1".into(),
+                embedding_inference_backend: "test".into(),
             }))
         }
         fn check_health(&self) -> Result<(), Error> {
@@ -133,17 +121,7 @@ mod tests {
         }
     }
     fn state() -> Arc<State> {
-        Arc::new(
-            State::new(
-                Arc::new(TestAttestor),
-                Box::new(FakeEngine),
-                WorkerIdentity {
-                    profile: selfie_enrollment_api_types::PROFILE.into(),
-                    executable_sha384: "a".repeat(96),
-                },
-            )
-            .unwrap(),
-        )
+        Arc::new(State::new(Arc::new(TestAttestor), Box::new(FakeEngine)).unwrap())
     }
     #[tokio::test]
     async fn sealed_round_trip_allows_resubmission_and_uses_request_response_key() {
