@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use di_migration_enclave::{
     attestation::{self, NsmAttestor},
-    rng, server,
+    kms_transport, rng, server,
     state::EnclaveState,
 };
 use di_migration_enclave_primitives::PONTIFEX_PORT;
@@ -24,6 +24,18 @@ async fn main() -> anyhow::Result<()> {
         .context("Nitro Secure Module is unavailable")?;
     let mut state = EnclaveState::generate(Arc::new(NsmAttestor))
         .map_err(|error| anyhow!("failed to generate and attest the channel key: {error:?}"))?;
+    match std::env::var("PCP_KMS_KEY_ARN") {
+        Ok(arn) => {
+            state.set_key_wrapper(
+                kms_transport::key_wrapper(arn).context("invalid measured KMS configuration")?,
+            );
+            tracing::info!("PCP key wrapping configured");
+        }
+        Err(std::env::VarError::NotPresent) => tracing::info!("PCP key wrapping is not configured"),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("invalid measured KMS configuration")
+        }
+    }
     let refresh = state.start_attestation_refresh();
 
     let document = SecureModule::global()

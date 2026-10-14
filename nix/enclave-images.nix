@@ -3,6 +3,7 @@
   pkgs,
   nitro-util,
   enclaveBins,
+  pcpKmsKeyArn ? null,
 }:
 let
   nitroLib = nitro-util.lib.${system};
@@ -23,6 +24,7 @@ let
     {
       pname,
       sandboxed ? false,
+      environment ? [ ],
     }:
     let
       version = enclaveBins.${pname}.version;
@@ -54,7 +56,7 @@ let
           Env = [
             "RUST_LOG=info"
             "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-          ];
+          ] ++ environment;
         };
       };
 
@@ -84,7 +86,7 @@ let
         env = ''
           RUST_LOG=info
           SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
-        '';
+        '' + pkgs.lib.optionalString (environment != [ ]) (builtins.concatStringsSep "\n" environment + "\n");
       };
     in
     {
@@ -92,12 +94,16 @@ let
       inherit eif;
     };
 
-  migration = buildEnclaveImage { pname = "di-migration-enclave"; };
+  migration = buildEnclaveImage {
+    pname = "di-migration-enclave";
+    environment = pkgs.lib.optional (pcpKmsKeyArn != null) "PCP_KMS_KEY_ARN=${pcpKmsKeyArn}";
+  };
   dev = buildEnclaveImage {
     pname = "di-dev-enclave";
     sandboxed = true;
   };
 in
+assert pcpKmsKeyArn == null || builtins.match "arn:aws(-us-gov|-cn)?:kms:[a-z0-9-]+:[0-9]{12}:(alias|key)/[a-zA-Z0-9_/-]+" pcpKmsKeyArn != null;
 {
   di-migration-oci = migration.oci;
   di-migration-eif = migration.eif;

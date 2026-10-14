@@ -12,6 +12,8 @@
 mod error;
 mod health;
 mod keys;
+/// Bounded temporary-credential delivery and fixed KMS relay ports.
+pub mod kms;
 mod migrate;
 pub mod pcp_payload;
 

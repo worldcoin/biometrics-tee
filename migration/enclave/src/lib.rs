@@ -15,6 +15,8 @@
 pub mod attestation;
 /// KMS encryption of per-package private recipient keys.
 pub mod kms;
+/// Enclave-terminated HTTPS and renewable workload credentials over vsock.
+pub mod kms_transport;
 /// Fresh PCP recipients and encrypted package construction.
 pub mod pcp_keys;
 /// Nitro hardware RNG verification.

@@ -13,6 +13,7 @@ pub struct EnclaveState {
     channel: ChannelEnclave,
     /// Attests the channel key's commitment, which apps check before sealing a PCP.
     attested_channel_key: AttestedKey,
+    key_wrapper: Option<crate::kms::KeyWrapper>,
 }
 
 impl EnclaveState {
@@ -37,6 +38,7 @@ impl EnclaveState {
         Ok(Self {
             channel,
             attested_channel_key,
+            key_wrapper: None,
         })
     }
 
@@ -44,6 +46,17 @@ impl EnclaveState {
     #[must_use]
     pub const fn channel(&self) -> &ChannelEnclave {
         &self.channel
+    }
+
+    /// Installs wrapping configuration fixed by the measured image at boot.
+    pub fn set_key_wrapper(&mut self, wrapper: crate::kms::KeyWrapper) {
+        self.key_wrapper = Some(wrapper);
+    }
+
+    /// KMS wrapper for per-package recipient generation, when enabled in the EIF.
+    #[must_use]
+    pub const fn key_wrapper(&self) -> Option<&crate::kms::KeyWrapper> {
+        self.key_wrapper.as_ref()
     }
 
     /// The latest document attesting the channel key's commitment.

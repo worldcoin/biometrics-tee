@@ -70,5 +70,22 @@ async fn main() -> anyhow::Result<()> {
     );
     let state = AppState::new(enclave_client, readiness, queue, config.host_ip);
 
-    di_migration_host::server::start(config.port, state, job_runner, drain_timeout).await
+    let server = di_migration_host::server::start(config.port, state, job_runner, drain_timeout);
+    if let Some(region) = config.pcp_kms_region {
+        let provider = aws_config
+            .credentials_provider()
+            .context("KMS relay requires a workload credential provider")?;
+        // Keep relaying while the HTTP server drains jobs; dropping the relay
+        // future then aborts its bounded worker set.
+        tokio::select! {
+            result = server => result,
+            result = di_migration_host::kms_relay::serve(&region, config.enclave_cid, provider) => {
+                result.context("enclave KMS relay stopped")?;
+                anyhow::bail!("enclave KMS relay stopped unexpectedly")
+            }
+        }
+    } else {
+        tracing::info!("enclave KMS relay is not configured");
+        server.await
+    }
 }

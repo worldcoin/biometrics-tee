@@ -126,7 +126,7 @@ impl KeyWrapper {
 
 // Return the partition/service/region/account scope and resource after validating
 // both. Alias resolution is authenticated by the TLS connection to AWS KMS.
-fn arn_parts(arn: &str) -> Option<(&str, &str)> {
+pub(crate) fn arn_parts(arn: &str) -> Option<(&str, &str)> {
     let (scope, resource) = arn.rsplit_once(':')?;
     let parts: Vec<_> = scope.split(':').collect();
     if arn.len() > 2048
