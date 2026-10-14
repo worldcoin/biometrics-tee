@@ -6,22 +6,18 @@
 
 #![deny(clippy::all, missing_docs)]
 
-mod bundle;
-mod config;
 mod connection;
-pub mod host;
 #[cfg(target_os = "linux")]
 mod process;
 mod transport;
 
-pub use bundle::{
-    Error, MAX_BUNDLE_BYTES, MAX_MANIFEST_BYTES, Manifest, VerifiedRuntime, WORKER_PATH, package,
-    receive,
-};
-pub use config::BootstrapConfig;
 pub use connection::{ConnectionConfig, ConnectionError};
 #[cfg(target_os = "linux")]
 pub use process::{SandboxConfig, WORKER_UID, Worker, WorkerError};
+pub use sandbox_bundle::{
+    BootstrapConfig, Error, MAX_BUNDLE_BYTES, MAX_MANIFEST_BYTES, Manifest, VerifiedRuntime,
+    WORKER_PATH, host, package, receive,
+};
 
 /// vsock port on which the enclave accepts the worker bundle, once, from the parent.
 pub const BOOTSTRAP_PORT: u32 = 1001;
