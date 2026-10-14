@@ -96,6 +96,21 @@ impl JobRunner {
             .await
             .map_err(|error| {
                 let reason = match &error {
+                    enclave::Error::Operation(enclave_primitives::Error::CredentialSubMismatch) => {
+                        Reason::CredentialSubMismatch
+                    }
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::CredentialDeserializationFailed,
+                    ) => Reason::CredentialDeserializationFailed,
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::CredentialSignatureVerificationFailed,
+                    ) => Reason::CredentialSignatureVerificationFailed,
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::CredentialSignatureInvalid,
+                    ) => Reason::CredentialSignatureInvalid,
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::CredentialClaimsMismatch,
+                    ) => Reason::CredentialClaimsMismatch,
                     enclave::Error::Timeout => Reason::Timeout,
                     // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
                     enclave::Error::Operation(enclave_primitives::Error::RequestNotOpened) => {
@@ -181,7 +196,7 @@ mod tests {
     /// Pins each failure to the reason the app sees.
     #[tokio::test]
     async fn each_failure_is_recorded_with_its_reason() {
-        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 7] = [
+        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 8] = [
             (
                 Arc::new(StubEnclave::default()),
                 Arc::new(MemoryStore::default()),
@@ -219,6 +234,13 @@ mod tests {
                 ))),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
                 Reason::EnclaveError,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_primitives::Error::CredentialSignatureInvalid,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::CredentialSignatureInvalid,
             ),
             (
                 Arc::new(StubEnclave::default()),

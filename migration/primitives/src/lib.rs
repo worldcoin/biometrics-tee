@@ -16,5 +16,6 @@ pub mod enclave;
 pub mod host_api;
 pub mod job;
 
+pub use app_api::MigrationStatus;
 pub use enclave::EnclaveId;
 pub use job::{JobId, Reason, Status};

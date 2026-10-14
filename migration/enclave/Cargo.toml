@@ -12,12 +12,17 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+ark-babyjubjub = { version = "0.5", package = "taceo-ark-babyjubjub" }
 di-migration-enclave-primitives.workspace = true
+flate2.workspace = true
 hex.workspace = true
 pontifex = { workspace = true, features = ["channel", "nsm", "server"] }
+serde_json.workspace = true
+tar.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+world-id-primitives.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
