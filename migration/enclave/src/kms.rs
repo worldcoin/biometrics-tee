@@ -10,14 +10,22 @@ use aws_sdk_kms::{
     primitives::Blob,
     types::EncryptionAlgorithmSpec,
 };
+use aws_smithy_types::body::SdkBody;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use bytes::Bytes;
+use zeroize::Zeroize;
 
 /// Includes credential acquisition, connection setup and at most two SDK attempts.
 const ENCRYPT_TIMEOUT: Duration = Duration::from_secs(10);
+// A 32-byte key encodes to 44 padded Base64 bytes.
+const ENCODED_KEY_LEN: usize = 44;
 
 /// Payload-free wrapping failures. SDK errors and request bodies are never logged.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
+    /// The KMS request body could not be encoded.
+    #[error("failed to encode PCP key encryption request")]
+    Encoding,
     /// The entire operation exceeded its deadline.
     #[error("PCP key wrapping timed out")]
     Timeout,
@@ -33,11 +41,62 @@ pub enum Error {
 }
 
 /// A shared SDK client and trusted key identity. The caller supplies the HTTP
-/// transport and credentials; enclave callers must terminate TLS in the enclave.
+/// transport and credentials.
+///
+/// Enclave transports must terminate TLS inside the enclave and preserve body
+/// ownership without copying plaintext into ordinary transport buffers.
 #[derive(Clone)]
 pub struct KeyWrapper {
     client: Client,
     key_arn: String,
+}
+
+// Fixed-size allocation: encoding never reallocates or creates a temporary
+// Base64 string containing the private key. Bytes clones share this owner.
+struct SecretBody {
+    bytes: Box<[u8]>,
+    #[cfg(test)]
+    erased: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl SecretBody {
+    fn new(key_arn: &str, private_key: &[u8; 32]) -> Result<Self, Error> {
+        let key_id = serde_json::to_string(key_arn).map_err(|_| Error::Encoding)?;
+        let prefix = format!(
+            "{{\"KeyId\":{key_id},\"EncryptionAlgorithm\":\"SYMMETRIC_DEFAULT\",\"Plaintext\":\""
+        );
+        let mut body = Self {
+            bytes: vec![0; prefix.len() + ENCODED_KEY_LEN + 2].into_boxed_slice(),
+            #[cfg(test)]
+            erased: None,
+        };
+        body.bytes[..prefix.len()].copy_from_slice(prefix.as_bytes());
+        STANDARD
+            .encode_slice(
+                private_key,
+                &mut body.bytes[prefix.len()..prefix.len() + ENCODED_KEY_LEN],
+            )
+            .map_err(|_| Error::Encoding)?;
+        body.bytes[prefix.len() + ENCODED_KEY_LEN..].copy_from_slice(b"\"}");
+        Ok(body)
+    }
+}
+
+impl AsRef<[u8]> for SecretBody {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Drop for SecretBody {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+        #[cfg(test)]
+        if let Some(erased) = &self.erased {
+            assert!(self.bytes.iter().all(|byte| *byte == 0));
+            erased.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
 }
 
 impl KeyWrapper {
@@ -63,17 +122,35 @@ impl KeyWrapper {
     }
 
     /// Encrypts a private key and returns the string stored in `backend_keys.json`.
-    /// The SDK receives raw bytes; Base64 is applied only to its ciphertext result.
+    /// The request encodes raw key bytes directly into a zeroizing JSON body.
+    /// The returned string is standard Base64 of the KMS ciphertext blob.
     ///
     /// # Errors
     /// Fails on timeout, KMS/transport errors or invalid response metadata.
     pub async fn encrypt(&self, private_key: &[u8; 32]) -> Result<String, Error> {
+        self.send(Bytes::from_owner(SecretBody::new(
+            &self.key_arn,
+            private_key,
+        )?))
+        .await
+    }
+
+    async fn send(&self, body: Bytes) -> Result<String, Error> {
         let output = self
             .client
             .encrypt()
             .key_id(&self.key_arn)
-            .plaintext(Blob::new(private_key.to_vec()))
+            // The generated serializer sees only an empty, non-secret placeholder.
+            // The complete body is installed before signing on every attempt.
+            .plaintext(Blob::new(Vec::new()))
             .encryption_algorithm(EncryptionAlgorithmSpec::SymmetricDefault)
+            .customize()
+            .mutate_request(move |request| {
+                request
+                    .headers_mut()
+                    .insert("content-length", body.len().to_string());
+                *request.body_mut() = SdkBody::from(body.clone());
+            })
             .send()
             .await
             .map_err(|error| {
@@ -99,3 +176,6 @@ impl KeyWrapper {
         Ok(STANDARD.encode(blob.as_ref()))
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests;

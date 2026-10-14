@@ -25,23 +25,27 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 webpki-roots = "1"
 tokio-vsock.workspace = true
 base64.workspace = true
+bytes.workspace = true
 di-migration-pcp = { path = "../pcp" }
 di-migration-enclave-primitives.workspace = true
 hex.workspace = true
 orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
 pontifex = { workspace = true, features = ["channel", "nsm", "server"] }
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 aws-config.workspace = true
+aws-sigv4 = "1"
+aws-smithy-async = "1"
 flate2.workspace = true
 rcgen = "0.14"
 hyper = { version = "1", features = ["server"] }
 orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
-serde_json.workspace = true
 sha2.workspace = true
 tar = "0.4"
 tokio = { workspace = true, features = ["test-util"] }

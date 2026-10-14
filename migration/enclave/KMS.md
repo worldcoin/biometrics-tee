@@ -51,8 +51,19 @@ five-second deadline and a 64 KiB response limit. `KeyWrapper::encrypt` uses an 
 operation timeout of ten seconds across at most two attempts; four private keys
 are encrypted sequentially.
 Failure discards the partial recipient bundle and returns no package. Private
-keys are dropped from guarded memory after wrapping; transient SDK copies must
-never be captured by body logging. Keep AWS SDK debug/trace body logging disabled.
+keys are cleared from guarded memory after wrapping. The key is Base64-encoded
+directly into a fixed-size, zeroizing JSON allocation; the generated SDK serializer
+receives an empty placeholder. A per-operation hook installs the complete body
+before signing each attempt. SDK retries and HTTP writes share the allocation,
+and its final owner wipes it on completion, error, timeout or cancellation.
+
+The HTTP connection uses vectored writes to preserve body ownership. Its driver
+is scoped to the request future, so cancellation synchronously releases queued
+body references. HTTP writes begin after the TLS handshake; the pinned rustls
+ring provider encrypts record payloads in place. Changes to serialization, HTTP
+buffering or the TLS provider must preserve these properties. This contract covers
+owned key and request buffers, not compiler-generated stack/register copies or
+abrupt process termination. Keep AWS SDK debug/trace body logging disabled.
 
 ## Deployment and checks
 
