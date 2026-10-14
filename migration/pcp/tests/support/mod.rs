@@ -241,14 +241,12 @@ pub fn build_and_open(
 ) -> OpenedPcp {
     let keys = OutputKeys::generate();
     let mut signed_digest = None;
-    let package = with_build_request(source, biometrics, context, keys.recipients(), |request| {
-        orb_pcp::build(request, &mut rand::rngs::OsRng, |digest| {
+    let package =
+        di_migration_pcp::build(source, biometrics, context, keys.recipients(), |digest| {
             signed_digest = Some(*digest);
             Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
         })
-    })
-    .unwrap()
-    .unwrap();
+        .unwrap();
     OpenedPcp {
         files: open(&package, &keys),
         signed_digest: signed_digest.unwrap(),

@@ -20,7 +20,6 @@ di-migration-enclave-primitives.workspace = true
 hex.workspace = true
 orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
 pontifex = { workspace = true, features = ["channel", "nsm", "server"] }
-rand = "0.8"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true

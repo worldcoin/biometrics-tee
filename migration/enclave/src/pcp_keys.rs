@@ -4,7 +4,7 @@
 //! with their KMS envelopes; plaintext private keys use libsodium guarded memory.
 
 use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
-use di_migration_pcp::{MigrationContext, OutputRecipients, PreparedBiometrics, SourcePcp};
+use di_migration_pcp::OutputRecipients;
 
 use crate::kms;
 
@@ -91,42 +91,4 @@ impl WrappedPcpKeys {
             },
         }
     }
-}
-
-/// Errors from the recipient, mapping or shared-builder stages.
-#[derive(Debug, thiserror::Error)]
-pub enum BuildError<E> {
-    /// Prepared source or biometrics failed validation.
-    #[error(transparent)]
-    Mapping(#[from] di_migration_pcp::Error),
-    /// Archive assembly, encryption or the supplied signer failed.
-    #[error("PCP construction failed")]
-    Build(#[source] orb_pcp::BuildError<E>),
-}
-
-/// Builds one encrypted PCP with KMS-wrapped recipients.
-///
-/// The caller owns
-/// source authentication, inference, user-key authorization and the signer.
-/// Generate the keys asynchronously first, then call this synchronous function
-/// on a blocking worker together with the other CPU-bound migration stages.
-///
-/// # Errors
-/// Propagates mapping and builder failures; no partial package is returned.
-pub fn build<E>(
-    keys: &WrappedPcpKeys,
-    source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
-    context: &MigrationContext,
-    user_public_key: &[u8; 32],
-    sign_digest: impl FnOnce(&[u8; 32]) -> Result<Vec<u8>, E>,
-) -> Result<orb_pcp::Package, BuildError<E>> {
-    di_migration_pcp::with_build_request(
-        source,
-        biometrics,
-        context,
-        keys.recipients(user_public_key),
-        |request| orb_pcp::build(request, &mut rand::rngs::OsRng, sign_digest),
-    )?
-    .map_err(BuildError::Build)
 }

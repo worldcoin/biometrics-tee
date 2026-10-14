@@ -469,19 +469,19 @@ fn migration_time_must_fit_the_archive_headers() {
     let mut ctx = context();
     ctx.migrated_ts = u64::from(u32::MAX) + 1;
     let bio = pipeline();
-    let result = with_build_request(
+    let result = di_migration_pcp::build(
         &source,
         &bio,
         &ctx,
         OutputKeys::generate().recipients(),
-        |request| {
-            orb_pcp::build(request, &mut rand::rngs::OsRng, |_| {
-                Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
-            })
-        },
-    )
-    .unwrap();
-    assert!(matches!(result, Err(orb_pcp::BuildError::Archive(_))));
+        |_| Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec()),
+    );
+    assert!(matches!(
+        result,
+        Err(di_migration_pcp::BuildError::Build(
+            orb_pcp::BuildError::Archive(_)
+        ))
+    ));
 }
 
 #[test]

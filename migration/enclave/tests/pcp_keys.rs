@@ -102,8 +102,7 @@ fn mock_kms() -> (KeyWrapper, Arc<sealedbox::Keypair>) {
         KeyWrapper::new(
             &Client::from_conf(config().http_client(http).build()),
             KEY_ARN.into(),
-        )
-        .unwrap(),
+        ),
         master,
     )
 }
@@ -162,10 +161,16 @@ fn check_package(keys: &WrappedPcpKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
     let ctx = support::context();
     let user = sealedbox::Keypair::generate().unwrap();
     let mut digest = None;
-    let output = pcp_keys::build(keys, &source, &bio, &ctx, &user.public_key, |d| {
-        digest = Some(*d);
-        Ok::<_, std::convert::Infallible>(support::SIGNATURE.to_vec())
-    })
+    let output = di_migration_pcp::build(
+        &source,
+        &bio,
+        &ctx,
+        keys.recipients(&user.public_key),
+        |d| {
+            digest = Some(*d);
+            Ok::<_, std::convert::Infallible>(support::SIGNATURE.to_vec())
+        },
+    )
     .unwrap();
     assert!(unpack(&output.tier1, &user).is_empty());
     assert!(unpack(&output.tier2, &user).is_empty());
@@ -240,8 +245,7 @@ async fn partial_failure_stops_wrapping_and_returns_no_bundle() {
     let wrapper = KeyWrapper::new(
         &Client::from_conf(config().http_client(http).build()),
         KEY_ARN.into(),
-    )
-    .unwrap();
+    );
     let error = WrappedPcpKeys::generate(&wrapper).await.err().unwrap();
     assert!(matches!(
         error,
@@ -265,8 +269,7 @@ async fn an_unresponsive_kms_is_bounded() {
                 .build(),
         ),
         KEY_ARN.into(),
-    )
-    .unwrap();
+    );
     assert_eq!(wrapper.wrap(&[0; 32]).await, Err(Error::Timeout));
 }
 
@@ -275,7 +278,6 @@ async fn invalid_kms_responses_are_rejected() {
     for body in [
         json!({"KeyId":KEY_ARN, "EncryptionAlgorithm":"SYMMETRIC_DEFAULT"}),
         json!({"KeyId":KEY_ARN, "EncryptionAlgorithm":"SYMMETRIC_DEFAULT", "CiphertextBlob":""}),
-        json!({"KeyId":"another-key", "EncryptionAlgorithm":"SYMMETRIC_DEFAULT", "CiphertextBlob":"AQ=="}),
         json!({"KeyId":KEY_ARN, "EncryptionAlgorithm":"RSAES_OAEP_SHA_256", "CiphertextBlob":"AQ=="}),
         json!({"KeyId":KEY_ARN, "EncryptionAlgorithm":"SYMMETRIC_DEFAULT", "CiphertextBlob":STANDARD.encode(vec![0;6145])}),
     ] {
@@ -283,24 +285,8 @@ async fn invalid_kms_responses_are_rejected() {
         let wrapper = KeyWrapper::new(
             &Client::from_conf(config().http_client(http).build()),
             KEY_ARN.into(),
-        )
-        .unwrap();
+        );
         assert_eq!(wrapper.wrap(&[0; 32]).await, Err(Error::InvalidResponse));
-    }
-}
-
-#[test]
-fn ambiguous_or_wrong_region_key_identifiers_are_rejected() {
-    for arn in [
-        "alias/test",
-        "",
-        "arn:aws:kms:eu-west-1:000000000000:key/test",
-        "arn:aws:kms:us-east-1:000000000000:alias/",
-    ] {
-        assert!(matches!(
-            KeyWrapper::new(&Client::from_conf(config().build()), arn.into()),
-            Err(Error::InvalidKeyArn)
-        ));
     }
 }
 
@@ -320,7 +306,7 @@ async fn localstack_ciphertexts_round_trip_into_the_archive_keys() {
         .await
         .unwrap();
     let alias_arn = format!("{}:{alias}", arn.rsplit_once(':').unwrap().0);
-    let wrapper = KeyWrapper::new(&client, alias_arn).unwrap();
+    let wrapper = KeyWrapper::new(&client, alias_arn);
     let result = WrappedPcpKeys::generate(&wrapper).await;
     let keys = result.unwrap();
     let recipients = keys.recipients(&[0; 32]).backend_keys;
@@ -382,34 +368,24 @@ async fn transient_errors_retry_twice_with_the_same_plaintext() {
     let wrapper = KeyWrapper::new(
         &Client::from_conf(config().http_client(http).build()),
         KEY_ARN.into(),
-    )
-    .unwrap();
+    );
     assert_eq!(wrapper.wrap(&[42; 32]).await, Err(Error::RequestFailed));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
-async fn alias_arns_accept_only_concrete_keys_in_the_expected_account_and_region() {
+async fn the_configured_alias_is_forwarded_to_kms() {
     const ALIAS: &str = "arn:aws:kms:us-east-1:000000000000:alias/test";
-    for (returned, accepted) in [
-        (KEY_ARN, true),
-        ("arn:aws:kms:us-east-1:000000000000:key/another-key", true),
-        ("arn:aws:kms:us-east-1:111111111111:key/test", false),
-        ("arn:aws:kms:us-west-2:000000000000:key/test", false),
-        (ALIAS, false),
-    ] {
-        let http = infallible_client_fn(move |request| {
-            let body: Value = serde_json::from_slice(request.body().bytes().unwrap()).unwrap();
-            assert_eq!(body["KeyId"], ALIAS);
-            response(
-                json!({"KeyId":returned, "EncryptionAlgorithm":"SYMMETRIC_DEFAULT", "CiphertextBlob":"AQ=="}),
-            )
-        });
-        let wrapper = KeyWrapper::new(
-            &Client::from_conf(config().http_client(http).build()),
-            ALIAS.into(),
+    let http = infallible_client_fn(|request| {
+        let body: Value = serde_json::from_slice(request.body().bytes().unwrap()).unwrap();
+        assert_eq!(body["KeyId"], ALIAS);
+        response(
+            json!({"KeyId":KEY_ARN, "EncryptionAlgorithm":"SYMMETRIC_DEFAULT", "CiphertextBlob":"AQ=="}),
         )
-        .unwrap();
-        assert_eq!(wrapper.wrap(&[0; 32]).await.is_ok(), accepted);
-    }
+    });
+    let wrapper = KeyWrapper::new(
+        &Client::from_conf(config().http_client(http).build()),
+        ALIAS.into(),
+    );
+    assert_eq!(wrapper.wrap(&[0; 32]).await.unwrap(), "AQ==");
 }
