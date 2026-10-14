@@ -11,9 +11,9 @@ authorized user public key and signing callback. Package construction is synchro
 and belongs on a blocking worker after asynchronous key generation.
 
 The enclave state exposes the configured `KeyWrapper` for this integration. The
-migration route currently performs a channel round trip; source processing and
-signer integration must call the package construction component before it can
-produce migrated PCPs.
+migration route verifies the credential and PCP hash before a channel round trip.
+Source processing and signer integration must call the package construction
+component before it can produce migrated PCPs.
 
 ## Configuration and trust
 
