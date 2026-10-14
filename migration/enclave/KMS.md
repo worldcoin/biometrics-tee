@@ -1,6 +1,6 @@
 # PCP recipient wrapping
 
-`WrappedPcpKeys::generate` creates four fresh sealed-box keypairs inside the
+`BackendKeys::generate` creates four fresh sealed-box keypairs inside the
 enclave. KMS Encrypt receives each raw 32-byte private key over enclave-terminated
 TLS. `di_migration_pcp::build` accepts `OutputRecipients` containing the public keys
 and standard Base64 KMS ciphertexts, and delegates to the shared PCP builder. The
@@ -47,8 +47,9 @@ credentials authorize requests; they do not choose the wrapping destination.
 
 Each credential exchange has a three-second deadline. The enclave SDK caches
 credentials and refreshes them before expiration. Each TLS/HTTP exchange has a
-five-second deadline and a 64 KiB response limit. Wrapping has an overall
-ten-second deadline and at most two attempts; four wrappers run sequentially.
+five-second deadline and a 64 KiB response limit. `KeyWrapper::encrypt` uses an SDK
+operation timeout of ten seconds across at most two attempts; four private keys
+are encrypted sequentially.
 Failure discards the partial recipient bundle and returns no package. Private
 keys are dropped from guarded memory after wrapping; transient SDK copies must
 never be captured by body logging. Keep AWS SDK debug/trace body logging disabled.

@@ -15,28 +15,34 @@ pub enum Error {
     #[error("PCP recipient key generation failed")]
     Generation,
     /// Wrapping failed for a fixed archive role; no usable bundle is returned.
-    #[error("PCP {role} key wrapping failed: {source}")]
+    #[error("PCP {archive_role} key wrapping failed: {source}")]
     Wrapping {
         /// Archive role, never a user-supplied identifier.
-        role: &'static str,
+        archive_role: &'static str,
         /// Payload-free KMS failure.
         #[source]
         source: kms::Error,
     },
 }
 
-struct WrappedKey {
+struct PublicPrivateKeypair {
     public_key: [u8; 32],
     encrypted_private_key: String,
 }
 
-impl WrappedKey {
-    async fn generate(wrapper: &kms::KeyWrapper, role: &'static str) -> Result<Self, Error> {
+impl PublicPrivateKeypair {
+    async fn generate(
+        wrapper: &kms::KeyWrapper,
+        archive_role: &'static str,
+    ) -> Result<Self, Error> {
         let pair = sealedbox::Keypair::generate().map_err(|_| Error::Generation)?;
         let private_key = pair.private_key.as_ref();
-        let encrypted_private_key = wrapper.wrap(private_key).await.map_err(|source| {
-            tracing::warn!(role, reason = %source, "PCP key wrapping failed");
-            Error::Wrapping { role, source }
+        let encrypted_private_key = wrapper.encrypt(private_key).await.map_err(|source| {
+            tracing::warn!(archive_role, reason = %source, "PCP key wrapping failed");
+            Error::Wrapping {
+                archive_role,
+                source,
+            }
         })?;
         // Dropping `pair` clears its guarded private-key buffer. SDK request copies
         // are transient and must never be captured by HTTP body logging.
@@ -54,16 +60,18 @@ impl WrappedKey {
     }
 }
 
-/// A complete set of public recipients and encrypted private keys, owned by one
-/// migration. Construction is all-or-nothing; plaintext private keys are not retained.
-pub struct WrappedPcpKeys {
-    iris: WrappedKey,
-    normalized_iris: WrappedKey,
-    face: WrappedKey,
-    tier2: WrappedKey,
+/// Four public recipients and their KMS-encrypted private keys for one migration.
+///
+/// Returned only after all four keys have been generated and encrypted successfully.
+/// Plaintext private keys are not retained.
+pub struct BackendKeys {
+    iris: PublicPrivateKeypair,
+    normalized_iris: PublicPrivateKeypair,
+    face: PublicPrivateKeypair,
+    tier2: PublicPrivateKeypair,
 }
 
-impl WrappedPcpKeys {
+impl BackendKeys {
     /// Generates four independent keypairs and wraps each private key. Operations
     /// run sequentially, bounding KMS concurrency to one call per migration.
     ///
@@ -71,10 +79,10 @@ impl WrappedPcpKeys {
     /// Returns the first generation or wrapping failure, discarding partial results.
     pub async fn generate(wrapper: &kms::KeyWrapper) -> Result<Self, Error> {
         Ok(Self {
-            iris: WrappedKey::generate(wrapper, "iris").await?,
-            normalized_iris: WrappedKey::generate(wrapper, "normalized_iris").await?,
-            face: WrappedKey::generate(wrapper, "face").await?,
-            tier2: WrappedKey::generate(wrapper, "tier2").await?,
+            iris: PublicPrivateKeypair::generate(wrapper, "iris").await?,
+            normalized_iris: PublicPrivateKeypair::generate(wrapper, "normalized_iris").await?,
+            face: PublicPrivateKeypair::generate(wrapper, "face").await?,
+            tier2: PublicPrivateKeypair::generate(wrapper, "tier2").await?,
         })
     }
 
