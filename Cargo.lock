@@ -1715,9 +1715,12 @@ dependencies = [
  "anyhow",
  "aws-config",
  "aws-sdk-kms",
+ "aws-sigv4",
+ "aws-smithy-async",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "base64 0.22.1",
+ "bytes",
  "di-migration-enclave-primitives",
  "di-migration-pcp",
  "flate2",
@@ -1733,6 +1736,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

@@ -44,8 +44,8 @@ impl PublicPrivateKeypair {
                 source,
             }
         })?;
-        // Dropping `pair` clears its guarded private-key buffer. SDK request copies
-        // are transient and must never be captured by HTTP body logging.
+        // Dropping `pair` clears its guarded private-key buffer. KMS serialization
+        // uses a separate zeroizing body shared by request attempts.
         Ok(Self {
             public_key: pair.public_key,
             encrypted_private_key,
