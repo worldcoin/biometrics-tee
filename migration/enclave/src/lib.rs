@@ -15,7 +15,7 @@
 pub mod attestation;
 /// KMS encryption of per-package private recipient keys.
 pub mod kms;
-/// Fresh PCP recipients and encrypted package construction.
+/// Fresh PCP recipients and KMS encryption of their private keys.
 pub mod pcp_keys;
 /// Nitro hardware RNG verification.
 pub mod rng;
