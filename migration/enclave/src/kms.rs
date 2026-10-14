@@ -166,20 +166,22 @@ impl KeyWrapper {
     /// Encodes the raw key into a zeroizing JSON body before returning the future,
     /// allowing the caller to release its original key before awaiting KMS.
     /// The returned string is standard Base64 of the KMS ciphertext blob.
+    /// `archive_role` is a fixed diagnostic label, never a user-supplied identifier.
     ///
     /// # Errors
     /// Fails on timeout, KMS/transport errors or invalid request/response metadata.
     pub fn encrypt<'a>(
         &'a self,
         private_key: &[u8; 32],
+        archive_role: &'static str,
     ) -> impl Future<Output = Result<String, Error>> + Send + use<'a> {
-        self.send(Bytes::from_owner(SecretBody::new(
-            &self.key_arn,
-            private_key,
-        )))
+        self.send(
+            Bytes::from_owner(SecretBody::new(&self.key_arn, private_key)),
+            archive_role,
+        )
     }
 
-    async fn send(&self, body: Bytes) -> Result<String, Error> {
+    async fn send(&self, body: Bytes, archive_role: &'static str) -> Result<String, Error> {
         let expected = serde_json::json!({
             "KeyId": self.key_arn,
             "Plaintext": "",
@@ -218,7 +220,7 @@ impl KeyWrapper {
                             && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
                     });
                 tracing::warn!(
-                    dependency = "kms", operation = "Encrypt", reason = %failure,
+                    dependency = "kms", operation = "Encrypt", archive_role, reason = %failure,
                     code, http_status = response.map(|response| response.status().as_u16()),
                     request_id, attempts = attempts.load(Ordering::Relaxed),
                     "PCP key encryption failed",

@@ -5,7 +5,6 @@
 
 use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
 use di_migration_pcp::OutputRecipients;
-use tracing::Instrument;
 
 use crate::kms;
 
@@ -47,15 +46,12 @@ impl PublicPrivateKeypair {
             source,
         })?;
         let public_key = pair.public_key;
-        let encryption = wrapper.encrypt(pair.private_key.as_ref());
+        let encryption = wrapper.encrypt(pair.private_key.as_ref(), archive_role);
         drop(pair); // Clear the guarded key once the zeroizing request owns its encoding.
-        let encrypted_private_key = encryption
-            .instrument(tracing::info_span!("pcp_key_wrapping", archive_role))
-            .await
-            .map_err(|source| Error::Wrapping {
-                archive_role,
-                source,
-            })?;
+        let encrypted_private_key = encryption.await.map_err(|source| Error::Wrapping {
+            archive_role,
+            source,
+        })?;
         Ok(Self {
             public_key,
             encrypted_private_key,

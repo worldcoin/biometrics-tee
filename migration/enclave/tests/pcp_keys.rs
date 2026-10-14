@@ -253,7 +253,10 @@ async fn an_unresponsive_kms_is_bounded() {
     )
     .unwrap();
     let started = tokio::time::Instant::now();
-    assert_eq!(wrapper.encrypt(&[0; 32]).await, Err(Error::Timeout));
+    assert_eq!(
+        wrapper.encrypt(&[0; 32], "synthetic").await,
+        Err(Error::Timeout)
+    );
     assert_eq!(started.elapsed(), std::time::Duration::from_secs(8));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -291,7 +294,10 @@ async fn retries_share_the_operation_deadline() {
     )
     .unwrap();
     let started = tokio::time::Instant::now();
-    assert_eq!(wrapper.encrypt(&[0; 32]).await, Err(Error::Timeout));
+    assert_eq!(
+        wrapper.encrypt(&[0; 32], "synthetic").await,
+        Err(Error::Timeout)
+    );
     assert_eq!(started.elapsed(), std::time::Duration::from_secs(10));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -310,7 +316,10 @@ async fn invalid_kms_responses_are_rejected() {
             KEY_ARN.into(),
         )
         .unwrap();
-        assert_eq!(wrapper.encrypt(&[0; 32]).await, Err(Error::InvalidResponse));
+        assert_eq!(
+            wrapper.encrypt(&[0; 32], "synthetic").await,
+            Err(Error::InvalidResponse)
+        );
     }
 }
 
@@ -395,7 +404,7 @@ async fn transient_errors_retry_twice_with_the_same_plaintext() {
     )
     .unwrap();
     assert_eq!(
-        wrapper.encrypt(&[42; 32]).await,
+        wrapper.encrypt(&[42; 32], "synthetic").await,
         Err(Error::ServiceUnavailable)
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -416,7 +425,10 @@ async fn the_configured_alias_is_forwarded_to_kms() {
         ALIAS.into(),
     )
     .unwrap();
-    assert_eq!(wrapper.encrypt(&[0; 32]).await.unwrap(), "AQ==");
+    assert_eq!(
+        wrapper.encrypt(&[0; 32], "synthetic").await.unwrap(),
+        "AQ=="
+    );
 }
 
 #[derive(Clone, Default)]
@@ -434,6 +446,12 @@ impl std::io::Write for Logs {
 #[tokio::test(start_paused = true)]
 async fn failures_report_safe_metadata_once_without_upstream_payloads() {
     use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::layer::SubscriberExt;
+    // Parallel tests need a stable global default alongside this scoped capture.
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(tracing_subscriber::filter::LevelFilter::OFF),
+    )
+    .unwrap();
     for (code, status, expected, attempts) in [
         ("AccessDeniedException", 400, Error::AccessDenied, 1),
         ("DisabledException", 400, Error::KeyUnusable, 1),
@@ -519,7 +537,10 @@ async fn responses_must_identify_the_requested_key_or_alias_scope() {
                 configured.into(),
             )
             .unwrap();
-            assert_eq!(wrapper.encrypt(&[0; 32]).await, Err(Error::InvalidResponse));
+            assert_eq!(
+                wrapper.encrypt(&[0; 32], "synthetic").await,
+                Err(Error::InvalidResponse)
+            );
         }
     }
     let http = infallible_client_fn(|_| {
@@ -532,5 +553,8 @@ async fn responses_must_identify_the_requested_key_or_alias_scope() {
         KEY_ARN.into(),
     )
     .unwrap();
-    assert_eq!(wrapper.encrypt(&[0; 32]).await, Err(Error::InvalidResponse));
+    assert_eq!(
+        wrapper.encrypt(&[0; 32], "synthetic").await,
+        Err(Error::InvalidResponse)
+    );
 }
