@@ -54,7 +54,7 @@ fn infallible_client_fn(
 use base64::{Engine, engine::general_purpose::STANDARD};
 use di_migration_enclave::{
     kms::{Error, KeyWrapper},
-    pcp_keys::{self, WrappedPcpKeys},
+    pcp_keys::{self, BackendKeys},
 };
 use di_migration_pcp::{Files, SourcePcp, verify_completed_pcp};
 use serde_json::{Value, json};
@@ -144,7 +144,7 @@ fn recover_key(bytes: &[u8], public_key: &[u8]) -> sealedbox::Keypair {
     pair
 }
 
-fn check_package(keys: &WrappedPcpKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
+fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
     let mut input = support::source_files("2.8");
     input.insert(
         "face_ir_and_thermal/face_ir.png".into(),
@@ -217,8 +217,8 @@ fn check_package(keys: &WrappedPcpKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
 #[tokio::test]
 async fn wrapped_keys_build_a_package_that_opens_with_the_recovered_keys() {
     let (wrapper, master) = mock_kms();
-    let keys = WrappedPcpKeys::generate(&wrapper).await.unwrap();
-    let next = WrappedPcpKeys::generate(&wrapper).await.unwrap();
+    let keys = BackendKeys::generate(&wrapper).await.unwrap();
+    let next = BackendKeys::generate(&wrapper).await.unwrap();
     assert_ne!(
         keys.recipients(&[0; 32]).backend_keys.face.public_key,
         next.recipients(&[0; 32]).backend_keys.face.public_key
@@ -246,11 +246,11 @@ async fn partial_failure_stops_wrapping_and_returns_no_bundle() {
         &Client::from_conf(config().http_client(http).build()),
         KEY_ARN.into(),
     );
-    let error = WrappedPcpKeys::generate(&wrapper).await.err().unwrap();
+    let error = BackendKeys::generate(&wrapper).await.err().unwrap();
     assert!(matches!(
         error,
         pcp_keys::Error::Wrapping {
-            role: "normalized_iris",
+            archive_role: "normalized_iris",
             source: Error::AccessDenied
         }
     ));
@@ -270,7 +270,37 @@ async fn an_unresponsive_kms_is_bounded() {
         ),
         KEY_ARN.into(),
     );
-    assert_eq!(wrapper.wrap(&[0; 32]).await, Err(Error::Timeout));
+    let started = tokio::time::Instant::now();
+    assert_eq!(wrapper.encrypt(&[0; 32]).await, Err(Error::Timeout));
+    assert_eq!(started.elapsed(), std::time::Duration::from_secs(10));
+}
+
+#[tokio::test(start_paused = true)]
+async fn retries_share_the_operation_deadline() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let http = test_client(move |_| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        HttpConnectorFuture::new(async {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            Ok(http::Response::builder()
+                .status(500)
+                .body(SdkBody::from(
+                    json!({"__type":"KMSInternalException"}).to_string(),
+                ))
+                .unwrap()
+                .try_into()
+                .unwrap())
+        })
+    });
+    let wrapper = KeyWrapper::new(
+        &Client::from_conf(config().http_client(http).build()),
+        KEY_ARN.into(),
+    );
+    let started = tokio::time::Instant::now();
+    assert_eq!(wrapper.encrypt(&[0; 32]).await, Err(Error::Timeout));
+    assert_eq!(started.elapsed(), std::time::Duration::from_secs(10));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -286,7 +316,7 @@ async fn invalid_kms_responses_are_rejected() {
             &Client::from_conf(config().http_client(http).build()),
             KEY_ARN.into(),
         );
-        assert_eq!(wrapper.wrap(&[0; 32]).await, Err(Error::InvalidResponse));
+        assert_eq!(wrapper.encrypt(&[0; 32]).await, Err(Error::InvalidResponse));
     }
 }
 
@@ -307,7 +337,7 @@ async fn localstack_ciphertexts_round_trip_into_the_archive_keys() {
         .unwrap();
     let alias_arn = format!("{}:{alias}", arn.rsplit_once(':').unwrap().0);
     let wrapper = KeyWrapper::new(&client, alias_arn);
-    let result = WrappedPcpKeys::generate(&wrapper).await;
+    let result = BackendKeys::generate(&wrapper).await;
     let keys = result.unwrap();
     let recipients = keys.recipients(&[0; 32]).backend_keys;
     let mut unwrapped = std::collections::BTreeMap::new();
@@ -369,7 +399,7 @@ async fn transient_errors_retry_twice_with_the_same_plaintext() {
         &Client::from_conf(config().http_client(http).build()),
         KEY_ARN.into(),
     );
-    assert_eq!(wrapper.wrap(&[42; 32]).await, Err(Error::RequestFailed));
+    assert_eq!(wrapper.encrypt(&[42; 32]).await, Err(Error::RequestFailed));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
@@ -387,5 +417,5 @@ async fn the_configured_alias_is_forwarded_to_kms() {
         &Client::from_conf(config().http_client(http).build()),
         ALIAS.into(),
     );
-    assert_eq!(wrapper.wrap(&[0; 32]).await.unwrap(), "AQ==");
+    assert_eq!(wrapper.encrypt(&[0; 32]).await.unwrap(), "AQ==");
 }

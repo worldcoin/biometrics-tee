@@ -1,16 +1,19 @@
 //! The PCP wire format stores standard Base64 of a KMS ciphertext blob over
 //! the raw 32-byte private key, using symmetric encryption without context.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use aws_sdk_kms::{
-    Client, config::retry::RetryConfig, error::ProvideErrorMetadata, primitives::Blob,
+    Client,
+    config::{retry::RetryConfig, timeout::TimeoutConfig},
+    error::{ProvideErrorMetadata, SdkError},
+    primitives::Blob,
     types::EncryptionAlgorithmSpec,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 /// Includes credential acquisition, connection setup and at most two SDK attempts.
-const WRAP_TIMEOUT: Duration = Duration::from_secs(10);
+const ENCRYPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Payload-free wrapping failures. SDK errors and request bodies are never logged.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -47,6 +50,11 @@ impl KeyWrapper {
             .config()
             .to_builder()
             .retry_config(RetryConfig::standard().with_max_attempts(2))
+            .timeout_config(
+                TimeoutConfig::builder()
+                    .operation_timeout(ENCRYPT_TIMEOUT)
+                    .build(),
+            )
             .build();
         Self {
             client: Client::from_conf(config),
@@ -59,40 +67,28 @@ impl KeyWrapper {
     ///
     /// # Errors
     /// Fails on timeout, KMS/transport errors or invalid response metadata.
-    pub async fn wrap(&self, private_key: &[u8; 32]) -> Result<String, Error> {
-        let started = Instant::now();
-        let result = self.encrypt(private_key).await;
-        tracing::debug!(
-            elapsed_ms = started.elapsed().as_millis(),
-            success = result.is_ok(),
-            "PCP key wrapping finished"
-        );
-        result
-    }
-
-    async fn encrypt(&self, private_key: &[u8; 32]) -> Result<String, Error> {
-        let output = tokio::time::timeout(
-            WRAP_TIMEOUT,
-            self.client
-                .encrypt()
-                .key_id(&self.key_arn)
-                .plaintext(Blob::new(private_key.to_vec()))
-                .encryption_algorithm(EncryptionAlgorithmSpec::SymmetricDefault)
-                .send(),
-        )
-        .await
-        .map_err(|_| Error::Timeout)?
-        .map_err(|error| {
-            if error
-                .as_service_error()
-                .and_then(ProvideErrorMetadata::code)
-                == Some("AccessDeniedException")
-            {
-                Error::AccessDenied
-            } else {
-                Error::RequestFailed
-            }
-        })?;
+    pub async fn encrypt(&self, private_key: &[u8; 32]) -> Result<String, Error> {
+        let output = self
+            .client
+            .encrypt()
+            .key_id(&self.key_arn)
+            .plaintext(Blob::new(private_key.to_vec()))
+            .encryption_algorithm(EncryptionAlgorithmSpec::SymmetricDefault)
+            .send()
+            .await
+            .map_err(|error| {
+                if matches!(error, SdkError::TimeoutError(_)) {
+                    Error::Timeout
+                } else if error
+                    .as_service_error()
+                    .and_then(ProvideErrorMetadata::code)
+                    == Some("AccessDeniedException")
+                {
+                    Error::AccessDenied
+                } else {
+                    Error::RequestFailed
+                }
+            })?;
         if output.encryption_algorithm != Some(EncryptionAlgorithmSpec::SymmetricDefault) {
             return Err(Error::InvalidResponse);
         }
