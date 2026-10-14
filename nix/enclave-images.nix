@@ -92,6 +92,10 @@ let
       inherit eif;
     };
 
+  enrollment = buildEnclaveImage {
+    pname = "selfie-enrollment-enclave";
+    sandboxed = true;
+  };
   migration = buildEnclaveImage { pname = "di-migration-enclave"; };
   dev = buildEnclaveImage {
     pname = "di-dev-enclave";
@@ -99,6 +103,8 @@ let
   };
 in
 {
+  selfie-enrollment-oci = enrollment.oci;
+  selfie-enrollment-eif = enrollment.eif;
   di-migration-oci = migration.oci;
   di-migration-eif = migration.eif;
   di-dev-oci = dev.oci;
