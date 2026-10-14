@@ -102,8 +102,10 @@ impl AttestedKey {
         let cache = Arc::clone(&self.cached_attestation);
 
         tokio::spawn(async move {
+            let mut delay = max_age;
             loop {
-                tokio::time::sleep(max_age).await;
+                tokio::time::sleep(delay).await;
+                delay = max_age;
 
                 let attestor = Arc::clone(&attestor);
                 let key = public_key.clone();
@@ -118,6 +120,7 @@ impl AttestedKey {
                     }
                     Ok(Err(error)) => {
                         tracing::error!(?error, "background attestation refresh failed");
+                        delay = Duration::from_secs(30).min(max_age);
                         let age = cache.lock().await.attested_at.elapsed();
                         if age >= MAX_SERVABLE_AGE {
                             tracing::error!(
@@ -201,4 +204,73 @@ pub fn log_boot_measurements(document: &AttestationDoc) {
         pcr2 = %measurement(2),
         "attested enclave measurements"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestAttestor {
+        calls: AtomicUsize,
+        attempts: tokio::sync::mpsc::UnboundedSender<Instant>,
+        recover: bool,
+    }
+
+    impl Attestor for TestAttestor {
+        fn attest_public_key(&self, _: &[u8]) -> Result<Vec<u8>, enclave_types::Error> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.attempts.send(Instant::now()).unwrap();
+            if call == 0 || (self.recover && call > 1) {
+                Ok(call.to_le_bytes().to_vec())
+            } else {
+                Err(enclave_types::Error::Unavailable)
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_refresh_retries_soon_then_resumes_normal_interval() {
+        let (attempts, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut key = AttestedKey::new(
+            Arc::new(TestAttestor {
+                calls: AtomicUsize::new(0),
+                attempts,
+                recover: true,
+            }),
+            vec![1],
+            MAX_CACHED_AGE,
+        )
+        .unwrap();
+        let initial = received.recv().await.unwrap();
+        let refresh = key.start_refresh();
+        let failed = received.recv().await.unwrap();
+        let retried = received.recv().await.unwrap();
+        let normal = received.recv().await.unwrap();
+        refresh.abort();
+
+        assert_eq!(failed - initial, MAX_CACHED_AGE);
+        assert_eq!(retried - failed, Duration::from_secs(30));
+        assert_eq!(normal - retried, MAX_CACHED_AGE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn repeated_failures_still_stop_at_max_servable_age() {
+        let (attempts, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut key = AttestedKey::new(
+            Arc::new(TestAttestor {
+                calls: AtomicUsize::new(0),
+                attempts,
+                recover: false,
+            }),
+            vec![1],
+            MAX_CACHED_AGE,
+        )
+        .unwrap();
+        let initial = key.document().await;
+        let started = Instant::now();
+        key.start_refresh().await.unwrap();
+        assert_eq!(started.elapsed(), MAX_SERVABLE_AGE);
+        assert_eq!(key.document().await, initial);
+    }
 }
