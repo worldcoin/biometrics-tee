@@ -97,8 +97,8 @@ cd "$repo_root"
 build_output() {
   local format="$1"
   if [[ -n "$pcp_kms_key_arn" ]]; then
-    # Environment values are data, never interpolated into Nix source. The flake
-    # validates the ARN before adding it to the measured image environment.
+    # Terraform validates the ARN. Pass it as data, never interpolated Nix source;
+    # the image embeds the key identity and its region in the measured environment.
     PCP_BUILD_ROOT="$repo_root" PCP_BUILD_KEY_ARN="$pcp_kms_key_arn" PCP_BUILD_FORMAT="$format" \
       nix build --impure --no-update-lock-file --no-link --print-out-paths --expr '
         let

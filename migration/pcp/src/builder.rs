@@ -17,6 +17,39 @@ pub struct OutputRecipients<'a> {
     pub backend_keys: orb_pcp::BackendKeys<'a>,
 }
 
+/// Failure to prepare or construct a migrated package.
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError<E> {
+    /// Prepared source, biometrics or migration context failed validation.
+    #[error(transparent)]
+    Mapping(#[from] Error),
+    /// Archive assembly, encryption or the supplied signer failed.
+    #[error("PCP construction failed")]
+    Build(#[source] orb_pcp::BuildError<E>),
+}
+
+/// Builds an encrypted PCP from prepared inputs and recipient keys.
+///
+/// The caller supplies authenticated source data, prepared biometrics, authorized
+/// recipients and a manifest signer. Run this synchronous operation on a blocking
+/// worker when called from an asynchronous service.
+///
+/// # Errors
+/// Propagates mapping, archive, encryption and signer failures without returning
+/// a partial package.
+pub fn build<E>(
+    source: &SourcePcp,
+    biometrics: &PreparedBiometrics<'_>,
+    context: &MigrationContext,
+    recipients: OutputRecipients<'_>,
+    sign_digest: impl FnOnce(&[u8; 32]) -> Result<Vec<u8>, E>,
+) -> Result<orb_pcp::Package, BuildError<E>> {
+    with_build_request(source, biometrics, context, recipients, |request| {
+        orb_pcp::build(request, &mut rand::rngs::OsRng, sign_digest)
+    })?
+    .map_err(BuildError::Build)
+}
+
 /// Validate one migration run and pass its build request to `build`,
 /// normally `orb_pcp::build` with a CSPRNG and the enclave signer.
 ///

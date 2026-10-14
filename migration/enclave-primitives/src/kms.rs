@@ -136,12 +136,7 @@ pub fn hostname(region: &str) -> Option<String> {
     {
         return None;
     }
-    let suffix = if region.starts_with("cn-") {
-        "amazonaws.com.cn"
-    } else {
-        "amazonaws.com"
-    };
-    Some(format!("kms.{region}.{suffix}"))
+    Some(format!("kms.{region}.amazonaws.com"))
 }
 
 #[cfg(test)]
@@ -268,10 +263,6 @@ mod tests {
         assert_eq!(
             hostname("us-east-1").unwrap(),
             "kms.us-east-1.amazonaws.com"
-        );
-        assert_eq!(
-            hostname("cn-north-1").unwrap(),
-            "kms.cn-north-1.amazonaws.com.cn"
         );
         for region in ["", "evil.example", "us-east-1:443", "../", "us-east-1\n"] {
             assert!(hostname(region).is_none());

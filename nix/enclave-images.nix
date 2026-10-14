@@ -96,14 +96,17 @@ let
 
   migration = buildEnclaveImage {
     pname = "di-migration-enclave";
-    environment = pkgs.lib.optional (pcpKmsKeyArn != null) "PCP_KMS_KEY_ARN=${pcpKmsKeyArn}";
+    # Terraform owns ARN validation. Copy its key identity and region into the EIF.
+    environment = pkgs.lib.optionals (pcpKmsKeyArn != null) [
+      "PCP_KMS_KEY_ARN=${pcpKmsKeyArn}"
+      "PCP_KMS_REGION=${builtins.elemAt (pkgs.lib.splitString ":" pcpKmsKeyArn) 3}"
+    ];
   };
   dev = buildEnclaveImage {
     pname = "di-dev-enclave";
     sandboxed = true;
   };
 in
-assert pcpKmsKeyArn == null || builtins.match "arn:aws(-us-gov|-cn)?:kms:[a-z0-9-]+:[0-9]{12}:(alias|key)/[a-zA-Z0-9_/-]+" pcpKmsKeyArn != null;
 {
   di-migration-oci = migration.oci;
   di-migration-eif = migration.eif;

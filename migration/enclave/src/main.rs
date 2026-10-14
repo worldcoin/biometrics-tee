@@ -26,8 +26,11 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|error| anyhow!("failed to generate and attest the channel key: {error:?}"))?;
     match std::env::var("PCP_KMS_KEY_ARN") {
         Ok(arn) => {
+            let region =
+                std::env::var("PCP_KMS_REGION").context("measured KMS region is missing")?;
             state.set_key_wrapper(
-                kms_transport::key_wrapper(arn).context("invalid measured KMS configuration")?,
+                kms_transport::key_wrapper(arn, region)
+                    .context("invalid measured KMS configuration")?,
             );
             tracing::info!("PCP key wrapping configured");
         }

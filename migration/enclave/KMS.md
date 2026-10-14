@@ -2,9 +2,10 @@
 
 `WrappedPcpKeys::generate` creates four fresh sealed-box keypairs inside the
 enclave. KMS Encrypt receives each raw 32-byte private key over enclave-terminated
-TLS. `pcp_keys::build` passes the corresponding public keys and standard Base64
-KMS ciphertexts to the shared PCP builder. The builder encrypts the inner archives,
-writes `backend_keys.json`, hashes it in the manifest, and calls the supplied
+TLS. `di_migration_pcp::build` accepts `OutputRecipients` containing the public keys
+and standard Base64 KMS ciphertexts, and delegates to the shared PCP builder. The
+builder encrypts the inner archives, writes `backend_keys.json`, hashes it in the
+manifest, and calls the supplied
 manifest signer. The caller supplies the authenticated source, prepared biometrics,
 authorized user public key and signing callback. Package construction is synchronous
 and belongs on a blocking worker after asynchronous key generation.
@@ -16,9 +17,10 @@ produce migrated PCPs.
 
 ## Configuration and trust
 
-The full wrapping key or alias ARN is baked into the image environment and covered
-by its measurements. Cross-account calls require an alias ARN containing the key
-owner's account ID, for example this **synthetic** value:
+Terraform validates the wrapping key or alias ARN and region. The image embeds
+both values in its measured environment. The build derives the region from the
+ARN. Cross-account calls require an alias ARN containing the key owner's account
+ID, for example this **synthetic** value:
 
 ```sh
 scripts/build-enclaves.sh --workload migration \
@@ -26,10 +28,9 @@ scripts/build-enclaves.sh --workload migration \
 ```
 
 Store real environment values in deployment configuration. The bare name
-`alias/example` resolves in the caller's account and is rejected. AWS resolves
-the configured alias; its Encrypt response must name a concrete key in the same
-partition, account and region. Alias changes require preserving decrypt access to
-keys referenced by existing ciphertexts.
+`alias/example` resolves in the caller's account. AWS KMS resolves the configured
+alias when processing the encryption request. Alias changes require preserving
+decrypt access to keys referenced by existing ciphertexts.
 
 Set `PCP_KMS_REGION` on the host to the alias's region. The host uses its existing
 AWS SDK credential provider, which must supply temporary credentials with a session
@@ -41,7 +42,7 @@ The host binds parent CID 3, ports 7000 (TLS relay) and 7001 (credentials). It c
 the connecting CID against `ENCLAVE_CID`, limits active connections to 32 and only
 forwards to the configured regional AWS KMS hostname on port 443. These ports must
 be available in the host's vsock namespace. The enclave validates TLS using its
-compiled public trust roots and the hostname derived from the measured ARN. Host
+compiled public trust roots and the hostname derived from the measured region. Host
 credentials authorize requests; they do not choose the wrapping destination.
 
 Each credential exchange has a three-second deadline. The enclave SDK caches
@@ -56,9 +57,9 @@ never be captured by body logging. Keep AWS SDK debug/trace body logging disable
 
 Deploy the host relay before enabling package generation. Build the enclave with
 the environment's alias ARN and register the resulting measurements through the
-normal attestation rollout. A malformed ARN fails enclave startup. An image
-without wrapping configuration has no `KeyWrapper`; callers must reject package
-generation in that mode. Liveness does not depend on AWS KMS availability.
+normal attestation rollout. An image without wrapping configuration has no
+`KeyWrapper`; callers must reject package generation in that mode. Liveness does
+not depend on AWS KMS availability.
 
 Run the portable regression suite and the synthetic KMS integration test:
 

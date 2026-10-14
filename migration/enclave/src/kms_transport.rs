@@ -31,25 +31,25 @@ use tokio_rustls::{
 };
 use tokio_vsock::{VsockAddr, VsockStream};
 
-use crate::kms::{self, KeyWrapper};
+use anyhow::Context;
 
-/// Constructs an enclave-only client from a key/alias ARN embedded in the EIF.
+use crate::kms::KeyWrapper;
+
+/// Constructs an enclave-only client from a key/alias ARN and region embedded in the EIF.
 ///
 /// Each HTTPS exchange opens a bounded TLS connection through the fixed parent
 /// port. Credentials refresh through the SDK identity cache before expiration.
 ///
 /// # Errors
-/// Rejects malformed key configuration. Network errors occur on the first wrap.
-pub fn key_wrapper(key_arn: String) -> Result<KeyWrapper, kms::Error> {
-    let (scope, _) = kms::arn_parts(&key_arn).ok_or(kms::Error::InvalidKeyArn)?;
-    let region = scope.split(':').nth(3).ok_or(kms::Error::InvalidKeyArn)?;
-    let hostname = wire::hostname(region).ok_or(kms::Error::InvalidKeyArn)?;
+/// Returns endpoint or TLS configuration errors. Network errors occur on the first wrap.
+pub fn key_wrapper(key_arn: String, region: String) -> anyhow::Result<KeyWrapper> {
+    let hostname = wire::hostname(&region).context("invalid KMS endpoint region")?;
     let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
-    .map_err(|_| kms::Error::InvalidKeyArn)?
+    .context("failed to configure KMS TLS")?
     .with_root_certificates(roots)
     .with_no_client_auth();
     let connector = SharedHttpConnector::new(KmsConnector {
@@ -59,12 +59,12 @@ pub fn key_wrapper(key_arn: String) -> Result<KeyWrapper, kms::Error> {
     let client = Client::from_conf(
         aws_sdk_kms::config::Builder::new()
             .behavior_version(BehaviorVersion::latest())
-            .region(Region::new(region.to_owned()))
+            .region(Region::new(region))
             .credentials_provider(ParentCredentials)
             .http_client(http_client_fn(move |_, _| connector.clone()))
             .build(),
     );
-    KeyWrapper::new(&client, key_arn)
+    Ok(KeyWrapper::new(&client, key_arn))
 }
 
 #[derive(Debug)]
