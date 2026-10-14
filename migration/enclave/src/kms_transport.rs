@@ -38,7 +38,7 @@ use crate::kms::KeyWrapper;
 /// port. Credentials refresh through the SDK identity cache before expiration.
 ///
 /// # Errors
-/// Returns endpoint or TLS configuration errors. Network errors occur on the first wrap.
+/// Returns key ARN, endpoint or TLS configuration errors. Network errors occur on the first wrap.
 pub fn key_wrapper(key_arn: String, region: String) -> anyhow::Result<KeyWrapper> {
     let hostname = wire::hostname(&region).context("invalid KMS endpoint region")?;
     let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -61,7 +61,7 @@ pub fn key_wrapper(key_arn: String, region: String) -> anyhow::Result<KeyWrapper
             .http_client(http_client_fn(move |_, _| connector.clone()))
             .build(),
     );
-    Ok(KeyWrapper::new(&client, key_arn))
+    KeyWrapper::new(&client, key_arn).context("invalid KMS wrapping key configuration")
 }
 
 #[derive(Debug)]
@@ -222,6 +222,24 @@ mod tests {
             .uri(url)
             .body(SdkBody::from("synthetic-plaintext"))
             .unwrap()
+    }
+
+    #[test]
+    fn startup_requires_a_full_wrapping_arn_in_the_measured_region() {
+        let region = "us-east-1";
+        assert!(
+            key_wrapper(
+                "arn:aws:kms:us-east-1:000000000000:alias/synthetic".into(),
+                region.into(),
+            )
+            .is_ok()
+        );
+        for arn in [
+            "alias/synthetic",
+            "arn:aws:kms:us-west-2:000000000000:key/synthetic",
+        ] {
+            assert!(key_wrapper(arn.into(), region.into()).is_err());
+        }
     }
 
     #[test]

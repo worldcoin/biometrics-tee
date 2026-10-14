@@ -18,12 +18,11 @@ let
       inherit pname version;
       src = root;
       strictDeps = true;
-      cargoExtraArgs = "--locked --bin ${pname}";
+      cargoExtraArgs = "--locked -p ${pname} --bin ${pname}";
 
-      # Crane prepares dependencies for the whole workspace, including di-sandbox's Linux-only
-      # Minijail, the PCP builder's libsodium, and protoc for the PCP builder and the worker
-      # protocol. Give it Nix's Minijail: the Cargo fallback expects the full upstream
-      # repository around the vendored crate and fails with no makefile.
+      # Native dependencies include the PCP builder's libsodium and protoc, and the
+      # dev enclave's Minijail. Use Nix's Minijail: Cargo's fallback needs the full
+      # upstream repository around the vendored crate.
       nativeBuildInputs = [
         pkgs.clang
         pkgs.pkg-config

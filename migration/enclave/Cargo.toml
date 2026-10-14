@@ -14,7 +14,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 ark-babyjubjub = { version = "0.5", package = "taceo-ark-babyjubjub" }
 alkali = { version = "0.3", features = ["use-pkg-config"] }
-aws-sdk-kms.workspace = true
+aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio"] }
 aws-credential-types = "1"
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
 aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
@@ -31,7 +31,7 @@ di-migration-pcp = { path = "../pcp" }
 di-migration-enclave-primitives.workspace = true
 flate2.workspace = true
 hex.workspace = true
-orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
+orb-pcp.workspace = true
 pontifex = { workspace = true, features = ["channel", "nsm", "server"] }
 serde_json.workspace = true
 tar.workspace = true
@@ -43,11 +43,12 @@ world-id-primitives.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-aws-config.workspace = true
+aws-sdk-kms.workspace = true
+aws-smithy-types = { version = "1", features = ["test-util"] }
 aws-sigv4 = "1"
 aws-smithy-async = "1"
 rcgen = "0.14"
 hyper = { version = "1", features = ["server"] }
-orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
+orb-pcp-defs.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

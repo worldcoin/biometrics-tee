@@ -91,16 +91,15 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: API, host and storage against LocalStack
-        env:
-          LOCALSTACK_ENDPOINT: http://localhost:4566
-        run: cargo test --locked -p migration-api -p di-migration-host -p di-migration-storage --test localstack -- --ignored
       - name: Install PCP build dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config protobuf-compiler libsodium-dev
-      - name: PCP recipient keys against LocalStack
+      - name: API, host, storage and PCP keys against LocalStack
         env:
           LOCALSTACK_ENDPOINT: http://localhost:4566
-        run: cargo test --locked -p di-migration-enclave --test pcp_keys localstack_ -- --ignored
+        run: >-
+          cargo test --locked -p migration-api -p di-migration-host
+          -p di-migration-storage -p di-migration-enclave
+          --test localstack --test pcp_keys -- --ignored
 
   flake:
     name: Flake eval

@@ -1,10 +1,11 @@
 //! One fresh set of image recipients per output PCP.
 //!
-//! Public keys stay paired
-//! with their KMS envelopes; plaintext private keys use libsodium guarded memory.
+//! Public keys stay paired with their KMS envelopes. Key generation uses libsodium
+//! guarded memory; KMS requests use a separate ordinary heap buffer zeroized on drop.
 
 use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
 use di_migration_pcp::OutputRecipients;
+use tracing::Instrument;
 
 use crate::kms;
 
@@ -12,10 +13,16 @@ use crate::kms;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The cryptographic library could not allocate or generate a keypair.
-    #[error("PCP recipient key generation failed")]
-    Generation,
+    #[error("PCP {archive_role} recipient key generation failed")]
+    Generation {
+        /// Archive role, never a user-supplied identifier.
+        archive_role: &'static str,
+        /// Payload-free cryptographic library failure.
+        #[source]
+        source: alkali::AlkaliError,
+    },
     /// Wrapping failed for a fixed archive role; no usable bundle is returned.
-    #[error("PCP {archive_role} key wrapping failed: {source}")]
+    #[error("PCP {archive_role} key wrapping failed")]
     Wrapping {
         /// Archive role, never a user-supplied identifier.
         archive_role: &'static str,
@@ -35,19 +42,22 @@ impl PublicPrivateKeypair {
         wrapper: &kms::KeyWrapper,
         archive_role: &'static str,
     ) -> Result<Self, Error> {
-        let pair = sealedbox::Keypair::generate().map_err(|_| Error::Generation)?;
-        let private_key = pair.private_key.as_ref();
-        let encrypted_private_key = wrapper.encrypt(private_key).await.map_err(|source| {
-            tracing::warn!(archive_role, reason = %source, "PCP key wrapping failed");
-            Error::Wrapping {
+        let pair = sealedbox::Keypair::generate().map_err(|source| Error::Generation {
+            archive_role,
+            source,
+        })?;
+        let public_key = pair.public_key;
+        let encryption = wrapper.encrypt(pair.private_key.as_ref());
+        drop(pair); // Clear the guarded key once the zeroizing request owns its encoding.
+        let encrypted_private_key = encryption
+            .instrument(tracing::info_span!("pcp_key_wrapping", archive_role))
+            .await
+            .map_err(|source| Error::Wrapping {
                 archive_role,
                 source,
-            }
-        })?;
-        // Dropping `pair` clears its guarded private-key buffer. KMS serialization
-        // uses a separate zeroizing body shared by request attempts.
+            })?;
         Ok(Self {
-            public_key: pair.public_key,
+            public_key,
             encrypted_private_key,
         })
     }
@@ -73,7 +83,9 @@ pub struct BackendKeys {
 
 impl BackendKeys {
     /// Generates four independent keypairs and wraps each private key. Operations
-    /// run sequentially, bounding KMS concurrency to one call per migration.
+    /// run sequentially, bounding KMS concurrency to one call per migration. The
+    /// four wrapping deadlines total at most 40 seconds, plus local key generation.
+    /// Call `di_migration_pcp::validate_build_inputs` before generating keys.
     ///
     /// # Errors
     /// Returns the first generation or wrapping failure, discarding partial results.

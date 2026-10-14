@@ -8,7 +8,10 @@ builder encrypts the inner archives, writes `backend_keys.json`, hashes it in th
 manifest, and calls the supplied
 manifest signer. The caller supplies the authenticated source, prepared biometrics,
 authorized user public key and signing callback. Package construction is synchronous
-and belongs on a blocking worker after asynchronous key generation.
+and belongs on a blocking worker after asynchronous key generation. Run
+`di_migration_pcp::validate_build_inputs` before generating keys to reject invalid
+mapping inputs and unusable user keys without KMS calls. Retain the source through
+the completed-package preservation check.
 
 The enclave state exposes the configured `KeyWrapper` for this integration. The
 migration route verifies the credential and PCP hash before a channel round trip.
@@ -17,10 +20,12 @@ component before it can produce migrated PCPs.
 
 ## Configuration and trust
 
-Terraform validates the wrapping key or alias ARN and region. The image embeds
-both values in its measured environment. The build derives the region from the
-ARN. Cross-account calls require an alias ARN containing the key owner's account
-ID, for example this **synthetic** value:
+The image embeds the wrapping key or alias ARN and its derived region in its
+measured environment. The enclave requires a full KMS key or alias ARN in the
+configured region at startup. Encryption responses must identify a key in the
+configured partition, region and account; a configured key ARN must match exactly.
+Terraform owns deployment policy. Cross-account aliases include the key owner's
+account ID, for example this **synthetic** value:
 
 ```sh
 scripts/build-enclaves.sh --workload migration \
@@ -47,15 +52,17 @@ credentials authorize requests; they do not choose the wrapping destination.
 
 Each credential exchange has a three-second deadline. The enclave SDK caches
 credentials and refreshes them before expiration. Each TLS/HTTP exchange has a
-five-second deadline and a 64 KiB response limit. `KeyWrapper::encrypt` uses an SDK
-operation timeout of ten seconds across at most two attempts; four private keys
-are encrypted sequentially.
+five-second deadline and a 64 KiB response limit. `KeyWrapper::encrypt` allows at
+most two four-second attempts within a ten-second operation deadline. Four private
+keys are encrypted sequentially, with a combined wrapping deadline of at most
+40 seconds, plus local key generation.
 Failure discards the partial recipient bundle and returns no package. Private
-keys are cleared from guarded memory after wrapping. The key is Base64-encoded
-directly into a fixed-size, zeroizing JSON allocation; the generated SDK serializer
-receives an empty placeholder. A per-operation hook installs the complete body
-before signing each attempt. SDK retries and HTTP writes share the allocation,
-and its final owner wipes it on completion, error, timeout or cancellation.
+keys are Base64-encoded directly into a fixed-size, zeroizing JSON allocation and
+cleared from guarded memory before awaiting KMS. The generated SDK serializer
+receives an empty placeholder. A per-operation hook validates the placeholder's
+fields, then installs the complete body before signing each attempt. SDK retries
+and HTTP writes share the allocation; its final owner wipes it on completion,
+error, timeout or cancellation.
 
 The HTTP connection uses vectored writes to preserve body ownership. Its driver
 is scoped to the request future, so cancellation synchronously releases queued
@@ -64,6 +71,10 @@ ring provider encrypts record payloads in place. Changes to serialization, HTTP
 buffering or the TLS provider must preserve these properties. This contract covers
 owned key and request buffers, not compiler-generated stack/register copies or
 abrupt process termination. Keep AWS SDK debug/trace body logging disabled.
+
+The image build selects the enclave package explicitly. Its production KMS SDK
+dependency enables the Tokio runtime and uses the supplied TLS connector. The
+SDK's default HTTPS client is enabled only for tests that use LocalStack.
 
 ## Deployment and checks
 
@@ -78,7 +89,7 @@ Run the portable regression suite and the synthetic KMS integration test:
 ```sh
 cargo test --locked -p di-migration-enclave-primitives -p di-migration-enclave -p di-migration-host
 LOCALSTACK_ENDPOINT=http://localhost:4566 cargo test --locked \
-  -p di-migration-enclave --test pcp_keys localstack_ -- --ignored
+  -p di-migration-enclave --test pcp_keys -- --ignored
 ```
 
 Before enabling production jobs, verify on Nitro hardware that the workload's
@@ -94,7 +105,8 @@ The host's existing telemetry initialization supports StatsD when
 `migration.kms_relay.requests` by `kind` and `outcome`,
 `migration.kms_relay.duration_seconds`, and `migration.kms_relay.rejected` by
 `reason`. Relay success describes transport completion, not KMS authorization.
-The enclave emits payload-free wrapping failures with archive role and error
-class. Connecting enclave outcomes to production job metrics and alerting belongs
-to the migration-route integration; relay metrics alone cannot measure successful
-package generation.
+The enclave emits wrapping failures with archive role, error class, an allowlisted
+KMS code, HTTP status, bounded request ID and attempt count. Messages and response
+bodies are excluded. Connecting enclave outcomes to production job metrics and
+alerting belongs to the migration-route integration; relay metrics alone cannot
+measure successful package generation.

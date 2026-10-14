@@ -3073,7 +3073,6 @@ version = "0.1.0"
 dependencies = [
  "alkali",
  "anyhow",
- "aws-config",
  "aws-credential-types",
  "aws-sdk-kms",
  "aws-sigv4",
