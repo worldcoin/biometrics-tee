@@ -22,8 +22,8 @@ async fn main() -> anyhow::Result<()> {
     attestation::connect()
         .await
         .context("Nitro Secure Module is unavailable")?;
-    let mut state = EnclaveState::generate(Arc::new(NsmAttestor))
-        .map_err(|error| anyhow!("failed to generate and attest the channel key: {error:?}"))?;
+    let mut state =
+        EnclaveState::from_env(Arc::new(NsmAttestor)).context("failed to boot enclave state")?;
     let refresh = state.start_attestation_refresh();
 
     let document = SecureModule::global()
