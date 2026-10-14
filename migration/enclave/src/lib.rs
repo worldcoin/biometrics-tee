@@ -13,6 +13,10 @@
 
 /// Nitro Secure Module attestation of the boot's channel key.
 pub mod attestation;
+/// KMS encryption of per-package private recipient keys.
+pub mod kms;
+/// Fresh PCP recipients and encrypted package construction.
+pub mod pcp_keys;
 /// Nitro hardware RNG verification.
 pub mod rng;
 /// Pontifex operations exposed to the host.
