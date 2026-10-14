@@ -15,6 +15,8 @@ pub enum Error {
     CredentialDeserializationFailed,
     /// Credential signature verification failed.
     CredentialSignatureVerificationFailed,
+    /// Credential signature did not match the credential contents.
+    CredentialSignatureInvalid,
     /// Credential claims mismatch.
     CredentialClaimsMismatch,
 }

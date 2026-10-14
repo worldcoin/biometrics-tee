@@ -75,8 +75,8 @@ fn verify_credential(
     pcp: &[u8],
 ) -> Result<(), enclave_primitives::Error> {
     let credential: Credential =
-        serde_json::from_slice(credential_json.as_bytes()).map_err(|_| {
-            tracing::warn!("failed to deserialize credential");
+        serde_json::from_slice(credential_json.as_bytes()).map_err(|error| {
+            tracing::warn!(%error, "failed to deserialize credential");
             enclave_primitives::Error::CredentialDeserializationFailed
         })?;
     if credential.sub.to_string() != expected_sub {
@@ -84,13 +84,15 @@ fn verify_credential(
         return Err(enclave_primitives::Error::CredentialSubMismatch);
     }
 
-    let valid = credential.verify_signature(issuer_pubkey).map_err(|_| {
-        tracing::warn!("credential signature verification failed");
-        enclave_primitives::Error::CredentialSignatureVerificationFailed
-    })?;
+    let valid = credential
+        .verify_signature(issuer_pubkey)
+        .map_err(|error| {
+            tracing::warn!(%error, "credential signature verification failed");
+            enclave_primitives::Error::CredentialSignatureVerificationFailed
+        })?;
     if !valid {
-        tracing::warn!("credential signature verification failed");
-        return Err(enclave_primitives::Error::CredentialSignatureVerificationFailed);
+        tracing::warn!("credential signature is invalid");
+        return Err(enclave_primitives::Error::CredentialSignatureInvalid);
     }
 
     // claims[0] is Poseidon2(CLAIMS_HASH_V1, raw hashes.json) for a PCP-backed credential.
@@ -249,6 +251,46 @@ mod tests {
         assert_eq!(
             pcp_payload::decode(&plaintext).expect("decode"),
             PcpWithCredential { pcp, credential }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_credential_with_an_invalid_signature_is_rejected() {
+        let issuer = EdDSAPrivateKey::from_bytes([7u8; 32]);
+        let state = Arc::new(test_support::state_with_issuer_pubkey(issuer.public()));
+        let hashes_json = br#"{\"thumbnail.png\":\"hash\"}"#;
+        let pcp = pcp_with_hashes_json(hashes_json);
+        let sub = FieldElement::from(42u64);
+        let mut credential: serde_json::Value =
+            serde_json::from_str(&signed_credential_for_pcp(&issuer, hashes_json, sub))
+                .expect("deserialize credential for tampering");
+        credential["issuer_version"] = serde_json::json!(1);
+        let payload = pcp_payload::encode(&pcp, &credential.to_string()).expect("encode");
+        let (request, _) = sealed(&state, &payload, sub.to_string());
+
+        assert_eq!(
+            handler(state, request).await,
+            Err(enclave_primitives::Error::CredentialSignatureInvalid)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_credential_with_an_unexpected_issuer_is_rejected() {
+        let issuer = EdDSAPrivateKey::from_bytes([7u8; 32]);
+        let expected_issuer = EdDSAPrivateKey::from_bytes([8u8; 32]);
+        let state = Arc::new(test_support::state_with_issuer_pubkey(
+            expected_issuer.public(),
+        ));
+        let hashes_json = br#"{\"thumbnail.png\":\"hash\"}"#;
+        let pcp = pcp_with_hashes_json(hashes_json);
+        let sub = FieldElement::from(42u64);
+        let credential = signed_credential_for_pcp(&issuer, hashes_json, sub);
+        let payload = pcp_payload::encode(&pcp, &credential).expect("encode");
+        let (request, _) = sealed(&state, &payload, sub.to_string());
+
+        assert_eq!(
+            handler(state, request).await,
+            Err(enclave_primitives::Error::CredentialSignatureVerificationFailed)
         );
     }
 

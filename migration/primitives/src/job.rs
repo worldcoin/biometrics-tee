@@ -111,6 +111,8 @@ pub enum Reason {
     CredentialDeserializationFailed,
     /// The credential signature verification failed.
     CredentialSignatureVerificationFailed,
+    /// The credential signature did not match the credential contents.
+    CredentialSignatureInvalid,
     /// The credential claims did not match the PCP `hashes.json`.
     CredentialClaimsMismatch,
     /// Reading the PCP or writing the result failed.
@@ -121,13 +123,14 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, for parsing.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::HostBusy,
         Self::EnclaveChanged,
         Self::EnclaveError,
         Self::CredentialSubMismatch,
         Self::CredentialDeserializationFailed,
         Self::CredentialSignatureVerificationFailed,
+        Self::CredentialSignatureInvalid,
         Self::CredentialClaimsMismatch,
         Self::S3Error,
         Self::Timeout,
@@ -145,6 +148,7 @@ impl Reason {
             Self::CredentialSignatureVerificationFailed => {
                 "credential_signature_verification_failed"
             }
+            Self::CredentialSignatureInvalid => "credential_signature_invalid",
             Self::CredentialClaimsMismatch => "credential_claims_mismatch",
             Self::S3Error => "s3_error",
             Self::Timeout => "timeout",
@@ -256,6 +260,10 @@ mod tests {
             (
                 Reason::CredentialSignatureVerificationFailed,
                 "credential_signature_verification_failed",
+            ),
+            (
+                Reason::CredentialSignatureInvalid,
+                "credential_signature_invalid",
             ),
             (
                 Reason::CredentialClaimsMismatch,
