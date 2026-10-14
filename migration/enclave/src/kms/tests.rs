@@ -133,7 +133,7 @@ async fn completion_and_service_failure_erase_the_request() {
                 .try_into()
                 .unwrap()))
         });
-        let result = wrapper.send(body).await;
+        let result = wrapper.send(body, "synthetic").await;
         assert_eq!(
             result,
             match status {
@@ -160,7 +160,7 @@ async fn timeout_and_cancellation_erase_an_in_flight_request() {
                 unreachable!()
             })
         });
-        let mut operation = Box::pin(wrapper.send(body));
+        let mut operation = Box::pin(wrapper.send(body, "synthetic"));
         if cancel {
             assert!(
                 tokio::time::timeout(Duration::from_millis(1), &mut operation)
