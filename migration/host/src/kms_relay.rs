@@ -5,9 +5,9 @@ use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvid
 use di_migration_enclave_primitives::kms::{
     self as wire, CREDENTIALS_PORT, CREDENTIALS_TIMEOUT, TLS_PORT,
 };
-use std::{io, sync::Arc, time::Duration};
+use std::{future::Future, io, time::Duration};
 use telemetry_batteries::reexports::metrics;
-use tokio::{net::TcpStream, sync::Semaphore, task::JoinSet};
+use tokio::{net::TcpStream, task::JoinSet};
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream};
 
 const MAX_CONNECTIONS: usize = 32;
@@ -15,9 +15,9 @@ const RELAY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Serves both parent ports.
 ///
-/// Only the configured enclave CID can connect; there
-/// are at most 32 active connections, and each has a deadline. Supervising callers
-/// must stop the host if this listener exits unexpectedly.
+/// Only the configured enclave CID can connect. At most 32 workers are tracked,
+/// including completed workers awaiting collection. Each connection has a deadline.
+/// Supervising callers must stop the host if this listener exits unexpectedly.
 ///
 /// # Errors
 /// Returns invalid region/CID configuration, listener failures or worker panics.
@@ -34,7 +34,6 @@ pub async fn serve(
     let tls_listener = VsockListener::bind(VsockAddr::new(wire::PARENT_CID, TLS_PORT))?;
     let credentials_listener =
         VsockListener::bind(VsockAddr::new(wire::PARENT_CID, CREDENTIALS_PORT))?;
-    let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut tasks = JoinSet::new();
     tracing::info!("enclave KMS relay enabled");
     loop {
@@ -53,14 +52,9 @@ pub async fn serve(
             metrics::counter!("migration.kms_relay.rejected", "reason" => "peer").increment(1);
             continue;
         }
-        let Ok(permit) = slots.clone().try_acquire_owned() else {
-            metrics::counter!("migration.kms_relay.rejected", "reason" => "capacity").increment(1);
-            continue;
-        };
         let hostname = hostname.clone();
         let credentials = credentials.clone();
-        tasks.spawn(async move {
-            let _permit = permit;
+        spawn_worker(&mut tasks, async move {
             let started = std::time::Instant::now();
             let result = if kind == "tls" {
                 tokio::time::timeout(RELAY_TIMEOUT, relay(stream, &hostname)).await
@@ -82,6 +76,14 @@ pub async fn serve(
             }
         });
     }
+}
+
+fn spawn_worker(tasks: &mut JoinSet<()>, worker: impl Future<Output = ()> + Send + 'static) {
+    if tasks.len() >= MAX_CONNECTIONS {
+        metrics::counter!("migration.kms_relay.rejected", "reason" => "capacity").increment(1);
+        return;
+    }
+    tasks.spawn(worker);
 }
 
 const fn allowed_peer(actual: u32, expected: u32) -> bool {
@@ -107,6 +109,34 @@ async fn send_credentials(
 
 #[cfg(test)]
 mod tests {
+    use super::{MAX_CONNECTIONS, spawn_worker};
+    use tokio::{sync::mpsc, task::JoinSet};
+
+    #[tokio::test]
+    async fn capacity_is_released_only_when_workers_are_collected() {
+        let mut tasks = JoinSet::new();
+        let (completed, mut completions) = mpsc::unbounded_channel();
+        for _ in 0..MAX_CONNECTIONS {
+            let completed = completed.clone();
+            spawn_worker(&mut tasks, async move {
+                completed.send(()).unwrap();
+            });
+        }
+        spawn_worker(&mut tasks, async {});
+        assert_eq!(tasks.len(), MAX_CONNECTIONS);
+
+        for _ in 0..MAX_CONNECTIONS {
+            completions.recv().await.unwrap();
+        }
+        spawn_worker(&mut tasks, async {});
+        assert_eq!(tasks.len(), MAX_CONNECTIONS);
+
+        tasks.join_next().await.unwrap().unwrap();
+        spawn_worker(&mut tasks, async {});
+        assert_eq!(tasks.len(), MAX_CONNECTIONS);
+        tasks.join_all().await;
+    }
+
     #[test]
     fn only_the_configured_enclave_receives_credentials() {
         assert!(super::allowed_peer(16, 16));

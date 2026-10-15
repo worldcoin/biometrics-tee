@@ -42,10 +42,11 @@ key-owning account's KMS policy must allow `kms:Encrypt` on the target key. No
 `kms:Decrypt` permission is needed by this producer.
 
 The host binds parent CID 3, ports 7000 (TLS relay) and 7001 (credentials). It checks
-the connecting CID against `ENCLAVE_CID`, limits active connections to 32 and only
-forwards to the configured regional AWS KMS hostname on port 443. These ports must
-be available in the host's vsock namespace. The enclave validates TLS using its
-compiled public trust roots and the hostname derived from the measured region. Host
+the connecting CID against `ENCLAVE_CID` and tracks at most 32 workers, including
+completed workers awaiting collection. It only forwards to the configured regional
+AWS KMS hostname on port 443. These ports must be available in the host's vsock
+namespace. The enclave validates TLS using its compiled public trust roots and
+the hostname derived from the measured region. Host
 credentials authorize requests; they do not choose the wrapping destination.
 
 Each credential exchange has a three-second deadline. The enclave SDK caches
