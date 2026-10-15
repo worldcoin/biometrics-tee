@@ -3023,18 +3023,31 @@ dependencies = [
 name = "di-migration-enclave"
 version = "0.1.0"
 dependencies = [
+ "alkali",
  "anyhow",
+ "aws-sdk-kms",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "base64 0.22.1",
+ "bytes",
  "di-migration-enclave-primitives",
+ "di-migration-pcp",
  "flate2",
  "hex",
+ "http",
+ "orb-pcp",
+ "orb-pcp-defs",
  "pontifex",
  "serde_json",
+ "sha2 0.10.9",
  "taceo-ark-babyjubjub 0.5.3",
  "tar",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "world-id-primitives",
+ "zeroize",
 ]
 
 [[package]]

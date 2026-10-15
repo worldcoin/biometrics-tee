@@ -186,11 +186,11 @@ pub fn pipeline() -> PreparedBiometrics<'static> {
 
 /// Ephemeral recipient key pairs; a distinct pair per role checks key routing.
 pub struct OutputKeys {
-    user: sealedbox::Keypair,
-    iris: sealedbox::Keypair,
-    normalized_iris: sealedbox::Keypair,
-    face: sealedbox::Keypair,
-    tier2: sealedbox::Keypair,
+    pub user: sealedbox::Keypair,
+    pub iris: sealedbox::Keypair,
+    pub normalized_iris: sealedbox::Keypair,
+    pub face: sealedbox::Keypair,
+    pub tier2: sealedbox::Keypair,
 }
 
 impl OutputKeys {
@@ -241,14 +241,12 @@ pub fn build_and_open(
 ) -> OpenedPcp {
     let keys = OutputKeys::generate();
     let mut signed_digest = None;
-    let package = with_build_request(source, biometrics, context, keys.recipients(), |request| {
-        orb_pcp::build(request, &mut rand::rngs::OsRng, |digest| {
+    let package =
+        di_migration_pcp::build(source, biometrics, context, keys.recipients(), |digest| {
             signed_digest = Some(*digest);
             Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
         })
-    })
-    .unwrap()
-    .unwrap();
+        .unwrap();
     OpenedPcp {
         files: open(&package, &keys),
         signed_digest: signed_digest.unwrap(),
@@ -261,25 +259,17 @@ pub fn check_request(
     biometrics: &PreparedBiometrics<'_>,
     context: &MigrationContext,
 ) -> Result<(), Error> {
-    with_build_request(
+    validate_build_inputs(
         source,
         biometrics,
         context,
-        OutputKeys::generate().recipients(),
-        |_| (),
+        &sealedbox::Keypair::generate().unwrap().public_key,
     )
 }
 
 /// Decrypt a package: everything is in tier 0, tiers 1 and 2 are empty archives.
 pub fn open(package: &orb_pcp::Package, keys: &OutputKeys) -> Files {
-    let tier = |bytes: &[u8]| {
-        let gzip = unseal(bytes, &keys.user);
-        let mut tar = Vec::new();
-        flate2::read::GzDecoder::new(gzip.as_slice())
-            .read_to_end(&mut tar)
-            .unwrap();
-        untar(&tar)
-    };
+    let tier = |bytes: &[u8]| open_tier(bytes, &keys.user);
     assert!(tier(&package.tier1).is_empty() && tier(&package.tier2).is_empty());
     let mut files = Files::new();
     for (name, bytes) in tier(&package.tier0) {
@@ -301,7 +291,17 @@ pub fn open(package: &orb_pcp::Package, keys: &OutputKeys) -> Files {
     files
 }
 
-fn unseal(ciphertext: &[u8], pair: &sealedbox::Keypair) -> Vec<u8> {
+/// Open one encrypted tier, rejecting repeated archive members.
+pub fn open_tier(bytes: &[u8], user: &sealedbox::Keypair) -> Files {
+    let gzip = unseal(bytes, user);
+    let mut tar = Vec::new();
+    flate2::read::GzDecoder::new(gzip.as_slice())
+        .read_to_end(&mut tar)
+        .unwrap();
+    untar(&tar)
+}
+
+pub fn unseal(ciphertext: &[u8], pair: &sealedbox::Keypair) -> Vec<u8> {
     let mut plaintext = vec![0; ciphertext.len() - sealedbox::OVERHEAD_LENGTH];
     sealedbox::decrypt(ciphertext, pair, &mut plaintext).unwrap();
     plaintext
