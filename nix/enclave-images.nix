@@ -94,6 +94,10 @@ let
       inherit eif;
     };
 
+  enrollment = buildEnclaveImage {
+    pname = "selfie-enrollment-enclave";
+    sandboxed = true;
+  };
   migration = buildEnclaveImage {
     pname = "di-migration-enclave";
     # Terraform owns ARN validation. Copy its key identity and region into the EIF.
@@ -108,6 +112,8 @@ let
   };
 in
 {
+  selfie-enrollment-oci = enrollment.oci;
+  selfie-enrollment-eif = enrollment.eif;
   di-migration-oci = migration.oci;
   di-migration-eif = migration.eif;
   di-dev-oci = dev.oci;

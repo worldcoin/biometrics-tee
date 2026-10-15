@@ -398,7 +398,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir(root.join("proc"))?;
     std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))?;
-    std::fs::copy(peer(), root.join("bin/worker"))?;
+    std::fs::copy(peer(), root.join(di_sandbox::WORKER_PATH))?;
     std::fs::write(temp.join("broker-secret"), b"must not be visible")?;
 
     for (case, expected_error) in [

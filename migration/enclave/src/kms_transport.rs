@@ -158,19 +158,7 @@ async fn exchange(
         .connect(name, stream)
         .await
         .map_err(|_| transport_error())?;
-    exchange_http(stream, request).await
-}
-
-async fn exchange_http(
-    stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    request: http::Request<SdkBody>,
-) -> Result<HttpResponse, ConnectorError> {
-    // Queue the body Bytes without flattening them into an ordinary HTTP buffer.
-    // The TLS handshake is complete, so rustls encrypts writes into TLS records
-    // without retaining an application-plaintext queue.
-    let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
-        .writev(true)
-        .handshake(TokioIo::new(stream))
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .map_err(|_| transport_error())?;
     let response = async move {
@@ -190,8 +178,7 @@ async fn exchange_http(
             .map_err(|_| transport_error())
     };
     tokio::pin!(response);
-    // The driver is owned by this future: cancellation synchronously drops its
-    // queued body references, including when the transport or SDK deadline fires.
+    // Keep the connection inside this future so request deadlines also close it.
     tokio::select! {
         biased;
         result = &mut response => result,
@@ -205,13 +192,6 @@ async fn exchange_http(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kms::tests::tracked_body;
-    use std::{
-        pin::Pin,
-        sync::atomic::{AtomicBool, Ordering},
-        task::{Context, Poll},
-    };
-    use tokio::io::ReadBuf;
     use tokio_rustls::TlsAcceptor;
 
     const HOST: &str = "kms.us-east-1.amazonaws.com";
@@ -287,22 +267,17 @@ mod tests {
     #[tokio::test]
     async fn tls_exchange_preserves_the_http_body_and_limits_responses() {
         for size in [10, 65537] {
-            let (body, erased) = tracked_body();
-            let expected = body.to_vec(); // Synthetic test payload only.
             let (tls, server) = tls_pair(true);
             let (client_io, server_io) = tokio::io::duplex(4096);
             let task = tokio::spawn(async move {
                 let tls = server.accept(server_io).await.unwrap();
                 let service = hyper::service::service_fn(
-                    move |request: hyper::Request<hyper::body::Incoming>| {
-                        let expected = expected.clone();
-                        async move {
-                            let body = request.into_body().collect().await.unwrap().to_bytes();
-                            assert_eq!(&body[..], expected);
-                            Ok::<_, std::convert::Infallible>(http::Response::new(SdkBody::from(
-                                vec![b'x'; size],
-                            )))
-                        }
+                    move |request: hyper::Request<hyper::body::Incoming>| async move {
+                        let body = request.into_body().collect().await.unwrap().to_bytes();
+                        assert_eq!(&body[..], b"synthetic-plaintext");
+                        Ok::<_, std::convert::Infallible>(http::Response::new(SdkBody::from(
+                            vec![b'x'; size],
+                        )))
                     },
                 );
                 // The client closes its per-call connection once it has read the response.
@@ -310,11 +285,9 @@ mod tests {
                     .serve_connection(TokioIo::new(tls), service)
                     .await
             });
-            let mut request = request(&format!("https://{HOST}/"));
-            *request.body_mut() = SdkBody::from(body);
+            let request = request(&format!("https://{HOST}/"));
             let result = exchange(client_io, HOST.into(), tls, request).await;
             assert_eq!(result.is_ok(), size <= 65536);
-            assert!(erased.load(Ordering::SeqCst));
             if let Ok(response) = result {
                 assert_eq!(response.body().bytes().unwrap().len(), size);
             }
@@ -325,9 +298,7 @@ mod tests {
     #[tokio::test]
     async fn untrusted_or_wrong_hostname_certificates_cannot_receive_plaintext() {
         for (trusted, hostname) in [(false, HOST), (true, "wrong.example")] {
-            let (body, erased) = tracked_body();
-            let mut request = request(&format!("https://{HOST}/"));
-            *request.body_mut() = SdkBody::from(body);
+            let request = request(&format!("https://{HOST}/"));
             let (tls, server) = tls_pair(trusted);
             let (client_io, server_io) = tokio::io::duplex(4096);
             let task = tokio::spawn(async move { server.accept(server_io).await.is_err() });
@@ -337,98 +308,6 @@ mod tests {
                     .is_err()
             );
             assert!(task.await.unwrap());
-            assert!(erased.load(Ordering::SeqCst));
         }
-    }
-
-    struct InspectWrites {
-        io: tokio::io::DuplexStream,
-        body_pointer: usize,
-        seen_body: Arc<AtomicBool>,
-    }
-
-    impl AsyncRead for InspectWrites {
-        fn poll_read(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &mut ReadBuf<'_>,
-        ) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.io).poll_read(cx, buf)
-        }
-    }
-
-    impl AsyncWrite for InspectWrites {
-        fn poll_write(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            if buf.as_ptr() as usize == self.body_pointer {
-                self.seen_body.store(true, Ordering::SeqCst);
-            }
-            Pin::new(&mut self.io).poll_write(cx, buf)
-        }
-
-        fn poll_write_vectored(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            bufs: &[io::IoSlice<'_>],
-        ) -> Poll<io::Result<usize>> {
-            if bufs
-                .iter()
-                .any(|buf| buf.as_ptr() as usize == self.body_pointer)
-            {
-                self.seen_body.store(true, Ordering::SeqCst);
-            }
-            Pin::new(&mut self.io).poll_write_vectored(cx, bufs)
-        }
-
-        fn is_write_vectored(&self) -> bool {
-            true
-        }
-
-        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.io).poll_flush(cx)
-        }
-
-        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Pin::new(&mut self.io).poll_shutdown(cx)
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cancellation_erases_the_body_queued_for_a_blocked_write() {
-        let (body, erased) = tracked_body();
-        let seen_body = Arc::new(AtomicBool::new(false));
-        // A one-byte pipe forces partial writes and then backpressure.
-        let (client_io, _peer) = tokio::io::duplex(1);
-        let stream = InspectWrites {
-            io: client_io,
-            body_pointer: body.as_ptr() as usize,
-            seen_body: seen_body.clone(),
-        };
-        let request = http::Request::builder()
-            .method("POST")
-            .uri("/")
-            .header(http::header::HOST, HOST)
-            .header(http::header::CONTENT_LENGTH, body.len())
-            .body(SdkBody::from(body))
-            .unwrap();
-        let mut operation = Box::pin(exchange_http(stream, request));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(1), &mut operation)
-                .await
-                .is_err()
-        );
-        assert!(
-            seen_body.load(Ordering::SeqCst),
-            "HTTP must queue the original body allocation"
-        );
-        assert!(!erased.load(Ordering::SeqCst));
-        drop(operation);
-        assert!(
-            erased.load(Ordering::SeqCst),
-            "cancellation must release the body synchronously"
-        );
     }
 }

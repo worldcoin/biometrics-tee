@@ -22,10 +22,8 @@ component before it can produce migrated PCPs.
 
 The image embeds the wrapping key or alias ARN and its derived region in its
 measured environment. The enclave requires a full KMS key or alias ARN in the
-configured region at startup. Encryption responses must identify a key in the
-configured partition, region and account; a configured key ARN must match exactly.
-Terraform owns deployment policy. Cross-account aliases include the key owner's
-account ID, for example this **synthetic** value:
+configured region at startup. Terraform owns deployment policy. Cross-account
+aliases include the key owner's account ID, for example this **synthetic** value:
 
 ```sh
 scripts/build-enclaves.sh --workload migration \
@@ -56,21 +54,18 @@ five-second deadline and a 64 KiB response limit. `KeyWrapper::encrypt` allows a
 most two four-second attempts within a ten-second operation deadline. Four private
 keys are encrypted sequentially, with a combined wrapping deadline of at most
 40 seconds, plus local key generation.
-Failure discards the partial recipient bundle and returns no package. Private
-keys are Base64-encoded directly into a fixed-size, zeroizing JSON allocation and
-cleared from guarded memory before awaiting KMS. The generated SDK serializer
-receives an empty placeholder. A per-operation hook validates the placeholder's
-fields, then installs the complete body before signing each attempt. SDK retries
-and HTTP writes share the allocation; its final owner wipes it on completion,
-error, timeout or cancellation.
+Failure discards the partial recipient bundle and returns no package.
 
-The HTTP connection uses vectored writes to preserve body ownership. Its driver
-is scoped to the request future, so cancellation synchronously releases queued
-body references. HTTP writes begin after the TLS handshake; the pinned rustls
-ring provider encrypts record payloads in place. Changes to serialization, HTTP
-buffering or the TLS provider must preserve these properties. This contract covers
-owned key and request buffers, not compiler-generated stack/register copies or
-abrupt process termination. Keep AWS SDK debug/trace body logging disabled.
+Key generation uses libsodium guarded memory. Each raw private key is copied into
+`Zeroizing<Vec<u8>>`, whose ownership is preserved by the SDK's `Blob` through
+`Bytes::from_owner` and `Blob::from_maybe_shared`. The raw-key allocation is wiped
+when its last owner is dropped. KMS Encrypt uses the SDK's standard serialization,
+signing and retry path. SDK-generated JSON and transport buffers follow normal
+SDK memory management and are not zeroized. Keep AWS SDK debug/trace body logging
+disabled.
+
+The enclave completes the TLS handshake before sending HTTP requests. The HTTP
+connection is scoped to the request future, so request deadlines also close it.
 
 The image build selects the enclave package explicitly. Its production KMS SDK
 dependency enables the Tokio runtime and uses the supplied TLS connector. The
@@ -105,8 +100,7 @@ The host's existing telemetry initialization supports StatsD when
 `migration.kms_relay.requests` by `kind` and `outcome`,
 `migration.kms_relay.duration_seconds`, and `migration.kms_relay.rejected` by
 `reason`. Relay success describes transport completion, not KMS authorization.
-The enclave emits wrapping failures with archive role, error class, an allowlisted
-KMS code, HTTP status, bounded request ID and attempt count. Messages and response
-bodies are excluded. Connecting enclave outcomes to production job metrics and
-alerting belongs to the migration-route integration; relay metrics alone cannot
-measure successful package generation.
+The enclave emits wrapping failures with archive role and a payload-free error
+class. Upstream messages and response bodies are excluded. Connecting enclave
+outcomes to production job metrics and alerting belongs to the migration-route
+integration; relay metrics alone cannot measure successful package generation.

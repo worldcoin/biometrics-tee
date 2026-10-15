@@ -1,7 +1,8 @@
 //! One fresh set of image recipients per output PCP.
 //!
 //! Public keys stay paired with their KMS envelopes. Key generation uses libsodium
-//! guarded memory; KMS requests use a separate ordinary heap buffer zeroized on drop.
+//! guarded memory; the raw-key buffer passed to the SDK is zeroized on drop.
+//! See [`kms::KeyWrapper::encrypt`] for the SDK buffer ownership contract.
 
 use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
 use di_migration_pcp::OutputRecipients;
@@ -45,15 +46,15 @@ impl PublicPrivateKeypair {
             archive_role,
             source,
         })?;
-        let public_key = pair.public_key;
-        let encryption = wrapper.encrypt(pair.private_key.as_ref(), archive_role);
-        drop(pair); // Clear the guarded key once the zeroizing request owns its encoding.
-        let encrypted_private_key = encryption.await.map_err(|source| Error::Wrapping {
-            archive_role,
-            source,
-        })?;
+        let encrypted_private_key = wrapper
+            .encrypt(pair.private_key.as_ref(), archive_role)
+            .await
+            .map_err(|source| Error::Wrapping {
+                archive_role,
+                source,
+            })?;
         Ok(Self {
-            public_key,
+            public_key: pair.public_key,
             encrypted_private_key,
         })
     }

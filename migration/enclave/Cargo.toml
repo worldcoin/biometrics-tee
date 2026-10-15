@@ -44,9 +44,6 @@ zeroize.workspace = true
 
 [dev-dependencies]
 aws-sdk-kms.workspace = true
-aws-smithy-types = { version = "1", features = ["test-util"] }
-aws-sigv4 = "1"
-aws-smithy-async = "1"
 rcgen = "0.14"
 hyper = { version = "1", features = ["server"] }
 orb-pcp-defs.workspace = true

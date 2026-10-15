@@ -17,7 +17,7 @@ set -euo pipefail
 
 # A new workload is an entry here plus `di-<name>-oci` and `di-<name>-eif` outputs in
 # nix/enclave-images.nix.
-WORKLOADS=("migration" "dev")
+WORKLOADS=("migration" "dev" "selfie-enrollment")
 
 usage() {
   printf '%s\n' \
@@ -107,15 +107,19 @@ build_output() {
         in builtins.getAttr ("di-migration-" + builtins.getEnv "PCP_BUILD_FORMAT") images
       '
   else
-    nix build ".#di-$workload-$format" --no-update-lock-file --no-link --print-out-paths
+    nix build ".#$output_prefix-$format" --no-update-lock-file --no-link --print-out-paths
   fi
 }
 
 mkdir -p "$out_dir"
 out_dir="$(cd "$out_dir" && pwd)"
 
-eif_name="di-$workload-enclave.eif"
-pcr_name="di-$workload-pcr.json"
+output_prefix="di-$workload"
+if [[ "$workload" == "selfie-enrollment" ]]; then
+  output_prefix="$workload"
+fi
+eif_name="$output_prefix-enclave.eif"
+pcr_name="$output_prefix-pcr.json"
 
 # --no-update-lock-file on the flake calls below: an input added to flake.nix without a
 # matching `nix flake update` would otherwise be resolved to whatever upstream serves right
