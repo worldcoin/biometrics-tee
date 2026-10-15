@@ -3,6 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use alkali::{
+    AlkaliError,
+    asymmetric::seal::{SealError, curve25519xsalsa20poly1305 as sealedbox},
+};
 use orb_pcp::ImageId;
 use orb_pcp_defs::v1;
 
@@ -17,27 +21,118 @@ pub struct OutputRecipients<'a> {
     pub backend_keys: orb_pcp::BackendKeys<'a>,
 }
 
-/// Validate one migration run and pass its build request to `build`,
+/// Failure to prepare or construct a migrated package.
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError<E> {
+    /// Prepared source, biometrics or migration context failed validation.
+    #[error(transparent)]
+    Mapping(#[from] Error),
+    /// Archive assembly, encryption or the supplied signer failed.
+    #[error(transparent)]
+    Build(orb_pcp::BuildError<E>),
+}
+
+/// Builds an encrypted PCP from prepared inputs and recipient keys.
+///
+/// The caller supplies authenticated source data, prepared biometrics, authorized
+/// recipients and a manifest signer. Run this synchronous operation on a blocking
+/// worker when called from an asynchronous service. Call [`validate_build_inputs`]
+/// before generating backend keys. Retain `source` until [`crate::verify_completed_pcp`]
+/// passes on the opened result. See [`with_build_request`] for the mapping contract.
+///
+/// # Errors
+/// Propagates mapping, archive, encryption and signer failures without returning
+/// a partial package.
+pub fn build<E>(
+    source: &SourcePcp,
+    biometrics: &PreparedBiometrics<'_>,
+    context: &MigrationContext,
+    recipients: OutputRecipients<'_>,
+    sign_digest: impl FnOnce(&[u8; 32]) -> Result<Vec<u8>, E>,
+) -> Result<orb_pcp::Package, BuildError<E>> {
+    with_build_request(source, biometrics, context, recipients, |request| {
+        orb_pcp::build(request, &mut rand::rngs::OsRng, sign_digest)
+    })?
+    .map_err(BuildError::Build)
+}
+
+/// Checks mapping inputs and the user's encryption key without backend keys.
+/// Run this before backend key generation to reject invalid input before remote calls.
+/// Building repeats these checks because callers can change inputs between calls.
+///
+/// # Errors
+/// Returns invalid or inconsistent mapping inputs, an unusable recipient key, or
+/// a local cryptographic library failure. This does not authenticate the user key.
+pub fn validate_build_inputs(
+    source: &SourcePcp,
+    biometrics: &PreparedBiometrics<'_>,
+    context: &MigrationContext,
+    user_public_key: &[u8; 32],
+) -> Result<(), Error> {
+    validate_user_key(user_public_key)?;
+    with_prepared_inputs(source, biometrics, context, |_, _, _| ())
+}
+
+fn validate_user_key(user_public_key: &[u8; 32]) -> Result<(), Error> {
+    // An empty sealed box uses the same recipient checks as package encryption.
+    sealedbox::encrypt(&[], user_public_key, &mut [0; sealedbox::OVERHEAD_LENGTH])
+        .map(|_| ())
+        .map_err(|error| match error {
+            AlkaliError::SealError(SealError::PublicKeyUnacceptable) => {
+                Error::InvalidField("user_public_key")
+            }
+            error => Error::RecipientValidation(error),
+        })
+}
+
+/// Validate one migration run and pass its build request to `consume`,
 /// normally `orb_pcp::build` with a CSPRNG and the enclave signer.
 ///
 /// `info.json` is the source's with the context's signup ID. Raw images and
 /// available iris code files come from `source` unchanged; face, DI and
 /// normalized iris outputs are required from `biometrics`.
-/// Fails without calling `build` when the prepared biometrics are incomplete or
+/// Fails without calling `consume` when the prepared biometrics are incomplete or
 /// inconsistent, the context reuses the source signup ID, a multiframe image ID
-/// is not a canonical image ID, or a raw image has no builder input. The builder
-/// rejects other inputs itself, for example a `migrated_ts` beyond 32-bit seconds
-/// (used for its archive headers). Retain `source` until `verify_completed_pcp`
-/// has passed on the built package.
+/// is not a canonical image ID, a raw image has no builder input, the user key is
+/// unusable, or `migrated_ts` exceeds 32-bit archive seconds.
+/// Retain `source` until [`crate::verify_completed_pcp`] has passed on the built package.
 pub fn with_build_request<T>(
     source: &SourcePcp,
     biometrics: &PreparedBiometrics<'_>,
     context: &MigrationContext,
     recipients: OutputRecipients<'_>,
-    build: impl FnOnce(&orb_pcp::BuildRequest<'_>) -> T,
+    consume: impl FnOnce(&orb_pcp::BuildRequest<'_>) -> T,
+) -> Result<T, Error> {
+    validate_user_key(recipients.user_public_key)?;
+    with_prepared_inputs(source, biometrics, context, |info, images, migration| {
+        let request = orb_pcp::BuildRequest {
+            timestamp: context.migrated_ts,
+            info,
+            user_public_key: recipients.user_public_key,
+            backend_keys: recipients.backend_keys,
+            biometrics: orb_pcp::BiometricPolicy::Included {
+                images,
+                face_embeddings: &biometrics.face_embeddings,
+                iris_codes: source.iris_codes.as_ref(),
+                iris_code_shares: source.iris_code_shares.each_ref().map(Option::as_ref),
+                di_embeddings: Some(&biometrics.di_embeddings),
+                di_embedding_shares: biometrics.di_embedding_shares.each_ref().map(Some),
+            },
+            migration: Some(migration),
+        };
+        consume(&request)
+    })
+}
+
+fn with_prepared_inputs<T>(
+    source: &SourcePcp,
+    biometrics: &PreparedBiometrics<'_>,
+    context: &MigrationContext,
+    consume: impl FnOnce(&v1::Info, &orb_pcp::PackageImages<'_>, &v1::Migration) -> T,
 ) -> Result<T, Error> {
     biometrics.validate(source)?;
     nonempty(&context.tee_software_version, "tee_software_version")?;
+    u32::try_from(context.migrated_ts).map_err(|_| Error::InvalidField("migrated_ts"))?;
     let signup_id = context.signup_id.to_string();
     if source.info.signup_id.as_deref() == Some(signup_id.as_str()) {
         return Err(Error::InvalidField("signup_id"));
@@ -85,22 +180,7 @@ pub fn with_build_request<T>(
         fraud,
     };
     let migration = migration(source, biometrics, context);
-    let request = orb_pcp::BuildRequest {
-        timestamp: context.migrated_ts,
-        info: &info,
-        user_public_key: recipients.user_public_key,
-        backend_keys: recipients.backend_keys,
-        biometrics: orb_pcp::BiometricPolicy::Included {
-            images: &images,
-            face_embeddings: &biometrics.face_embeddings,
-            iris_codes: source.iris_codes.as_ref(),
-            iris_code_shares: source.iris_code_shares.each_ref().map(Option::as_ref),
-            di_embeddings: Some(&biometrics.di_embeddings),
-            di_embedding_shares: biometrics.di_embedding_shares.each_ref().map(Some),
-        },
-        migration: Some(&migration),
-    };
-    Ok(build(&request))
+    Ok(consume(&info, &images, &migration))
 }
 
 /// The `migration.pb` message of this run.

@@ -469,19 +469,19 @@ fn migration_time_must_fit_the_archive_headers() {
     let mut ctx = context();
     ctx.migrated_ts = u64::from(u32::MAX) + 1;
     let bio = pipeline();
-    let result = with_build_request(
+    let result = di_migration_pcp::build(
         &source,
         &bio,
         &ctx,
         OutputKeys::generate().recipients(),
-        |request| {
-            orb_pcp::build(request, &mut rand::rngs::OsRng, |_| {
-                Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
-            })
-        },
-    )
-    .unwrap();
-    assert!(matches!(result, Err(orb_pcp::BuildError::Archive(_))));
+        |_| Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec()),
+    );
+    assert!(matches!(
+        result,
+        Err(di_migration_pcp::BuildError::Mapping(Error::InvalidField(
+            "migrated_ts"
+        )))
+    ));
 }
 
 #[test]
@@ -728,4 +728,52 @@ fn completion_checks_migration_metadata_against_the_mapping() {
         verify_completed_pcp(&source, &bio, &ctx, &files),
         Err(Error::OutputMismatch("migration_metadata_mismatch"))
     );
+}
+
+#[test]
+fn unusable_user_keys_fail_preflight_and_never_reach_the_signer() {
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    let keys = OutputKeys::generate();
+    di_migration_pcp::validate_build_inputs(&source, &bio, &ctx, &keys.user.public_key).unwrap();
+    for low_order in [0, 1] {
+        let mut public_key = [0; 32];
+        public_key[0] = low_order;
+        assert_eq!(
+            di_migration_pcp::validate_build_inputs(&source, &bio, &ctx, &public_key),
+            Err(Error::InvalidField("user_public_key"))
+        );
+        let mut recipients = keys.recipients();
+        recipients.user_public_key = &public_key;
+        let result = di_migration_pcp::build(
+            &source,
+            &bio,
+            &ctx,
+            recipients,
+            |_| -> Result<Vec<u8>, std::convert::Infallible> {
+                panic!("invalid recipient must not reach the signer")
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(di_migration_pcp::BuildError::Mapping(Error::InvalidField(
+                "user_public_key"
+            )))
+        ));
+    }
+}
+
+#[test]
+fn build_errors_report_the_failed_stage_without_signer_details() {
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    let result = di_migration_pcp::build(
+        &source,
+        &bio,
+        &ctx,
+        OutputKeys::generate().recipients(),
+        |_| Err::<Vec<u8>, _>(std::io::Error::other("sensitive-signer-detail")),
+    );
+    let error = result.err().unwrap();
+    assert_eq!(error.to_string(), "manifest signing failed");
 }

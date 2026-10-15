@@ -1,10 +1,10 @@
 //! Migrate opened PCPs with the shared PCP builder.
 //!
 //! [`SourcePcp::parse`] checks an opened source against its manifest.
-//! [`with_build_request`] turns it and this run's prepared biometrics into the
-//! shared builder's request, and
-//! [`verify_completed_pcp`] checks the opened result. This crate does not decrypt,
-//! verify source signatures, run inference, generate shares, sign or encrypt.
+//! [`build`] prepares the migration request and delegates encryption and archive
+//! assembly to the shared builder, using the supplied manifest signer.
+//! [`verify_completed_pcp`] checks the opened result. The caller owns source
+//! decryption and authentication, inference, share generation and recipient keys.
 //! Hash consistency does not authenticate the source manifest or unlisted metadata.
 //! Sensitive types deliberately do not implement `Debug`; never log their JSON.
 
@@ -14,7 +14,7 @@ mod mapping;
 mod preservation;
 mod source;
 
-pub use builder::{OutputRecipients, with_build_request};
+pub use builder::{BuildError, OutputRecipients, build, validate_build_inputs, with_build_request};
 pub use mapping::{MigrationContext, PreparedBiometrics};
 pub use orb_wld_data_id::{S3Region, SignupId};
 pub use preservation::verify_completed_pcp;
@@ -53,6 +53,8 @@ pub enum Error {
     UnsupportedArtifact,
     #[error("source PCP integrity check failed: {0}")]
     SourceIntegrity(&'static str),
+    #[error("recipient validation failed")]
+    RecipientValidation(#[source] alkali::AlkaliError),
     #[error("raw image has no corresponding shared-builder input")]
     UnmappedImage,
     #[error("source PCP preservation check failed: {0}")]

@@ -12,12 +12,30 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+ark-babyjubjub = { version = "0.5", package = "taceo-ark-babyjubjub" }
+alkali = { version = "0.3", features = ["use-pkg-config"] }
+aws-sdk-kms.workspace = true
+base64.workspace = true
+bytes.workspace = true
+di-migration-pcp = { path = "../pcp" }
 di-migration-enclave-primitives.workspace = true
+flate2.workspace = true
 hex.workspace = true
+orb-pcp.workspace = true
 pontifex = { workspace = true, features = ["channel", "nsm", "server"] }
+serde_json.workspace = true
+tar.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+world-id-primitives.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
+aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
+aws-smithy-types = "1"
+http = "1"
+orb-pcp-defs.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
