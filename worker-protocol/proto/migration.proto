@@ -50,6 +50,19 @@ message EyeResult {
   // L2-normalized f32 embedding and its mirror before quantization.
   repeated float embedding_f32 = 5;
   repeated float mirror_embedding_f32 = 6;
+  // Normalization from this run, as the Orb writes it to the PCP
+  // (`*_normalized_{image,mask}.bin`): 128 x 1024.
+  NormalizedIris normalized = 7;
+  // The same, resized (`*_normalized_{image,mask}_resized.bin`): 100 x 400.
+  NormalizedIris normalized_resized = 8;
+}
+
+message NormalizedIris {
+  // Row-major u8 pixels.
+  bytes image = 1;
+  // Row-major u8 validity mask aligned with `image`: 0 marks an invalid pixel, any other
+  // value a valid one.
+  bytes mask = 2;
 }
 
 

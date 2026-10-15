@@ -34,6 +34,15 @@ fn eye() -> EyeResult {
         mirror_embedding: vec![7; EMBEDDING_SIZE],
         embedding_f32: vec![0.5; EMBEDDING_SIZE],
         mirror_embedding_f32: vec![-0.5; EMBEDDING_SIZE],
+        normalized: Some(normalized(NORMALIZED_IRIS_LEN)),
+        normalized_resized: Some(normalized(NORMALIZED_IRIS_RESIZED_LEN)),
+    }
+}
+
+fn normalized(len: usize) -> NormalizedIris {
+    NormalizedIris {
+        image: vec![200; len],
+        mask: vec![1; len],
     }
 }
 
@@ -130,6 +139,28 @@ fn results_require_every_part_with_exact_shapes() {
         },
         EyeResult {
             embedding_f32: vec![f32::INFINITY; EMBEDDING_SIZE],
+            ..eye()
+        },
+        EyeResult {
+            normalized: None,
+            ..eye()
+        },
+        EyeResult {
+            normalized_resized: None,
+            ..eye()
+        },
+        EyeResult {
+            normalized: Some(NormalizedIris {
+                image: vec![200; NORMALIZED_IRIS_LEN - 1],
+                ..normalized(NORMALIZED_IRIS_LEN)
+            }),
+            ..eye()
+        },
+        EyeResult {
+            normalized_resized: Some(NormalizedIris {
+                mask: vec![1; NORMALIZED_IRIS_LEN],
+                ..normalized(NORMALIZED_IRIS_RESIZED_LEN)
+            }),
             ..eye()
         },
     ];
@@ -236,7 +267,14 @@ fn debug_never_exposes_images_codes_or_embeddings() {
     let response = Response::new(1, Outcome::Migration(Box::new(result(eye))));
     let debug = format!("{response:?}");
     assert!(debug.contains("deep-identifier-1.0.0"));
-    for secret in ["sensitive-code", "BBBB", "248, 248", "0.5", "face-vector"] {
+    for secret in [
+        "sensitive-code",
+        "BBBB",
+        "248, 248",
+        "0.5",
+        "face-vector",
+        "200, 200",
+    ] {
         assert!(!debug.contains(secret), "{secret}");
     }
 
