@@ -7,7 +7,9 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# The Minijail worker launcher, for enclaves; the host-side bundle transport needs none of it.
+default = ["worker"]
+# The Minijail worker launcher, for enclaves. Host-side users of the bundle transport opt out
+# with `default-features = false`.
 worker = ["dep:libc", "dep:minijail"]
 test-worker = ["worker"]
 
