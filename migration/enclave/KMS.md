@@ -35,10 +35,12 @@ Store real environment values in deployment configuration. The bare name
 alias when processing the encryption request. Alias changes require preserving
 decrypt access to keys referenced by existing ciphertexts.
 
-Set `PCP_KMS_REGION` on the host to the alias's region. The host uses its existing
-AWS SDK credential provider, which must supply temporary credentials with a session
-token and at least 60 seconds of remaining validity. Both its IAM policy and the
-key-owning account's KMS policy must allow `kms:Encrypt` on the target key. No
+The host starts the relay with its existing AWS SDK region, configured through
+`AWS_REGION` or the SDK's standard region provider chain. This region must match
+the wrapping alias's region embedded in the enclave image. The host uses its
+existing AWS SDK credential provider, which must supply temporary credentials with
+a session token and at least 60 seconds of remaining validity. Both its IAM policy
+and the key-owning account's KMS policy must allow `kms:Encrypt` on the target key. No
 `kms:Decrypt` permission is needed by this producer.
 
 The host binds parent CID 3, ports 7000 (TLS relay) and 7001 (credentials). It checks

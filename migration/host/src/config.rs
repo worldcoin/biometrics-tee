@@ -19,10 +19,6 @@ pub struct Config {
     /// vsock port the enclave serves Pontifex on.
     #[arg(long, env = "ENCLAVE_PORT", default_value_t = PONTIFEX_PORT)]
     pub enclave_port: u32,
-    /// Enables the enclave KMS relay to this region's fixed AWS endpoint.
-    /// Must match the region of the wrapping alias baked into the enclave image.
-    #[arg(long, env = "PCP_KMS_REGION")]
-    pub pcp_kms_region: Option<String>,
     /// HTTP port for the internal API.
     #[arg(long, env = "PORT", default_value = "8000")]
     pub port: NonZeroU16,
