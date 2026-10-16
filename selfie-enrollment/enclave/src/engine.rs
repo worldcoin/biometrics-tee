@@ -64,7 +64,7 @@ pub fn decode_result(
 
 #[cfg(target_os = "linux")]
 pub struct SandboxEngine {
-    pub worker: biometrics_sandbox::Worker,
+    pub worker: tabernaculum::Worker,
     pub next_id: u64,
 }
 #[cfg(target_os = "linux")]

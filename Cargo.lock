@@ -6933,17 +6933,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "biometric-engines-protocol",
- "di-sandbox",
  "hex",
- "libc",
  "pontifex",
  "selfie-enrollment-api-types",
  "selfie-enrollment-enclave-types",
  "selfie-enrollment-sealed-types",
+ "tabernaculum",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vsock",
  "zeroize",
 ]
 
