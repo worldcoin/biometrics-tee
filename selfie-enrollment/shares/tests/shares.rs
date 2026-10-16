@@ -1,6 +1,7 @@
 use ampc_secret_sharing::{GaloisRingElement, PartyID, ShamirGaloisRingShare, basis};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use embedding_shares::{FaceShare, generate};
+use crypto_box::{PublicKey, SecretKey};
+use embedding_shares::{Error, FaceShare, encrypt, generate};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use selfie_enrollment_sealed_types::FaceEmbedding;
 
@@ -154,4 +155,87 @@ fn invalid_input_is_rejected_without_consuming_randomness() {
         assert!(generate(&input, "1", &mut rng).is_err());
         assert_eq!(rng.next_u64(), untouched.next_u64());
     }
+}
+
+#[test]
+fn encrypted_shares_decrypt_to_oxide_json_in_recipient_order() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let shares = generate(&embedding(&wire_input()), "4.0", &mut rng).unwrap();
+    let secret_keys = [1_u8, 2, 3].map(|value| SecretKey::from([value; 32]));
+    let public_keys = secret_keys.each_ref().map(SecretKey::public_key);
+    let ciphertexts = encrypt(&shares, &public_keys, &mut rng).unwrap();
+
+    for party in 0..3 {
+        let ciphertext = STANDARD.decode(&ciphertexts[party]).unwrap();
+        assert_eq!(STANDARD.encode(&ciphertext), ciphertexts[party]);
+        let plaintext = secret_keys[party].unseal(&ciphertext).unwrap();
+        let expected = format!(
+            r#"{{"version":"4.0","share_data":"{}"}}"#,
+            shares[party].share_data
+        );
+        assert_eq!(plaintext, expected.as_bytes());
+        assert_eq!(shares[party].version, "4.0");
+        assert_eq!(ciphertext.len(), plaintext.len() + crypto_box::SEALBYTES);
+        for (other_party, other_key) in secret_keys.iter().enumerate() {
+            if other_party != party {
+                assert!(other_key.unseal(&ciphertext).is_err());
+            }
+        }
+        let mut tampered = ciphertext;
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(secret_keys[party].unseal(&tampered).is_err());
+    }
+}
+
+#[test]
+fn repeated_encryption_uses_fresh_randomness() {
+    let mut rng = StdRng::seed_from_u64(7);
+    let shares = generate(&embedding(&wire_input()), "1", &mut rng).unwrap();
+    let public_keys = [1_u8, 2, 3].map(|value| SecretKey::from([value; 32]).public_key());
+    let first = encrypt(&shares, &public_keys, &mut rng).unwrap();
+    let second = encrypt(&shares, &public_keys, &mut rng).unwrap();
+    for party in 0..3 {
+        assert_ne!(first[party], second[party]);
+    }
+}
+
+#[test]
+fn invalid_recipients_are_rejected_before_consuming_randomness() {
+    let shares = generate(
+        &embedding(&wire_input()),
+        "1",
+        &mut StdRng::seed_from_u64(42),
+    )
+    .unwrap();
+    let public_keys = [1_u8, 2, 3].map(|value| SecretKey::from([value; 32]).public_key());
+    let mut one = [0; 32];
+    one[0] = 1;
+    for low_order_key in [[0; 32], one] {
+        for party in 0..3 {
+            let mut invalid = public_keys.clone();
+            invalid[party] = PublicKey::from(low_order_key);
+            assert_invalid_recipients(&shares, &invalid, party);
+        }
+    }
+    for (first, second) in [(0, 1), (0, 2), (1, 2)] {
+        let mut invalid = public_keys.clone();
+        invalid[second] = invalid[first].clone();
+        assert_invalid_recipients(&shares, &invalid, second);
+
+        // X25519 ignores the top bit; an alternate encoding is still a duplicate.
+        let mut alias = invalid[second].to_bytes();
+        alias[31] ^= 0x80;
+        invalid[second] = PublicKey::from(alias);
+        assert_invalid_recipients(&shares, &invalid, second);
+    }
+}
+
+fn assert_invalid_recipients(shares: &[FaceShare; 3], public_keys: &[PublicKey; 3], party: usize) {
+    let mut rng = StdRng::seed_from_u64(123);
+    let mut untouched = rng.clone();
+    assert_eq!(
+        encrypt(shares, public_keys, &mut rng),
+        Err(Error::InvalidRecipient { party })
+    );
+    assert_eq!(rng.next_u64(), untouched.next_u64());
 }

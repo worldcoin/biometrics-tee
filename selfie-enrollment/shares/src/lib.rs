@@ -1,4 +1,4 @@
-//! Oxide-compatible face shares, before recipient encryption.
+//! Oxide-compatible face share generation and recipient encryption.
 //!
 //! Sharing and serialization follow Oxide `32868184652c894d3bd2e7c5580dfff94f2a90a7`,
 //! `oxide/src/api/pop_face_backend_api/face_embedding_shares.rs`. Decoding and
@@ -8,6 +8,8 @@
 use ampc_secret_sharing::{FACE_VECTOR_SIZE, FaceVector};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bincode::Options;
+use crypto_box::PublicKey;
+use curve25519_dalek::montgomery::MontgomeryPoint;
 use rand::{CryptoRng, Rng};
 use selfie_enrollment_sealed_types::FaceEmbedding;
 use serde::Serialize;
@@ -35,6 +37,12 @@ pub enum Error {
     NonFinite,
     #[error("failed to generate face embedding shares")]
     Sharing,
+    #[error("invalid or duplicate public key for face-AMPC party {party}")]
+    InvalidRecipient { party: usize },
+    #[error("failed to serialize face share for party {party}")]
+    Serialization { party: usize },
+    #[error("failed to encrypt face share for party {party}")]
+    Encryption { party: usize },
 }
 
 /// Decode, quantize and share a worker embedding in recipient order 0, 1, 2.
@@ -66,6 +74,46 @@ pub fn generate<R: Rng + CryptoRng>(
             share_data: STANDARD.encode(&*bytes),
         }
     }))
+}
+
+/// Encrypt each share's JSON with the same-index recipient key using Oxide's
+/// libsodium-compatible sealed-box format, then standard-base64 encode it.
+///
+/// The caller must authenticate the three public keys and supply them in AMPC
+/// party order 0, 1, 2. Validation here checks key suitability, not provenance.
+/// Supply an RNG seeded from fresh entropy in production. All recipient keys are
+/// checked before consuming randomness. Shares remain available to the caller
+/// for PCP assembly; temporary plaintext JSON is erased on drop.
+///
+/// # Errors
+/// Rejects duplicate or low-order recipient keys. Propagates serialization and
+/// encryption failures without exposing share values.
+pub fn encrypt<R: Rng + CryptoRng>(
+    shares: &[FaceShare; 3],
+    recipient_keys: &[PublicKey; 3],
+    rng: &mut R,
+) -> Result<[String; 3], Error> {
+    for (party, key) in recipient_keys.iter().enumerate() {
+        // Parsing a PublicKey checks only its length. A fixed clamped scalar
+        // detects points that would produce an all-zero X25519 shared secret.
+        if recipient_keys[..party].contains(key)
+            || MontgomeryPoint(*key.as_bytes()).mul_clamped([0x42; 32]) == MontgomeryPoint([0; 32])
+        {
+            return Err(Error::InvalidRecipient { party });
+        }
+    }
+
+    let mut encrypted = std::array::from_fn(|_| String::new());
+    for (party, share) in shares.iter().enumerate() {
+        let mut plaintext = Zeroizing::new(Vec::new());
+        serde_json::to_writer(&mut *plaintext, share)
+            .map_err(|_| Error::Serialization { party })?;
+        let ciphertext = recipient_keys[party]
+            .seal(rng, &plaintext)
+            .map_err(|_| Error::Encryption { party })?;
+        encrypted[party] = STANDARD.encode(ciphertext);
+    }
+    Ok(encrypted)
 }
 
 fn quantize(embedding: &FaceEmbedding) -> Result<Zeroizing<[i8; FACE_VECTOR_SIZE]>, Error> {
