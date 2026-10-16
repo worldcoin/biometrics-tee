@@ -93,7 +93,8 @@ pub fn run() -> anyhow::Result<()> {
             }
         })
 }
-fn worker_failed(_: ConnectionError) -> ! {
-    tracing::error!("terminal biometric worker failure");
+/// `ConnectionError` is payload-free, so logging it exposes no biometric data.
+fn worker_failed(error: ConnectionError) -> ! {
+    tracing::error!(dependency = "worker", %error, "terminal biometric worker failure; exiting enclave");
     std::process::exit(1)
 }
