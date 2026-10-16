@@ -2960,14 +2960,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "di-dev-enclave-primitives",
- "di-sandbox",
  "di-worker-protocol",
- "libc",
  "pontifex",
+ "tabernaculum",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vsock",
 ]
 
 [[package]]
@@ -7605,6 +7603,33 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "tabernaculum"
+version = "0.1.0"
+source = "git+https://github.com/worldcoin/tabernaculum?rev=e268499cf5e515a26eae2a851d446a009189d52c#e268499cf5e515a26eae2a851d446a009189d52c"
+dependencies = [
+ "libc",
+ "minijail",
+ "tabernaculum-bundle",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "tabernaculum-bundle"
+version = "0.1.0"
+source = "git+https://github.com/worldcoin/tabernaculum?rev=e268499cf5e515a26eae2a851d446a009189d52c#e268499cf5e515a26eae2a851d446a009189d52c"
+dependencies = [
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "vsock",
 ]
 
 [[package]]

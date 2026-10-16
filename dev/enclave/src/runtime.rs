@@ -1,16 +1,24 @@
 //! Worker launch and enclave serving on Linux.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    path::Path,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use anyhow::{Context, bail};
-use di_dev_enclave::{
-    bootstrap::{self, BootWorker},
-    server,
-    state::EnclaveState,
-};
+use di_dev_enclave::{server, state::EnclaveState};
 use di_dev_enclave_primitives::PONTIFEX_PORT;
-use di_sandbox::{ConnectionConfig, ConnectionError, SandboxConfig, Worker};
+use tabernaculum::{
+    ConnectionConfig, ConnectionError, Limits, Policy, SandboxConfig, Worker,
+    bundle::{
+        BootstrapConfig,
+        enclave::{self, Bootstrap},
+    },
+};
 use tracing_subscriber::EnvFilter;
+
+/// The reviewed default seccomp policy, unchanged.
+static POLICY: LazyLock<Policy> = LazyLock::new(Policy::default_worker);
 
 /// Receives and launches the worker while the process is single-threaded, then serves.
 pub(super) fn run() -> anyhow::Result<()> {
@@ -21,13 +29,16 @@ pub(super) fn run() -> anyhow::Result<()> {
         tracing::error!("enclave panicked");
     }));
 
-    let mut boot = bootstrap::receive().context("worker bundle provisioning failed")?;
+    let boot = enclave::accept(&BootstrapConfig::default(), Path::new(enclave::STAGING_DIR))
+        .context("worker bundle provisioning failed")?;
+    let runtime = boot.runtime();
+    tracing::info!(release_id = %runtime.release_id, worker_sha384 = %runtime.sha384, "worker executable provisioned");
     let (worker, ready) = Worker::spawn(
-        &boot.runtime.binary,
+        &runtime.binary,
         SandboxConfig {
-            root: boot.runtime.root.path(),
-            address_space_bytes: boot.address_space_bytes,
-            max_threads: boot.max_threads,
+            root: runtime.root.path(),
+            limits: Limits::default(),
+            policy: &POLICY,
         },
         ConnectionConfig::default(),
         worker_failed,
@@ -38,12 +49,11 @@ pub(super) fn run() -> anyhow::Result<()> {
     }
     worker.check_alive();
 
-    // The verified runtime root must outlive the worker.
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("failed to start enclave executor")?
-        .block_on(serve(&mut boot, worker))
+        .block_on(serve(boot, worker))
 }
 
 /// A dead worker cannot be replaced within a boot; init tears the enclave down on exit.
@@ -53,10 +63,13 @@ fn worker_failed(error: ConnectionError) -> ! {
 }
 
 /// Acknowledges the bundle once the worker is ready, then accepts host requests.
-async fn serve(boot: &mut BootWorker, worker: Worker) -> anyhow::Result<()> {
+async fn serve(boot: Bootstrap, worker: Worker) -> anyhow::Result<()> {
     let state = Arc::new(EnclaveState::new(Box::new(Mutex::new(worker))));
     state.check_worker();
-    boot.acknowledge()?;
+    // The verified runtime root must outlive the worker, which the server owns.
+    let _runtime = boot
+        .acknowledge()
+        .context("failed to acknowledge worker startup")?;
 
     tracing::info!(port = PONTIFEX_PORT, "starting enclave Pontifex server");
     // Err exits non-zero so the provisioner restarts the enclave rather than idling without a server.

@@ -78,6 +78,7 @@ unknown-git = "deny"
 allow-git = [
     "https://github.com/google/minijail",
     "https://github.com/worldcoin/flamingo",
+    "https://github.com/worldcoin/tabernaculum",
     "https://github.com/worldcoin/ampc-common",
     "https://github.com/tf-encrypted/aes-prng.git",
     "https://github.com/worldcoin/orb-software",
