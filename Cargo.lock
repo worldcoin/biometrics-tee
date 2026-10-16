@@ -3140,22 +3140,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "di-sandbox"
-version = "0.1.0"
-dependencies = [
- "flamingo-verifier-sandbox-bundle",
- "hex",
- "libc",
- "minijail",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "di-worker-protocol"
 version = "0.1.0"
 dependencies = [
@@ -3517,21 +3501,6 @@ name = "flagset"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
-
-[[package]]
-name = "flamingo-verifier-sandbox-bundle"
-version = "0.8.0"
-source = "git+https://github.com/worldcoin/flamingo?rev=48205c5fce4524b9f4f3cad079eb5813f3cce0ab#48205c5fce4524b9f4f3cad079eb5813f3cce0ab"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-vsock",
-]
 
 [[package]]
 name = "flate2"

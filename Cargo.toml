@@ -24,7 +24,6 @@ members = [
     "migration/cli",
     "migration/proof",
     "migration/pcp",
-    "sandbox",
     "worker-protocol",
 ]
 resolver = "3"
@@ -55,15 +54,11 @@ di-dev-enclave-primitives = { path = "dev/enclave-primitives" }
 di-migration-enclave-primitives = { path = "migration/enclave-primitives" }
 di-migration-primitives = { path = "migration/primitives" }
 di-migration-storage = { path = "migration/storage" }
-di-sandbox = { path = "sandbox" }
 di-worker-protocol = { path = "worker-protocol" }
-sandbox-bundle = { package = "flamingo-verifier-sandbox-bundle", git = "https://github.com/worldcoin/flamingo", rev = "48205c5fce4524b9f4f3cad079eb5813f3cce0ab" }
 flate2 = "1.1"
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 http-body-util = "0.1"
-libc = "0.2"
 mime = "0.3"
-minijail = { git = "https://github.com/google/minijail", rev = "b0b5dc6997956cdc027295ade5e425c416f30d33" }
 # Shared PCP builder, protobuf definitions and signup IDs use one revision.
 orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
 orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
@@ -85,7 +80,6 @@ tempfile = "3.27"
 thiserror = "2"
 tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-vsock = "0.7.2"
-vsock = "0.5"
 world-id-primitives = "0.14.1"
 zeroize = "1"
 tower = { version = "0.5", features = ["util"] }
