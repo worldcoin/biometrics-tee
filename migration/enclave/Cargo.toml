@@ -14,7 +14,9 @@ path = "src/main.rs"
 anyhow.workspace = true
 ark-babyjubjub = { version = "0.5", package = "taceo-ark-babyjubjub" }
 alkali = { version = "0.3", features = ["use-pkg-config"] }
-aws-sdk-kms.workspace = true
+# Without the SDK's default HTTPS client: requests go through `pontifex::kms`.
+aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio"] }
+aws-types = "1"
 base64.workspace = true
 bytes.workspace = true
 di-migration-pcp = { path = "../pcp" }
@@ -22,7 +24,7 @@ di-migration-enclave-primitives.workspace = true
 flate2.workspace = true
 hex.workspace = true
 orb-pcp.workspace = true
-pontifex = { workspace = true, features = ["channel", "nsm", "server"] }
+pontifex = { workspace = true, features = ["channel", "kms", "nsm", "server"] }
 serde_json.workspace = true
 tar.workspace = true
 thiserror.workspace = true
@@ -33,6 +35,7 @@ world-id-primitives.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+aws-sdk-kms.workspace = true
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
 aws-smithy-types = "1"
 http = "1"

@@ -23,9 +23,9 @@ clap.workspace = true
 di-migration-enclave-primitives.workspace = true
 di-migration-primitives.workspace = true
 di-migration-storage.workspace = true
-pontifex = { workspace = true, features = ["channel", "client"] }
+pontifex = { workspace = true, features = ["aws-credentials", "channel", "client", "proxy"] }
 serde.workspace = true
-telemetry-batteries = { workspace = true, features = ["axum"] }
+telemetry-batteries = { workspace = true, features = ["axum", "metrics-statsd"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
