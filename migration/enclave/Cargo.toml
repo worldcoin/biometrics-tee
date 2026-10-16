@@ -36,6 +36,9 @@ tracing-subscriber.workspace = true
 world-id-primitives.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+di-worker-protocol.workspace = true
+tabernaculum.workspace = true
 
 [dev-dependencies]
 aws-sdk-kms.workspace = true
