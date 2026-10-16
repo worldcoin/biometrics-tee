@@ -56,10 +56,7 @@ pub fn run() -> anyhow::Result<()> {
         .block_on(async {
             attestation::connect().await?;
             let attestor = NsmAttestor;
-            let mut state = State::new(
-                Arc::new(attestor),
-                Box::new(SandboxEngine { worker, next_id: 1 }),
-            )?;
+            let mut state = State::new(Arc::new(attestor), Box::new(SandboxEngine::new(worker)))?;
             let refresh = state.refresh();
             let state = Arc::new(state);
             let document = pontifex::SecureModule::global().attest(

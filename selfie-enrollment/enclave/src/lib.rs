@@ -10,13 +10,13 @@ use pontifex::{ChannelDomain, ChannelEnclave};
 use selfie_enrollment_api_types::{CHANNEL_DOMAIN, MAX_REQUEST_BYTES};
 use selfie_enrollment_enclave_types::{Error, ExtractRequest, ExtractResponse, KeyAttestation};
 use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult, Failure};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// No worker replacement or key rotation occurs inside an enclave boot.
 pub struct State {
     channel: ChannelEnclave,
     attested: AttestedKey,
-    engine: Mutex<Box<dyn Engine>>,
+    engine: Box<dyn Engine>,
     processing: Arc<tokio::sync::Semaphore>,
 }
 impl State {
@@ -31,7 +31,7 @@ impl State {
         Ok(Self {
             channel,
             attested,
-            engine: Mutex::new(engine),
+            engine,
             processing: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
@@ -39,11 +39,7 @@ impl State {
         self.attested.start_refresh()
     }
     pub fn health(&self) -> Result<(), Error> {
-        match self.engine.try_lock() {
-            Ok(engine) => engine.check_health(),
-            Err(std::sync::TryLockError::WouldBlock) => Ok(()),
-            Err(_) => Err(Error::Unavailable),
-        }
+        self.engine.check_health()
     }
     pub async fn assignment(&self) -> Result<KeyAttestation, Error> {
         self.health()?;
@@ -76,13 +72,10 @@ impl State {
                 Err(_) => EmbeddingResult::Failed {
                     reason: Failure::InvalidRequest,
                 },
-                Ok(input) => {
-                    let mut engine = state.engine.lock().map_err(|_| Error::Unavailable)?;
-                    match engine.extract(&input.image)? {
-                        Ok(embedding) => EmbeddingResult::Success { embedding },
-                        Err(reason) => EmbeddingResult::Failed { reason },
-                    }
-                }
+                Ok(input) => match state.engine.extract(&input.image)? {
+                    Ok(embedding) => EmbeddingResult::Success { embedding },
+                    Err(reason) => EmbeddingResult::Failed { reason },
+                },
             };
             let encoded = result.encode().map_err(|_| Error::Unavailable)?;
             let ciphertext = sealer.seal(&encoded).map_err(|_| Error::Unavailable)?;
@@ -106,7 +99,7 @@ mod tests {
     }
     struct FakeEngine;
     impl Engine for FakeEngine {
-        fn extract(&mut self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
+        fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
             Ok(Ok(FaceEmbedding {
                 embedding: "AA==".into(),
                 embedding_type: "test".into(),
