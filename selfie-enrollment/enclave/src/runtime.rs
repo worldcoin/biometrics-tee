@@ -2,29 +2,40 @@
 use crate::{
     State,
     attestation::{self, NsmAttestor},
-    bootstrap,
     engine::SandboxEngine,
     rng,
 };
 use anyhow::Context;
-use biometrics_sandbox::{ConnectionConfig, ConnectionError, SandboxConfig, Worker};
 use selfie_enrollment_enclave_types::{
-    AssignmentRequest, Error, ExtractRequest, HealthRequest, PONTIFEX_PORT,
+    AssignmentRequest, ExtractRequest, HealthRequest, PONTIFEX_PORT,
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
+use tabernaculum::{
+    ConnectionConfig, ConnectionError, Limits, Policy, SandboxConfig, Worker,
+    bundle::{BootstrapConfig, enclave},
+};
+/// The reviewed default seccomp policy, unchanged.
+static POLICY: LazyLock<Policy> = LazyLock::new(Policy::default_worker);
 pub fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     std::panic::set_hook(Box::new(|_| tracing::error!("enrollment enclave panicked")));
     rng::verify_nsm_hwrng_current()?;
-    let mut boot = bootstrap::receive()?;
+    let boot = enclave::accept(&BootstrapConfig::default(), Path::new(enclave::STAGING_DIR))
+        .context("worker bundle verification failed")?;
+    let runtime = boot.runtime();
+    tracing::info!(release_id = %runtime.release_id, "worker executable provisioned");
     let (worker, ready) = Worker::spawn(
-        &boot.runtime.binary,
+        &runtime.binary,
         SandboxConfig {
-            root: boot.runtime.root.path(),
-            address_space_bytes: boot.address_space_bytes,
-            max_threads: boot.max_threads,
+            root: runtime.root.path(),
+            limits: Limits::default(),
+            policy: &POLICY,
         },
         ConnectionConfig {
             request_timeout: Duration::from_secs(30),
@@ -45,10 +56,7 @@ pub fn run() -> anyhow::Result<()> {
         .block_on(async {
             attestation::connect().await?;
             let attestor = NsmAttestor;
-            let mut state = State::new(
-                Arc::new(attestor),
-                Box::new(SandboxEngine { worker, next_id: 1 }),
-            )?;
+            let mut state = State::new(Arc::new(attestor), Box::new(SandboxEngine::new(worker)))?;
             let refresh = state.refresh();
             let state = Arc::new(state);
             let document = pontifex::SecureModule::global().attest(
@@ -62,7 +70,10 @@ pub fn run() -> anyhow::Result<()> {
             );
             attestation::log_boot_measurements(&document);
             state.health()?;
-            boot.acknowledge()?;
+            // The verified runtime root must outlive the worker, which the router owns.
+            let _runtime = boot
+                .acknowledge()
+                .context("failed to acknowledge worker startup")?;
             let router = pontifex::Router::with_state(state)
                 .route::<HealthRequest, _, _>(|s: Arc<State>, _: HealthRequest| async move {
                     s.health()
@@ -79,7 +90,8 @@ pub fn run() -> anyhow::Result<()> {
             }
         })
 }
-fn worker_failed(_: ConnectionError) -> ! {
-    tracing::error!("terminal biometric worker failure");
+/// `ConnectionError` is payload-free, so logging it exposes no biometric data.
+fn worker_failed(error: ConnectionError) -> ! {
+    tracing::error!(dependency = "worker", %error, "terminal biometric worker failure; exiting enclave");
     std::process::exit(1)
 }

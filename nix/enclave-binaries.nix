@@ -20,7 +20,7 @@ let
       strictDeps = true;
       cargoExtraArgs = "--locked --bin ${pname}";
 
-      # Crane prepares dependencies for the whole workspace, including di-sandbox's Linux-only
+      # Crane prepares dependencies for the whole workspace, including tabernaculum's Linux-only
       # Minijail, the PCP builder's libsodium, and protoc for the PCP builder and the worker
       # protocol. Give it Nix's Minijail: the Cargo fallback expects the full upstream
       # repository around the vendored crate and fails with no makefile.
