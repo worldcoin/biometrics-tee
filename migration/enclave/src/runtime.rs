@@ -30,7 +30,13 @@ pub(super) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
+    // Panic messages can carry request data; log only that one happened.
+    std::panic::set_hook(Box::new(|_| {
+        tracing::error!("enclave panicked");
+    }));
 
+    // The boot key must come from hardware entropy; fail before taking the bundle.
+    rng::verify_nsm_hwrng_current().context("Nitro hardware RNG is not configured")?;
     let boot = enclave::accept(&BootstrapConfig::default(), Path::new(enclave::STAGING_DIR))
         .context("worker bundle provisioning failed")?;
     let runtime = boot.runtime();
@@ -67,8 +73,6 @@ fn worker_failed(error: ConnectionError) -> ! {
 /// Boots the attested state, acknowledges the bundle once everything is up, then serves.
 // Err exits non-zero so the provisioner restarts the enclave rather than idling without a server.
 async fn serve(boot: Bootstrap, worker: Worker) -> anyhow::Result<()> {
-    // The boot key must come from hardware entropy.
-    rng::verify_nsm_hwrng_current().context("Nitro hardware RNG is not configured")?;
     attestation::connect()
         .await
         .context("Nitro Secure Module is unavailable")?;
