@@ -4,6 +4,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -193,8 +194,11 @@ async fn init_migration(
         .map_err(|error| format!("init-migration failed: {error}"))
 }
 
-fn device_signer(init: &InitArgs) -> SoftwareSigner {
-    SoftwareSigner::new(test_key(&init.device_signer_seed), Platform::Android)
+fn device_signer(init: &InitArgs) -> Arc<SoftwareSigner> {
+    Arc::new(SoftwareSigner::new(
+        test_key(&init.device_signer_seed),
+        Platform::Android,
+    ))
 }
 
 /// Inits, verifies the enclave, uploads the sealed PCP and starts the job.

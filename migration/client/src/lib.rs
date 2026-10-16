@@ -2,7 +2,7 @@
 
 pub mod sealing;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use attested_request::{
     base::CanonicalRequest,
@@ -37,6 +37,8 @@ pub enum Error {
     CanonicalRequest(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("failed to sign the request: {0}")]
     Sign(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("the background signing task failed: {0}")]
+    SigningTask(#[source] tokio::task::JoinError),
     #[error("request to the migration API failed: {0}")]
     Transport(#[source] reqwest::Error),
     #[error("migration API answered {status}")]
@@ -68,7 +70,7 @@ pub struct StartMigration<'a, S> {
     /// Attestation Gateway integrity token (JWT).
     pub integrity_token: &'a str,
     /// Signs the init request.
-    pub signer: &'a S,
+    pub signer: &'a Arc<S>,
     /// Trusts the enclave boot the API returns before the PCP is sealed to it.
     pub verifier: &'a EnclaveVerifier,
     /// Subject of the account being migrated.
@@ -120,17 +122,18 @@ impl MigrationApiClient {
     /// `challenge_id` the proof was built for.
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
-    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
     /// Not retried here: each call creates a new migration record and must be re-signed.
     pub async fn init_migration<S: Signer>(
         &self,
         integrity_token: &str,
-        signer: &S,
+        signer: &Arc<S>,
         sub: &str,
         proof: &str,
         challenge_id: &str,
     ) -> Result<InitMigrationResponse, Error>
     where
+        S: Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let body = serde_json::to_vec(&InitMigrationRequest {
@@ -150,7 +153,7 @@ impl MigrationApiClient {
             request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
         }
 
-        let signed = sign(request, integrity_token, signer)?;
+        let signed = sign(request, integrity_token, Arc::clone(signer)).await?;
         let response = self.http.execute(signed).await.map_err(Error::Transport)?;
         decode(response).await
     }
@@ -158,21 +161,22 @@ impl MigrationApiClient {
     /// Hands the uploaded PCP to its host. A repeated call reports the running job.
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
-    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
     pub async fn migrate<S: Signer>(
         &self,
         integrity_token: &str,
-        signer: &S,
+        signer: &Arc<S>,
         sub: &str,
     ) -> Result<MigrateResponse, Error>
     where
+        S: Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let mut request = self.http.post(self.url(&["v1", "migrations", sub]));
         if let Some(device_public_key) = &self.device_public_key {
             request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
         }
-        let request = sign(request, integrity_token, signer)?;
+        let request = sign(request, integrity_token, Arc::clone(signer)).await?;
 
         let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
@@ -181,21 +185,22 @@ impl MigrationApiClient {
     /// The `sub`'s latest migration, with a download URL once `migrated`.
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
-    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
     pub async fn migration_status<S: Signer>(
         &self,
         integrity_token: &str,
-        signer: &S,
+        signer: &Arc<S>,
         sub: &str,
     ) -> Result<MigrationStatus, Error>
     where
+        S: Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let mut request = self.http.get(self.url(&["v1", "migrations", sub]));
         if let Some(device_public_key) = &self.device_public_key {
             request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
         }
-        let request = sign(request, integrity_token, signer)?;
+        let request = sign(request, integrity_token, Arc::clone(signer)).await?;
 
         let response = self.http.execute(request).await.map_err(Error::Transport)?;
         decode(response).await
@@ -249,7 +254,7 @@ impl MigrationApiClient {
     /// Inits, verifies the enclave, seals and uploads the PCP, and starts the job.
     ///
     /// Returns the opener for the migrated result and the attested `enclave_id`.
-    /// Hardware signers block, so call this off any async executor that must stay responsive.
+    /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
     /// Not retried here: each call creates a new migration record and must be re-signed.
     pub async fn start_migration<S: Signer>(
         &self,
@@ -265,6 +270,7 @@ impl MigrationApiClient {
         }: StartMigration<'_, S>,
     ) -> Result<(PcpOpener, EnclaveId), Error>
     where
+        S: Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let response = self
@@ -280,7 +286,22 @@ impl MigrationApiClient {
 }
 
 /// Signs `request` and returns it with the attested-request headers attached.
-fn sign<S: Signer>(
+async fn sign<S: Signer + Send + Sync + 'static>(
+    request: RequestBuilder,
+    integrity_token: &str,
+    signer: Arc<S>,
+) -> Result<Request, Error>
+where
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    let integrity_token = integrity_token.to_owned();
+    tokio::task::spawn_blocking(move || sign_blocking(request, &integrity_token, signer.as_ref()))
+        .await
+        .map_err(Error::SigningTask)?
+}
+
+/// Performs the potentially blocking hardware-key operation on a blocking thread.
+fn sign_blocking<S: Signer>(
     request: RequestBuilder,
     integrity_token: &str,
     signer: &S,
@@ -333,7 +354,12 @@ async fn decode<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::{
+        convert::Infallible,
+        sync::{Arc, Mutex},
+        thread::{self, ThreadId},
+        time::{Duration, UNIX_EPOCH},
+    };
 
     use attested_request::{
         Platform,
@@ -342,7 +368,48 @@ mod tests {
     };
     use axum::{Json, Router, http::StatusCode, routing::post};
 
-    use super::{Error, MigrationApiClient};
+    use super::{Error, MigrationApiClient, sign};
+
+    struct BlockingSigner {
+        signing_thread: Arc<Mutex<Option<ThreadId>>>,
+    }
+
+    impl Signer for BlockingSigner {
+        type Error = Infallible;
+
+        fn platform(&self) -> Platform {
+            Platform::Android
+        }
+
+        fn sign(&self, _: &[u8; 32]) -> Result<Vec<u8>, Self::Error> {
+            *self.signing_thread.lock().unwrap() = Some(thread::current().id());
+            thread::sleep(Duration::from_millis(10));
+            Ok(vec![0])
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn signing_runs_on_tokios_blocking_pool() {
+        let signing_thread = Arc::new(Mutex::new(None));
+        let signer = Arc::new(BlockingSigner {
+            signing_thread: Arc::clone(&signing_thread),
+        });
+        let caller_thread = thread::current().id();
+
+        sign(
+            reqwest::Client::new().post("https://api.test/v1/migrations"),
+            "integrity-token",
+            signer,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(
+            signing_thread.lock().unwrap().unwrap(),
+            caller_thread,
+            "hardware signing must not run on the caller's thread"
+        );
+    }
 
     #[test]
     fn routes_extend_the_base_path_and_keep_the_sub_one_segment() {
@@ -423,12 +490,14 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
 
+        let token = test_client.token();
+        let signer = Arc::new(test_client.signer);
         let response = MigrationApiClient::new(&url)
             .unwrap()
             .with_device_public_key("device-key")
             .init_migration(
-                &test_client.token(),
-                &test_client.signer,
+                &token,
+                &signer,
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
@@ -449,7 +518,7 @@ mod tests {
         ))
         .await;
 
-        let signer = test_signer();
+        let signer = Arc::new(test_signer());
         let token = test_token(&signer);
         let error = MigrationApiClient::new(&url)
             .unwrap()
