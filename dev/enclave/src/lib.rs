@@ -9,9 +9,6 @@
     dead_code
 )]
 
-/// One-shot worker bundle reception from the parent.
-#[cfg(target_os = "linux")]
-pub mod bootstrap;
 /// Pontifex operations exposed to the host.
 pub mod routes;
 /// Pontifex server setup and lifecycle.
