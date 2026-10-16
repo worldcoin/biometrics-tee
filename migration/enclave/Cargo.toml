@@ -32,6 +32,10 @@ tracing-subscriber.workspace = true
 world-id-primitives.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+di-worker-protocol.workspace = true
+tabernaculum.workspace = true
+
 [dev-dependencies]
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
 aws-smithy-types = "1"
