@@ -98,11 +98,12 @@ let
     pname = "selfie-enrollment-enclave";
     sandboxed = true;
   };
-  # The enclave cannot inherit its carrier container's environment. These public
+  # The enclave cannot inherit its provisioner container's environment. These public
   # verification-key coordinates are therefore part of the measured EIF config.
   # TODO: prod keys are different from stage, need to build another image
   migration = buildEnclaveImage {
     pname = "di-migration-enclave";
+    sandboxed = true;
     env = ''
       ISSUER_PUBKEY_X=8764755626041608914298444081069238835505190105048545592330271001420004184714
       ISSUER_PUBKEY_Y=21113891529244736453398517984414846376859272077465756596625387480138387442766

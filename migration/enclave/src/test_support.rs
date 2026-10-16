@@ -1,11 +1,14 @@
 //! Attestors that stand in for the Nitro Secure Module in tests.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use di_migration_enclave_primitives as enclave_primitives;
 use world_id_primitives::{EdDSAPrivateKey, EdDSAPublicKey};
 
-use crate::attestation::Attestor;
+use crate::{attestation::Attestor, worker::Worker};
 
 /// Returns a distinct document per call, embedding the attested key.
 #[derive(Default)]
@@ -57,6 +60,18 @@ impl Attestor for FailsAfterSuccessesAttestor {
     }
 }
 
+/// Counts liveness checks instead of supervising a process.
+#[derive(Default)]
+pub struct FakeWorker {
+    pub checks: Arc<AtomicUsize>,
+}
+
+impl Worker for FakeWorker {
+    fn check_alive(&self) {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 /// Boot state attested by a [`CountingAttestor`].
 pub fn state() -> crate::state::EnclaveState {
     state_with_issuer_pubkey(EdDSAPrivateKey::from_bytes([7u8; 32]).public())
@@ -73,9 +88,21 @@ pub fn state_with_issuer_pubkey_and_credential_verification(
     credential_verification_enabled: bool,
 ) -> crate::state::EnclaveState {
     crate::state::EnclaveState::generate(
-        std::sync::Arc::new(CountingAttestor::default()),
+        Arc::new(CountingAttestor::default()),
         issuer_pubkey,
         credential_verification_enabled,
+        Box::new(FakeWorker::default()),
+    )
+    .expect("should generate a key")
+}
+
+/// Boot state supervising `worker`.
+pub fn state_with_worker(worker: FakeWorker) -> crate::state::EnclaveState {
+    crate::state::EnclaveState::generate(
+        Arc::new(CountingAttestor::default()),
+        EdDSAPrivateKey::from_bytes([7u8; 32]).public(),
+        true,
+        Box::new(worker),
     )
     .expect("should generate a key")
 }
