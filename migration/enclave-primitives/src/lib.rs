@@ -12,7 +12,7 @@
 mod error;
 mod health;
 mod keys;
-/// Bounded temporary-credential delivery and fixed KMS relay ports.
+/// Parent vsock ports and the regional endpoint for enclave KMS access.
 pub mod kms;
 mod migrate;
 pub mod pcp_payload;

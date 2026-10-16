@@ -35,7 +35,7 @@ Store real environment values in deployment configuration. The bare name
 alias when processing the encryption request. Alias changes require preserving
 decrypt access to keys referenced by existing ciphertexts.
 
-The host starts the relay with its existing AWS SDK region, configured through
+The host starts the proxy with its existing AWS SDK region, configured through
 `AWS_REGION` or the SDK's standard region provider chain. This region must match
 the wrapping alias's region embedded in the enclave image. The host uses its
 existing AWS SDK credential provider, which must supply temporary credentials with
@@ -43,17 +43,17 @@ a session token and at least 60 seconds of remaining validity. Both its IAM poli
 and the key-owning account's KMS policy must allow `kms:Encrypt` on the target key. No
 `kms:Decrypt` permission is needed by this producer.
 
-The host binds parent CID 3, ports 7000 (TLS relay) and 7001 (credentials). It checks
-the connecting CID against `ENCLAVE_CID` and tracks at most 32 workers, including
-completed workers awaiting collection. It only forwards to the configured regional
-AWS KMS hostname on port 443. These ports must be available in the host's vsock
-namespace. The enclave validates TLS using its compiled public trust roots and
-the hostname derived from the measured region. Host
-credentials authorize requests; they do not choose the wrapping destination.
+The host listens on vsock ports 7000 and 7001. Port 7000 is `pontifex::proxy`, which
+forwards only to the configured regional AWS KMS hostname on port 443. Port 7001 is
+`pontifex::aws_credentials`, which serves the host's temporary credentials. Both answer
+only `ENCLAVE_CID`. These ports must be available in the host's vsock namespace. The
+enclave's `pontifex::kms` client validates TLS using its compiled public trust roots and
+the hostname derived from the measured region. Host credentials authorize requests;
+they do not choose the wrapping destination.
 
-Each credential exchange has a three-second deadline. The enclave SDK caches
-credentials and refreshes them before expiration. Each TLS/HTTP exchange has a
-five-second deadline and a 64 KiB response limit. `KeyWrapper::encrypt` allows at
+Each credential request has a three-second deadline, and the host's provider call two
+seconds. The enclave SDK caches credentials and refreshes them before expiration.
+`KeyWrapper::encrypt` allows at
 most two four-second attempts within a ten-second operation deadline. Four private
 keys are encrypted sequentially, with a combined wrapping deadline of at most
 40 seconds, plus local key generation.
@@ -67,16 +67,13 @@ signing and retry path. SDK-generated JSON and transport buffers follow normal
 SDK memory management and are not zeroized. Keep AWS SDK debug/trace body logging
 disabled.
 
-The enclave completes the TLS handshake before sending HTTP requests. The HTTP
-connection is scoped to the request future, so request deadlines also close it.
-
 The image build selects the enclave package explicitly. Its production KMS SDK
-dependency enables the Tokio runtime and uses the supplied TLS connector. The
+dependency enables the Tokio runtime and uses `pontifex::kms`'s TLS connector. The
 SDK's default HTTPS client is enabled only for tests that use LocalStack.
 
 ## Deployment and checks
 
-Deploy the host relay before enabling package generation. Build the enclave with
+Deploy the host proxy and credentials server before enabling package generation. Build the enclave with
 the environment's alias ARN and register the resulting measurements through the
 normal attestation rollout. An image without wrapping configuration has no
 `KeyWrapper`; callers must reject package generation in that mode. Liveness does
@@ -101,8 +98,9 @@ fails, and keep the wrapping KMS keys available for already produced packages.
 The host's existing telemetry initialization supports StatsD when
 `TELEMETRY_METRICS_BACKEND=statsd` is configured. Monitor
 `migration.kms_relay.requests` by `kind` and `outcome`,
-`migration.kms_relay.duration_seconds`, and `migration.kms_relay.rejected` by
-`reason`. Relay success describes transport completion, not KMS authorization.
+`migration.kms_relay.duration_seconds`, `migration.kms_relay.rejected` by `reason`, and
+`migration.kms_relay.accept_failures`. Relay success describes transport completion, not
+KMS authorization.
 The enclave emits wrapping failures with archive role and a payload-free error
 class. Upstream messages and response bodies are excluded. Connecting enclave
 outcomes to production job metrics and alerting belongs to the migration-route

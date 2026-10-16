@@ -3,7 +3,8 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use di_migration_enclave::{
     attestation::{self, NsmAttestor},
-    kms_transport, rng, server,
+    kms::KeyWrapper,
+    rng, server,
     state::EnclaveState,
 };
 use di_migration_enclave_primitives::PONTIFEX_PORT;
@@ -29,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
             let region =
                 std::env::var("PCP_KMS_REGION").context("measured KMS region is missing")?;
             state.set_key_wrapper(
-                kms_transport::key_wrapper(arn, region)
+                KeyWrapper::from_parent(arn, region)
                     .context("invalid measured KMS configuration")?,
             );
             tracing::info!("PCP key wrapping configured");
