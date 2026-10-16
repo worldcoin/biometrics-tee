@@ -6993,6 +6993,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "selfie-enrollment-shares"
+version = "0.1.0"
+dependencies = [
+ "ampc-secret-sharing",
+ "base64 0.22.1",
+ "bincode",
+ "rand 0.8.8",
+ "selfie-enrollment-sealed-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "zeroize",
+]
+
+[[package]]
 name = "semver"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

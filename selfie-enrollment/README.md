@@ -19,6 +19,7 @@ The sealed CBOR request contains protocol version 1 and an image of at most 8 Mi
 - `api-types`: public session messages and limits.
 - `enclave-types`: ciphertext-only Pontifex RPCs and health.
 - `sealed-types`: client/enclave plaintext types and strict codecs.
+- `shares`: standalone Oxide-compatible face embedding decoding, quantization and plaintext share generation; not yet wired into extraction.
 - `enclave`: worker bootstrap, Minijail adapter, attested keys, extraction policy.
 - `host`: bounded WebSocket relay, health/readiness and graceful shutdown.
 - `e2e`: native diagnostic command and loopback-only browser harness.
@@ -51,7 +52,8 @@ The assignment and sealed-request changes require a matching client/server relea
 
 ```sh
 cargo test --locked -p selfie-enrollment-api-types -p selfie-enrollment-sealed-types \
-  -p selfie-enrollment-enclave -p selfie-enrollment-host -p selfie-enrollment-client
+  -p selfie-enrollment-enclave -p selfie-enrollment-host -p selfie-enrollment-client \
+  -p selfie-enrollment-shares
 cargo check --locked -p selfie-enrollment-client --target wasm32-unknown-unknown
 scripts/build-enclaves.sh --workload selfie-enrollment target/eif
 ```
