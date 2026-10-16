@@ -1,4 +1,4 @@
-use ampc_secret_sharing::{FaceVector, GaloisRingElement, PartyID, ShamirGaloisRingShare, basis};
+use ampc_secret_sharing::{GaloisRingElement, PartyID, ShamirGaloisRingShare, basis};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use embedding_shares::{FaceShare, generate};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
@@ -66,20 +66,17 @@ fn decode_share(share: &FaceShare) -> Vec<u16> {
 }
 
 #[test]
-fn frozen_wire_input_matches_quantization_and_upstream_recipient_order() {
-    let expected = std::array::from_fn(|i| CASES[i % CASES.len()].1);
+fn frozen_wire_input_matches_pinned_oxide_serialized_shares() {
     for kind in ["ghostfacenet", "ghostfacenet_flipped_mean"] {
         let mut input = embedding(&wire_input());
         input.embedding_type = kind.into();
         let mut rng = StdRng::seed_from_u64(42);
-        let mut reference_rng = rng.clone();
         let actual = generate(&input, "1", &mut rng).unwrap();
-        let upstream = FaceVector::new(expected)
-            .secret_share(&mut reference_rng)
-            .unwrap();
-        for i in 0..3 {
-            assert_eq!(decode_share(&actual[i]), upstream[i].0);
-        }
+        assert_eq!(
+            serde_json::to_string(&actual).unwrap(),
+            include_str!("fixtures/oxide-shares.json").trim(),
+            "embedding type: {kind}"
+        );
     }
 }
 
