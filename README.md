@@ -2,14 +2,11 @@
 
 WIP
 
-## Shared sandbox bundle
+## Sandboxed workers
 
-`di-sandbox` re-exports bundle provisioning from a pinned Flamingo commit.
-DI owns its worker protocol, isolation policy and bootstrap acknowledgement.
-The shared receiver stages the executable at `bin/verifier-worker`.
-The dev enclave instead runs its worker through [tabernaculum](https://github.com/worldcoin/tabernaculum), which stages it at `bin/worker`.
-
-Run `cargo test -p di-sandbox` for bundle compatibility and worker transport tests.
+The dev and Selfie Check enclaves run their workers through [tabernaculum](https://github.com/worldcoin/tabernaculum), pinned by git revision.
+It receives the worker bundle, stages the executable at `bin/worker` and runs it under Minijail with its default seccomp policy.
+Each enclave owns its worker protocol; tabernaculum's CI runs the bundle, transport and Minijail process tests.
 
 ## Selfie Check enrollment
 

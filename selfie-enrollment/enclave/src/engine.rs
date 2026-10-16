@@ -3,8 +3,9 @@ use biometric_engines_protocol::{self as protocol, failure::Kind, response::Outc
 use selfie_enrollment_enclave_types::Error;
 use selfie_enrollment_sealed_types::{FaceEmbedding, Failure};
 use zeroize::Zeroize;
-pub trait Engine: Send {
-    fn extract(&mut self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error>;
+/// Serializes its own requests; health checks must not wait for an in-flight one.
+pub trait Engine: Send + Sync {
+    fn extract(&self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error>;
     fn check_health(&self) -> Result<(), Error>;
 }
 
@@ -64,25 +65,42 @@ pub fn decode_result(
 
 #[cfg(target_os = "linux")]
 pub struct SandboxEngine {
-    pub worker: biometrics_sandbox::Worker,
-    pub next_id: u64,
+    worker: std::sync::Mutex<tabernaculum::Worker>,
+    /// Only read and written while holding `worker`.
+    next_id: std::sync::atomic::AtomicU64,
+}
+#[cfg(target_os = "linux")]
+impl SandboxEngine {
+    #[must_use]
+    pub fn new(worker: tabernaculum::Worker) -> Self {
+        Self {
+            worker: std::sync::Mutex::new(worker),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
 }
 #[cfg(target_os = "linux")]
 impl Engine for SandboxEngine {
-    fn extract(&mut self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
+    fn extract(&self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
         use protocol::{
             face::{EmbeddingRequest, FaceImage, face_image::Source},
             request::Operation,
         };
+        use std::sync::atomic::Ordering;
         if image.is_empty() || image.len() > selfie_enrollment_api_types::MAX_IMAGE_BYTES {
             return Ok(Err(Failure::InvalidRequest));
         }
-        let id = self.next_id;
-        self.next_id = self
-            .next_id
+        // A poisoned lock means a request panicked mid-exchange; the worker state is unknown.
+        let mut worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner().fail());
+        let id = self.next_id.load(Ordering::Relaxed);
+        let next_id = id
             .checked_add(1)
             .filter(|_| id != 0)
-            .unwrap_or_else(|| self.worker.fail());
+            .unwrap_or_else(|| worker.fail());
+        self.next_id.store(next_id, Ordering::Relaxed);
         let mut request = protocol::Request::new(
             id,
             Operation::Embedding(EmbeddingRequest {
@@ -99,15 +117,24 @@ impl Engine for SandboxEngine {
         {
             bytes.zeroize();
         }
-        let response = zeroize::Zeroizing::new(
-            self.worker
-                .exchange(&encoded)
-                .unwrap_or_else(|_| self.worker.fail()),
-        );
-        decode_result(&response, id).or_else(|_| self.worker.fail())
+        let response = match worker.exchange(&encoded) {
+            Ok(response) => zeroize::Zeroizing::new(response),
+            // Nothing was sent, so the worker stays trusted and the request alone fails.
+            Err(tabernaculum::ConnectionError::InvalidRequest) => {
+                tracing::warn!(
+                    dependency = "worker",
+                    bytes = encoded.len(),
+                    "worker request rejected before sending"
+                );
+                return Ok(Err(Failure::InvalidRequest));
+            }
+            Err(_) => worker.fail(),
+        };
+        decode_result(&response, id).or_else(|_| worker.fail())
     }
+    /// Skips the check while a request runs; that request reports a dead worker itself.
     fn check_health(&self) -> Result<(), Error> {
-        self.worker.check_alive();
+        tabernaculum::check_alive_if_idle(&self.worker);
         Ok(())
     }
 }
