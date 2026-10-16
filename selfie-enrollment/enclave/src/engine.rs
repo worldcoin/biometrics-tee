@@ -99,11 +99,19 @@ impl Engine for SandboxEngine {
         {
             bytes.zeroize();
         }
-        let response = zeroize::Zeroizing::new(
-            self.worker
-                .exchange(&encoded)
-                .unwrap_or_else(|_| self.worker.fail()),
-        );
+        let response = match self.worker.exchange(&encoded) {
+            Ok(response) => zeroize::Zeroizing::new(response),
+            // Nothing was sent, so the worker stays trusted and the request alone fails.
+            Err(tabernaculum::ConnectionError::InvalidRequest) => {
+                tracing::warn!(
+                    dependency = "worker",
+                    bytes = encoded.len(),
+                    "worker request rejected before sending"
+                );
+                return Ok(Err(Failure::InvalidRequest));
+            }
+            Err(_) => self.worker.fail(),
+        };
         decode_result(&response, id).or_else(|_| self.worker.fail())
     }
     fn check_health(&self) -> Result<(), Error> {
