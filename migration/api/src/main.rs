@@ -627,7 +627,7 @@ mod tests {
         };
         let api = serve(routes::router(state)).await;
 
-        let signer = test_signer();
+        let signer = Arc::new(test_signer());
         let token = test_integrity_token(&signer);
         let response =
             di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
@@ -1178,7 +1178,7 @@ mod tests {
             di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
                 .unwrap()
                 .with_device_public_key("device-key");
-        let signer = test_signer();
+        let signer = Arc::new(test_signer());
         let token = test_integrity_token(&signer);
 
         let migrating = client.migrate(&token, &signer, "test-sub").await.unwrap();
