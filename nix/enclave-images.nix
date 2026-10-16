@@ -104,6 +104,8 @@ let
     environment = pkgs.lib.optionals (pcpKmsKeyArn != null) [
       "PCP_KMS_KEY_ARN=${pcpKmsKeyArn}"
       "PCP_KMS_REGION=${builtins.elemAt (pkgs.lib.splitString ":" pcpKmsKeyArn) 3}"
+      "ISSUER_PUBKEY_X=8764755626041608914298444081069238835505190105048545592330271001420004184714"
+      "ISSUER_PUBKEY_Y=21113891529244736453398517984414846376859272077465756596625387480138387442766"
     ];
   };
   dev = buildEnclaveImage {

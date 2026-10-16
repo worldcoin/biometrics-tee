@@ -1,4 +1,4 @@
-# Wire-compatible subset of biometric-engines-protocol from worldcoin/biometric-engines@53ae19e1dc206dc03a4d4b5ac9ed35125044b37f
+# Wire-compatible subset of biometric-engines-protocol from worldcoin/biometric-engines@5357b9c850aa2fb39f57c33c06e62112d23fcf61
 # (private repository): the envelope and the migration operation only.
 # Replace with a published crate once one carries the migration operation.
 [package]

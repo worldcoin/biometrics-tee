@@ -95,8 +95,8 @@ pub fn decode_response(bytes: &[u8]) -> Result<Response, Failure> {
 
 /// Checks that the face embedding is present and within
 /// [`migration::MAX_ENCODED_FACE_EMBEDDING_BYTES`], and
-/// that both eyes carry v2.1-sized codes and [`migration::EMBEDDING_SIZE`] embeddings: int4
-/// values in [`migration::I4_RANGE`] and finite f32 values.
+/// that both eyes carry v2.1-sized codes, [`migration::EMBEDDING_SIZE`] embeddings (int4
+/// values in [`migration::I4_RANGE`], finite f32 values) and exactly sized normalizations.
 fn check_migration_result(result: &migration::MigrationResult) -> Result<(), Failure> {
     let face = result.face_embedding.as_ref().ok_or_else(malformed)?;
     if face.vector.is_empty() || face.vector.len() > migration::MAX_ENCODED_FACE_EMBEDDING_BYTES {
@@ -121,7 +121,19 @@ fn check_migration_result(result: &migration::MigrationResult) -> Result<(), Fai
                 vector.len() == migration::EMBEDDING_SIZE
                     && vector.iter().all(|value| value.is_finite())
             });
-        if !(codes_valid && i4_valid && f32_valid) {
+        let normalized_valid = [
+            (&eye.normalized, migration::NORMALIZED_IRIS_LEN),
+            (
+                &eye.normalized_resized,
+                migration::NORMALIZED_IRIS_RESIZED_LEN,
+            ),
+        ]
+        .iter()
+        .all(|(iris, len)| {
+            iris.as_ref()
+                .is_some_and(|iris| iris.image.len() == *len && iris.mask.len() == *len)
+        });
+        if !(codes_valid && i4_valid && f32_valid && normalized_valid) {
             return Err(malformed());
         }
     }

@@ -297,7 +297,7 @@ async fn a_migration_runs_from_init_to_download() {
         .with_device_public_key(DEVICE_KEY);
     let other = client.with_device_public_key("other-device");
     let sub = format!("sub-{}", JobId::new());
-    let signer = test_signer();
+    let signer = Arc::new(test_signer());
     let token = test_integrity_token(&signer);
 
     // Init pins the job to the host's enclave and hands out an upload URL.
