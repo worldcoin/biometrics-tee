@@ -1,8 +1,8 @@
 use ampc_secret_sharing::{FaceVector, GaloisRingElement, PartyID, ShamirGaloisRingShare, basis};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use embedding_shares::{FaceShare, generate};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use selfie_enrollment_sealed_types::FaceEmbedding;
-use selfie_enrollment_shares::{FaceShare, generate};
 
 // Frozen IEEE-754 inputs and expected quantization, including ties, saturation,
 // signed zero, finite extrema, and a value immediately above the negative 7.5 tie.

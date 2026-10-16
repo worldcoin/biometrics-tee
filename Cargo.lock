@@ -3368,6 +3368,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
+name = "embedding-shares"
+version = "0.1.0"
+dependencies = [
+ "ampc-secret-sharing",
+ "base64 0.22.1",
+ "bincode",
+ "rand 0.8.8",
+ "selfie-enrollment-sealed-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "zeroize",
+]
+
+[[package]]
 name = "enum-ordinalize"
 version = "4.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6986,21 +7001,6 @@ dependencies = [
  "selfie-enrollment-api-types",
  "serde",
  "serde_bytes",
- "thiserror 2.0.20",
- "zeroize",
-]
-
-[[package]]
-name = "selfie-enrollment-shares"
-version = "0.1.0"
-dependencies = [
- "ampc-secret-sharing",
- "base64 0.22.1",
- "bincode",
- "rand 0.8.8",
- "selfie-enrollment-sealed-types",
- "serde",
- "serde_json",
  "thiserror 2.0.20",
  "zeroize",
 ]
