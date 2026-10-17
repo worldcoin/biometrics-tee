@@ -99,3 +99,8 @@ rand = "0.8"
 selfie-enrollment-client = { path = "selfie-enrollment/client" }
 
 selfie-enrollment-host = { path = "selfie-enrollment/host" }
+
+[patch.crates-io]
+# Same 1.24.0 bindings; only the ZIP build dependency moves to patched 9.x.
+# Remove when an upstream release accepts ZIP >=9.0.0 (RUSTSEC-2026-0367/0368/0369).
+libsodium-sys-stable = { git = "https://github.com/kchaw2005/libsodium-sys-stable", rev = "a59fc5f0867aeb239ad8f6d134bd8c83d8bdfe45" }
