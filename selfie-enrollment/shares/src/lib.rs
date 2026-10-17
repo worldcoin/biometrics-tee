@@ -86,17 +86,26 @@ pub fn generate<R: Rng + CryptoRng>(
 /// for PCP assembly; temporary plaintext JSON is erased on drop.
 ///
 /// # Errors
-/// Rejects duplicate or low-order recipient keys. Propagates serialization and
-/// encryption failures without exposing share values.
+/// Rejects non-canonical, duplicate or low-order recipient keys. Propagates
+/// serialization and encryption failures without exposing share values.
 pub fn encrypt<R: Rng + CryptoRng>(
     shares: &[FaceShare; 3],
     recipient_keys: &[PublicKey; 3],
     rng: &mut R,
 ) -> Result<[String; 3], Error> {
+    // Little-endian p = 2^255 - 19. Sealed-box nonces hash the raw key bytes,
+    // so aliases accepted by X25519 must be rejected before encryption.
+    const FIELD_MODULUS: [u8; 32] = {
+        let mut bytes = [0xff; 32];
+        bytes[0] = 0xed;
+        bytes[31] = 0x7f;
+        bytes
+    };
     for (party, key) in recipient_keys.iter().enumerate() {
         // Parsing a PublicKey checks only its length. A fixed clamped scalar
         // detects points that would produce an all-zero X25519 shared secret.
-        if recipient_keys[..party].contains(key)
+        if key.as_bytes().iter().rev().ge(FIELD_MODULUS.iter().rev())
+            || recipient_keys[..party].contains(key)
             || MontgomeryPoint(*key.as_bytes()).mul_clamped([0x42; 32]) == MontgomeryPoint([0; 32])
         {
             return Err(Error::InvalidRecipient { party });

@@ -233,6 +233,36 @@ fn repeated_encryption_uses_fresh_randomness() {
 }
 
 #[test]
+fn non_canonical_recipients_are_rejected_before_consuming_randomness() {
+    let shares = generate(
+        &embedding(&wire_input()),
+        "1",
+        &mut StdRng::seed_from_u64(42),
+    )
+    .unwrap();
+    let public_keys = [1_u8, 2, 3].map(|value| SecretKey::from([value; 32]).public_key());
+    for party in 0..3 {
+        // No canonical alias is present to trigger duplicate-key rejection.
+        let mut invalid = public_keys.clone();
+        let mut bytes = invalid[party].to_bytes();
+        bytes[31] |= 0x80;
+        invalid[party] = PublicKey::from(bytes);
+        assert_invalid_recipients(&shares, &invalid, party);
+    }
+    // The 19 encodings from p = 2^255 - 19 through 2^255 - 1 are also aliases.
+    for low_byte in 0xed..=0xff {
+        let mut bytes = [0xff; 32];
+        bytes[0] = low_byte;
+        bytes[31] = 0x7f;
+        for party in 0..3 {
+            let mut invalid = public_keys.clone();
+            invalid[party] = PublicKey::from(bytes);
+            assert_invalid_recipients(&shares, &invalid, party);
+        }
+    }
+}
+
+#[test]
 fn invalid_recipients_are_rejected_before_consuming_randomness() {
     let shares = generate(
         &embedding(&wire_input()),
@@ -267,8 +297,8 @@ fn assert_invalid_recipients(shares: &[FaceShare; 3], public_keys: &[PublicKey; 
     let mut rng = StdRng::seed_from_u64(123);
     let mut untouched = rng.clone();
     assert_eq!(
-        encrypt(shares, public_keys, &mut rng),
-        Err(Error::InvalidRecipient { party })
+        encrypt(shares, public_keys, &mut rng).err(),
+        Some(Error::InvalidRecipient { party })
     );
     assert_eq!(rng.next_u64(), untouched.next_u64());
 }

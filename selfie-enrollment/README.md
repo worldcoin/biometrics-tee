@@ -32,7 +32,8 @@ The enclave runs its worker through [tabernaculum](https://github.com/worldcoin/
 standard-base64 sealed boxes. Each box encrypts the same-index share's
 `{version, share_data}` JSON, matching Oxide. The helper borrows the plaintext
 shares so the caller can also use them for PCP assembly, and erases temporary
-JSON buffers. It rejects duplicate and low-order keys before consuming randomness.
+JSON buffers. It rejects non-canonical, duplicate and low-order keys before
+consuming randomness.
 The caller must authenticate the recipient keys; this helper does not establish
 their provenance. Key provisioning and extraction/submission integration remain
 separate work.
