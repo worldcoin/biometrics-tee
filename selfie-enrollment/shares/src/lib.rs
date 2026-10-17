@@ -105,11 +105,21 @@ pub fn encrypt<R: Rng + CryptoRng>(
 
     let mut encrypted = std::array::from_fn(|_| String::new());
     for (party, share) in shares.iter().enumerate() {
-        let mut plaintext = Zeroizing::new(Vec::new());
-        serde_json::to_writer(&mut *plaintext, share)
-            .map_err(|_| Error::Serialization { party })?;
+        // JSON can escape each input byte as six bytes (\u00XX). Allocate before
+        // writing secrets; a fixed slice prevents growth from leaving unwiped copies.
+        let capacity = share
+            .version
+            .len()
+            .checked_add(share.share_data.len())
+            .and_then(|len| len.checked_mul(6))
+            .and_then(|len| len.checked_add(br#"{"version":"","share_data":""}"#.len()))
+            .ok_or(Error::Serialization { party })?;
+        let mut plaintext = Zeroizing::new(vec![0; capacity]);
+        let mut writer = plaintext.as_mut_slice();
+        serde_json::to_writer(&mut writer, share).map_err(|_| Error::Serialization { party })?;
+        let length = capacity - writer.len();
         let ciphertext = recipient_keys[party]
-            .seal(rng, &plaintext)
+            .seal(rng, &plaintext[..length])
             .map_err(|_| Error::Encryption { party })?;
         encrypted[party] = STANDARD.encode(ciphertext);
     }

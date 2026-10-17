@@ -188,6 +188,39 @@ fn encrypted_shares_decrypt_to_oxide_json_in_recipient_order() {
 }
 
 #[test]
+fn encryption_preserves_empty_and_worst_case_escaped_fields() {
+    let shares = [
+        FaceShare {
+            version: String::new(),
+            share_data: String::new(),
+        },
+        FaceShare {
+            version: "\0".repeat(256),
+            share_data: "\u{1f}".repeat(1368),
+        },
+        FaceShare {
+            version: "\"\\\n\r\t".repeat(128),
+            share_data: "é🦀\"\\\0".repeat(256),
+        },
+    ];
+    let secret_keys = [1_u8, 2, 3].map(|value| SecretKey::from([value; 32]));
+    let public_keys = secret_keys.each_ref().map(SecretKey::public_key);
+    let encrypted = encrypt(&shares, &public_keys, &mut StdRng::seed_from_u64(42)).unwrap();
+    for party in 0..3 {
+        let plaintext = secret_keys[party]
+            .unseal(&STANDARD.decode(&encrypted[party]).unwrap())
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&plaintext).unwrap(),
+            serde_json::json!({
+                "version": shares[party].version,
+                "share_data": shares[party].share_data,
+            })
+        );
+    }
+}
+
+#[test]
 fn repeated_encryption_uses_fresh_randomness() {
     let mut rng = StdRng::seed_from_u64(7);
     let shares = generate(&embedding(&wire_input()), "1", &mut rng).unwrap();
