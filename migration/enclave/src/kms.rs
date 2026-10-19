@@ -5,13 +5,15 @@ use std::time::Duration;
 
 use aws_sdk_kms::{
     Client,
-    config::{retry::RetryConfig, timeout::TimeoutConfig},
+    config::{BehaviorVersion, Region, retry::RetryConfig, timeout::TimeoutConfig},
     error::{ProvideErrorMetadata, SdkError},
     primitives::Blob,
     types::EncryptionAlgorithmSpec,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
+use di_migration_enclave_primitives::kms::{self as parent, CREDENTIALS_PORT, TLS_PORT};
+use pontifex::aws_credentials::ParentCredentials;
 use zeroize::Zeroizing;
 
 /// Includes credential acquisition, connection setup and at most two SDK attempts.
@@ -47,6 +49,29 @@ pub struct KeyWrapper {
 }
 
 impl KeyWrapper {
+    /// A wrapper for the measured key ARN and region that reaches KMS through the parent.
+    ///
+    /// TLS terminates in the enclave; the parent relays bytes on [`TLS_PORT`] and serves its
+    /// temporary credentials on [`CREDENTIALS_PORT`], which the SDK renews before expiry.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a region that cannot name a KMS endpoint and ARNs [`Self::new`] rejects.
+    pub fn from_parent(key_arn: String, region: String) -> Result<Self, Error> {
+        parent::hostname(&region).ok_or(Error::InvalidConfiguration)?;
+        let sdk_config = aws_types::SdkConfig::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::new(region))
+            .build();
+        let client = pontifex::kms::client_with_credentials(
+            &sdk_config,
+            ParentCredentials::new(CREDENTIALS_PORT),
+            TLS_PORT,
+        );
+
+        Self::new(&client, key_arn)
+    }
+
     /// Configures at most two four-second attempts under a ten-second operation deadline.
     /// A full ARN fixes the key's account independently of the credentials provider.
     /// Terraform owns deployment policy; KMS resolves aliases on each request.
@@ -143,5 +168,39 @@ impl KeyWrapper {
             return Err(Error::InvalidResponse);
         }
         Ok(STANDARD.encode(blob.as_ref()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, KeyWrapper};
+
+    #[test]
+    fn the_parent_wrapper_requires_a_full_arn_in_the_measured_region() {
+        let wrapper = |arn: &str, region: &str| KeyWrapper::from_parent(arn.into(), region.into());
+
+        assert!(
+            wrapper(
+                "arn:aws:kms:us-east-1:000000000000:alias/synthetic",
+                "us-east-1"
+            )
+            .is_ok()
+        );
+        for (arn, region) in [
+            ("alias/synthetic", "us-east-1"),
+            (
+                "arn:aws:kms:us-west-2:000000000000:key/synthetic",
+                "us-east-1",
+            ),
+            (
+                "arn:aws:kms:evil.example:000000000000:key/synthetic",
+                "evil.example",
+            ),
+        ] {
+            assert_eq!(
+                wrapper(arn, region).err(),
+                Some(Error::InvalidConfiguration)
+            );
+        }
     }
 }

@@ -3,6 +3,7 @@
   pkgs,
   nitro-util,
   enclaveBins,
+  pcpKmsKeyArn ? null,
 }:
 let
   nitroLib = nitro-util.lib.${system};
@@ -23,7 +24,7 @@ let
     {
       pname,
       sandboxed ? false,
-      env ? "",
+      environment ? [ ],
     }:
     let
       version = enclaveBins.${pname}.version;
@@ -55,7 +56,7 @@ let
           Env = [
             "RUST_LOG=info"
             "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-          ];
+          ] ++ environment;
         };
       };
 
@@ -85,8 +86,7 @@ let
         env = ''
           RUST_LOG=info
           SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
-          ${env}
-        '';
+        '' + pkgs.lib.optionalString (environment != [ ]) (builtins.concatStringsSep "\n" environment + "\n");
       };
     in
     {
@@ -98,15 +98,15 @@ let
     pname = "selfie-enrollment-enclave";
     sandboxed = true;
   };
-  # The enclave cannot inherit its carrier container's environment. These public
-  # verification-key coordinates are therefore part of the measured EIF config.
-  # TODO: prod keys are different from stage, need to build another image
   migration = buildEnclaveImage {
     pname = "di-migration-enclave";
-    env = ''
-      ISSUER_PUBKEY_X=8764755626041608914298444081069238835505190105048545592330271001420004184714
-      ISSUER_PUBKEY_Y=21113891529244736453398517984414846376859272077465756596625387480138387442766
-    '';
+    # Terraform owns ARN validation. Copy its key identity and region into the EIF.
+    environment = pkgs.lib.optionals (pcpKmsKeyArn != null) [
+      "PCP_KMS_KEY_ARN=${pcpKmsKeyArn}"
+      "PCP_KMS_REGION=${builtins.elemAt (pkgs.lib.splitString ":" pcpKmsKeyArn) 3}"
+      "ISSUER_PUBKEY_X=8764755626041608914298444081069238835505190105048545592330271001420004184714"
+      "ISSUER_PUBKEY_Y=21113891529244736453398517984414846376859272077465756596625387480138387442766"
+    ];
   };
   dev = buildEnclaveImage {
     pname = "di-dev-enclave";

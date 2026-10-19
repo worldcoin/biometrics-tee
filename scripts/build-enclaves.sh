@@ -27,6 +27,7 @@ usage() {
     "" \
     "Options:" \
     "  --workload <name>  Which enclave to build: ${WORKLOADS[*]} (default dev)." \
+    "  --pcp-kms-key-arn <arn>  Bake a full wrapping key/alias ARN into the migration EIF." \
     "  -h, --help         Show this help."
 }
 
@@ -35,9 +36,18 @@ usage() {
 workload="dev"
 out_dir="target/eif"
 output_dir_provided=false
+pcp_kms_key_arn=""
 
 while (( $# > 0 )); do
   case "$1" in
+    --pcp-kms-key-arn)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "[ERROR] --pcp-kms-key-arn needs a full key/alias ARN." >&2
+        exit 2
+      fi
+      pcp_kms_key_arn="$2"
+      shift
+      ;;
     --workload)
       if (( $# < 2 )); then
         echo "[ERROR] --workload needs a value." >&2
@@ -71,6 +81,11 @@ if [[ ! " ${WORKLOADS[*]} " == *" $workload "* ]]; then
   exit 2
 fi
 
+if [[ -n "$pcp_kms_key_arn" && "$workload" != "migration" ]]; then
+  echo "[ERROR] --pcp-kms-key-arn requires --workload migration." >&2
+  exit 2
+fi
+
 command -v nix >/dev/null || {
   echo "[ERROR] nix not found. The OCI image and EIF are built by flake.nix." >&2
   exit 1
@@ -78,6 +93,23 @@ command -v nix >/dev/null || {
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+build_output() {
+  local format="$1"
+  if [[ -n "$pcp_kms_key_arn" ]]; then
+    # Terraform validates the ARN. Pass it as data, never interpolated Nix source;
+    # the image embeds the key identity and its region in the measured environment.
+    PCP_BUILD_ROOT="$repo_root" PCP_BUILD_KEY_ARN="$pcp_kms_key_arn" PCP_BUILD_FORMAT="$format" \
+      nix build --impure --no-update-lock-file --no-link --print-out-paths --expr '
+        let
+          flake = builtins.getFlake ("git+file://" + builtins.getEnv "PCP_BUILD_ROOT");
+          images = flake.lib.migrationImages { pcpKmsKeyArn = builtins.getEnv "PCP_BUILD_KEY_ARN"; };
+        in builtins.getAttr ("di-migration-" + builtins.getEnv "PCP_BUILD_FORMAT") images
+      '
+  else
+    nix build ".#$output_prefix-$format" --no-update-lock-file --no-link --print-out-paths
+  fi
+}
 
 mkdir -p "$out_dir"
 out_dir="$(cd "$out_dir" && pwd)"
@@ -93,7 +125,7 @@ pcr_name="$output_prefix-pcr.json"
 # matching `nix flake update` would otherwise be resolved to whatever upstream serves right
 # now, and the lock silently rewritten. The PCRs must follow the committed lock or nothing.
 echo "Building reproducible $workload OCI image..."
-if ! oci_store=$(nix build ".#$output_prefix-oci" --no-update-lock-file --no-link --print-out-paths); then
+if ! oci_store=$(build_output oci); then
   echo >&2
   echo "[ERROR] OCI image build failed; the error above says why. A 'platform" >&2
   echo "        mismatch' for x86_64-linux means this host needs a remote builder." >&2
@@ -101,7 +133,7 @@ if ! oci_store=$(nix build ".#$output_prefix-oci" --no-update-lock-file --no-lin
 fi
 
 echo "Building $workload EIF..."
-if ! eif_store=$(nix build ".#$output_prefix-eif" --no-update-lock-file --no-link --print-out-paths); then
+if ! eif_store=$(build_output eif); then
   echo >&2
   echo "[ERROR] EIF build failed; the error above says why." >&2
   exit 1

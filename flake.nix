@@ -40,6 +40,14 @@
     {
       packages.${system} = enclaveBins // enclaveImages;
 
+      # Key identity is part of the measured filesystem, supplied by deployment
+      # configuration. Account-specific values are not stored in this repository.
+      lib.migrationImages =
+        { pcpKmsKeyArn }:
+        import ./nix/enclave-images.nix {
+          inherit system pkgs nitro-util enclaveBins pcpKmsKeyArn;
+        };
+
       devShells = import ./nix/dev-shells.nix {
         inherit root nixpkgs rust-overlay;
       };

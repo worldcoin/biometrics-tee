@@ -39,6 +39,8 @@ pub enum Error {
     Sign(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("the background signing task failed: {0}")]
     SigningTask(#[source] tokio::task::JoinError),
+    #[error("the background attestation and sealing task failed: {0}")]
+    SealingTask(#[source] tokio::task::JoinError),
     #[error("request to the migration API failed: {0}")]
     Transport(#[source] reqwest::Error),
     #[error("migration API answered {status}")]
@@ -161,7 +163,8 @@ impl MigrationApiClient {
     /// Hands the uploaded PCP to its host. A repeated call reports the running job.
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
-    /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
+    /// Signing, attestation verification, and PCP sealing run on Tokio's blocking pool, keeping
+    /// the caller's executor thread responsive.
     pub async fn migrate<S: Signer>(
         &self,
         integrity_token: &str,
@@ -254,7 +257,8 @@ impl MigrationApiClient {
     /// Inits, verifies the enclave, seals and uploads the PCP, and starts the job.
     ///
     /// Returns the opener for the migrated result and the attested `enclave_id`.
-    /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
+    /// Signing, attestation verification, and PCP sealing run on Tokio's blocking pool, keeping
+    /// the caller's executor thread responsive.
     /// Not retried here: each call creates a new migration record and must be re-signed.
     pub async fn start_migration<S: Signer>(
         &self,
@@ -276,13 +280,39 @@ impl MigrationApiClient {
         let response = self
             .init_migration(integrity_token, signer, sub, proof, challenge_id)
             .await?;
-        let (blob, opener) = verifier
-            .attested_channel(&response)
-            .and_then(|channel| channel.seal(pcp, credential))?;
-        self.upload_pcp(&response.upload_url, blob).await?;
+        let enclave_id = response.enclave_id.clone();
+        let upload_url = response.upload_url.clone();
+        let (blob, opener) = attest_and_seal(
+            verifier.clone(),
+            response,
+            pcp.to_vec(),
+            credential.to_owned(),
+        )
+        .await?;
+        self.upload_pcp(&upload_url, blob).await?;
         self.migrate(integrity_token, signer, sub).await?;
-        Ok((opener, response.enclave_id))
+        Ok((opener, enclave_id))
     }
+}
+
+/// Verifies an enclave's attestation and encrypts the potentially large PCP off the caller's
+/// executor thread. Both operations are CPU-bound on mobile clients.
+async fn attest_and_seal(
+    verifier: EnclaveVerifier,
+    response: InitMigrationResponse,
+    pcp: Vec<u8>,
+    credential: String,
+) -> Result<(Vec<u8>, PcpOpener), Error> {
+    let pcp = zeroize::Zeroizing::new(pcp);
+    let credential = zeroize::Zeroizing::new(credential);
+    tokio::task::spawn_blocking(move || {
+        verifier
+            .attested_channel(&response)
+            .and_then(|channel| channel.seal(&pcp, &credential))
+            .map_err(Error::Sealing)
+    })
+    .await
+    .map_err(Error::SealingTask)?
 }
 
 /// Signs `request` and returns it with the attested-request headers attached.

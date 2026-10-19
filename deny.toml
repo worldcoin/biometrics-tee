@@ -7,6 +7,13 @@ targets = ["x86_64-unknown-linux-gnu"]
 ignore = [
     # serde_cbor, required by Pontifex's AWS NSM dependencies; no maintained compatible release exists.
     "RUSTSEC-2021-0127",
+    # zip is only a libsodium-sys-stable build dependency for its Windows fallback installer.
+    # Our use-pkg-config feature requires system libsodium and bypasses archive extraction.
+    # Remove these exceptions when libsodium-sys-stable supports zip >=9:
+    # https://github.com/jedisct1/libsodium-sys-stable/pull/26
+    { id = "RUSTSEC-2026-0367", reason = "zip SUID/SGID extraction is unreachable with libsodium-sys-stable/use-pkg-config" },
+    { id = "RUSTSEC-2026-0368", reason = "zip symlink extraction is unreachable with libsodium-sys-stable/use-pkg-config" },
+    { id = "RUSTSEC-2026-0369", reason = "zip permission changes through symlinks are unreachable with libsodium-sys-stable/use-pkg-config" },
     # The PCP builder pins the legacy Hyrax implementation for commitment compatibility.
     # These transitive crates have maintenance notices, with no compatible upgrade.
     # Keep vulnerability advisories enforced; remove these exceptions when Hyrax updates.
@@ -21,6 +28,8 @@ deny = [
     { name = "openssl" },
     { name = "openssl-sys" },
     { name = "openssl-src" },
+    # The zip advisory exceptions apply only to libsodium's unused build dependency.
+    { name = "zip", wrappers = ["libsodium-sys-stable"] },
 ]
 
 [licenses]
@@ -84,4 +93,5 @@ allow-git = [
     "https://github.com/worldcoin/hyrax-pcs-commit.git",
     # Pinned 1.24.0 bindings with a one-line ZIP >=9 build-dependency fix.
     "https://github.com/kchaw2005/libsodium-sys-stable",
+    "https://github.com/worldcoin/pontifex",
 ]
