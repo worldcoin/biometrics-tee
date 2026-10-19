@@ -1,7 +1,7 @@
 //! The app's end of the sealed channel: verify the enclave boot, seal the PCP to it, and open
 //! the migrated PCP it seals back.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use di_migration_enclave_primitives::{MIGRATION_CHANNEL_DOMAIN, pcp_payload};
@@ -34,20 +34,23 @@ pub enum SealingError {
 }
 
 /// Checks enclave attestations against the PCRs of the enclave builds the app trusts.
-pub struct EnclaveVerifier(Verifier);
+#[derive(Clone)]
+pub struct EnclaveVerifier(Arc<Verifier>);
 
 impl EnclaveVerifier {
     /// Trusts an enclave whose PCRs match one of `trusted`.
     #[must_use]
     pub fn new(trusted: Vec<PcrConfig>) -> Self {
-        Self(Verifier::new(trusted, MAX_ATTESTATION_AGE))
+        Self(Arc::new(Verifier::new(trusted, MAX_ATTESTATION_AGE)))
     }
 
     /// Trusts any genuine Nitro enclave, whatever it runs; for debug-mode enclaves, whose PCRs
     /// are zero.
     #[must_use]
     pub fn dangerously_skip_measurements() -> Self {
-        Self(Verifier::new(Vec::new(), MAX_ATTESTATION_AGE).dangerously_skip_measurements())
+        Self(Arc::new(
+            Verifier::new(Vec::new(), MAX_ATTESTATION_AGE).dangerously_skip_measurements(),
+        ))
     }
 
     /// The channel to the enclave boot `init` names, once its attestation verifies and commits
