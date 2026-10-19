@@ -25,14 +25,9 @@ impl EnclaveState {
 }
 
 #[cfg(target_os = "linux")]
-impl Worker for std::sync::Mutex<di_sandbox::Worker> {
+impl Worker for std::sync::Mutex<tabernaculum::Worker> {
     fn check_alive(&self) {
-        // A held lock means a request is in flight; its exchange reports a dead worker.
-        match self.try_lock() {
-            Ok(worker) => worker.check_alive(),
-            Err(std::sync::TryLockError::Poisoned(worker)) => worker.into_inner().check_alive(),
-            Err(std::sync::TryLockError::WouldBlock) => {}
-        }
+        tabernaculum::check_alive_if_idle(self);
     }
 }
 

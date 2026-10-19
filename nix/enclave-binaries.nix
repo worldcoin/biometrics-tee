@@ -20,9 +20,10 @@ let
       strictDeps = true;
       cargoExtraArgs = "--locked -p ${pname} --bin ${pname}";
 
-      # Native dependencies include the PCP builder's libsodium and protoc, and the
-      # dev enclave's Minijail. Use Nix's Minijail: Cargo's fallback needs the full
-      # upstream repository around the vendored crate.
+      # Crane prepares dependencies for the whole workspace, including tabernaculum's Linux-only
+      # Minijail, the PCP builder's libsodium, and protoc for the PCP builder and the worker
+      # protocol. Give it Nix's Minijail: the Cargo fallback expects the full upstream
+      # repository around the vendored crate and fails with no makefile.
       nativeBuildInputs = [
         pkgs.clang
         pkgs.pkg-config
