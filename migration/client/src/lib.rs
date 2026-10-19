@@ -303,6 +303,8 @@ async fn attest_and_seal(
     pcp: Vec<u8>,
     credential: String,
 ) -> Result<(Vec<u8>, PcpOpener), Error> {
+    let pcp = zeroize::Zeroizing::new(pcp);
+    let credential = zeroize::Zeroizing::new(credential);
     tokio::task::spawn_blocking(move || {
         verifier
             .attested_channel(&response)
