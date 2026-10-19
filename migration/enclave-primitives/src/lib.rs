@@ -12,6 +12,8 @@
 mod error;
 mod health;
 mod keys;
+/// Parent vsock ports and the regional endpoint for enclave KMS access.
+pub mod kms;
 mod migrate;
 pub mod pcp_payload;
 

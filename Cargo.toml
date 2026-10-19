@@ -65,7 +65,8 @@ orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "81d01
 orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "81d013e618cdb424bc134b6e68892945ab96ca60" }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 di-migration-client = { path = "migration/client" }
-pontifex = { version = "3.0.0", default-features = false }
+# Unreleased `proxy` and `aws-credentials` features (worldcoin/pontifex#64, #65); move back to a release.
+pontifex = { git = "https://github.com/worldcoin/pontifex", rev = "754113f0c929f0ea7a262bab9e26db0ffd57ece2", default-features = false }
 proof = { path = "migration/proof" }
 fastrand = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

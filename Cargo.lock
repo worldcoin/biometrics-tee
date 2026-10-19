@@ -3026,6 +3026,7 @@ dependencies = [
  "aws-sdk-kms",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
+ "aws-types",
  "base64 0.22.1",
  "bytes",
  "di-migration-enclave-primitives",
@@ -4048,6 +4049,7 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
+ "log",
  "rustls",
  "rustls-native-certs",
  "tokio",
@@ -5387,14 +5389,16 @@ dependencies = [
 
 [[package]]
 name = "p384"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe42f1670a52a47d448f14b6a5c61dd78fce51856e68edaa38f7ae3a46b8d6b6"
+checksum = "d17b851e6b3e378ab4ecb07fa2ed23f4d15f075735f8fec9fa1e7bdce5f8301f"
 dependencies = [
- "ecdsa 0.16.9",
- "elliptic-curve 0.13.8",
- "primeorder 0.13.6",
- "sha2 0.10.9",
+ "ecdsa 0.17.0",
+ "elliptic-curve 0.14.1",
+ "fiat-crypto",
+ "primefield",
+ "primeorder 0.14.0",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -5577,23 +5581,33 @@ dependencies = [
 [[package]]
 name = "pontifex"
 version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61e0b647584ea9fc77a705a58c05c46f4ef4c1d7ee1bc3c7d4d83a75c3c5da5e"
+source = "git+https://github.com/worldcoin/pontifex?rev=754113f0c929f0ea7a262bab9e26db0ffd57ece2#754113f0c929f0ea7a262bab9e26db0ffd57ece2"
 dependencies = [
+ "aws-credential-types",
  "aws-nitro-enclaves-nsm-api",
+ "aws-sdk-kms",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
  "ciborium",
  "const-fnv1a-hash",
  "coset",
- "getrandom 0.2.17",
+ "futures-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
  "p384",
  "quantum-box",
+ "ring",
  "rmp-serde",
+ "rustls",
  "serde",
  "serde_bytes",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
  "tokio-vsock",
+ "tower-service",
  "tracing",
  "web-time",
  "webpki",
@@ -6622,6 +6636,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",

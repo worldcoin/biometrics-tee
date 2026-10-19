@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use di_migration_enclave::{
     attestation::{self, NsmAttestor},
+    kms::KeyWrapper,
     rng, server,
     state::EnclaveState,
 };
@@ -24,6 +25,21 @@ async fn main() -> anyhow::Result<()> {
         .context("Nitro Secure Module is unavailable")?;
     let mut state =
         EnclaveState::from_env(Arc::new(NsmAttestor)).context("failed to boot enclave state")?;
+    match std::env::var("PCP_KMS_KEY_ARN") {
+        Ok(arn) => {
+            let region =
+                std::env::var("PCP_KMS_REGION").context("measured KMS region is missing")?;
+            state.set_key_wrapper(
+                KeyWrapper::from_parent(arn, region)
+                    .context("invalid measured KMS configuration")?,
+            );
+            tracing::info!("PCP key wrapping configured");
+        }
+        Err(std::env::VarError::NotPresent) => tracing::info!("PCP key wrapping is not configured"),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("invalid measured KMS configuration")
+        }
+    }
     let refresh = state.start_attestation_refresh();
 
     let document = SecureModule::global()

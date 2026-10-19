@@ -18,7 +18,7 @@ let
       inherit pname version;
       src = root;
       strictDeps = true;
-      cargoExtraArgs = "--locked --bin ${pname}";
+      cargoExtraArgs = "--locked -p ${pname} --bin ${pname}";
 
       # Crane prepares dependencies for the whole workspace, including tabernaculum's Linux-only
       # Minijail, the PCP builder's libsodium, and protoc for the PCP builder and the worker

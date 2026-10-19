@@ -18,6 +18,7 @@ pub mod drain;
 pub mod enclave;
 pub mod error;
 pub mod job_runner;
+pub mod kms_metrics;
 pub mod queue;
 pub mod readiness;
 pub mod routes;

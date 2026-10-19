@@ -3,16 +3,19 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Context;
 use aws_config::BehaviorVersion;
 use clap::Parser;
+use di_migration_enclave_primitives::kms::{self as kms_parent, CREDENTIALS_PORT, TLS_PORT};
 use di_migration_host::{
     AppState,
     config::Config,
     enclave::PontifexEnclaveClient,
     job_runner::JobRunner,
+    kms_metrics,
     queue::JobQueue,
     readiness::Readiness,
     store::{DynamoJobStore, S3BlobStore},
 };
 use di_migration_storage::{JobTable, PcpBucket};
+use pontifex::{aws_credentials, proxy};
 
 /// Credential and region discovery must not stall startup indefinitely.
 const AWS_CONFIG_TIMEOUT: Duration = Duration::from_secs(5);
@@ -34,10 +37,12 @@ async fn main() -> anyhow::Result<()> {
     )
     .await
     .context("timed out loading AWS configuration")?;
-    anyhow::ensure!(
-        aws_config.region().is_some(),
-        "AWS region is not configured"
-    );
+    let region = aws_config
+        .region()
+        .context("AWS region is not configured")?;
+    let provider = aws_config
+        .credentials_provider()
+        .context("KMS relay requires a workload credential provider")?;
 
     let s3_config = aws_sdk_s3::config::Builder::from(&aws_config)
         .force_path_style(config.s3_force_path_style)
@@ -70,5 +75,30 @@ async fn main() -> anyhow::Result<()> {
     );
     let state = AppState::new(enclave_client, readiness, queue, config.host_ip);
 
-    di_migration_host::server::start(config.port, state, job_runner, drain_timeout).await
+    let kms_host =
+        kms_parent::hostname(region.as_ref()).context("AWS region cannot name a KMS endpoint")?;
+    let mut proxy_config = proxy::Config::new(TLS_PORT, kms_host, 443);
+    proxy_config.allowed_cid = Some(config.enclave_cid);
+    let proxy = proxy::serve(proxy_config, kms_metrics::record_proxy_event);
+    let credentials = aws_credentials::router(
+        provider,
+        config.enclave_cid,
+        kms_metrics::record_credentials_result,
+    )
+    .serve(CREDENTIALS_PORT);
+
+    let server = di_migration_host::server::start(config.port, state, job_runner, drain_timeout);
+    // Keep serving the enclave while the HTTP server drains jobs; dropping these
+    // futures then closes their connections.
+    tokio::select! {
+        result = server => result,
+        result = proxy => match result {
+            Ok(never) => match never {},
+            Err(error) => Err(error).context("enclave KMS proxy stopped"),
+        },
+        result = credentials => {
+            result.context("enclave credentials server stopped")?;
+            anyhow::bail!("enclave credentials server stopped unexpectedly")
+        }
+    }
 }
