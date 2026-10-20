@@ -5676,8 +5676,9 @@ dependencies = [
 
 [[package]]
 name = "pontifex"
-version = "3.0.0"
-source = "git+https://github.com/worldcoin/pontifex?rev=754113f0c929f0ea7a262bab9e26db0ffd57ece2#754113f0c929f0ea7a262bab9e26db0ffd57ece2"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320dd12cc1221137d8548da7acc0f2fd34e3276377a4c25ac64eadc183e2398e"
 dependencies = [
  "aws-credential-types",
  "aws-nitro-enclaves-nsm-api",
@@ -5689,6 +5690,7 @@ dependencies = [
  "const-fnv1a-hash",
  "coset",
  "futures-util",
+ "getrandom 0.4.3",
  "hyper",
  "hyper-rustls",
  "hyper-util",
@@ -7947,7 +7949,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
