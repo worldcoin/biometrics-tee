@@ -80,8 +80,9 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Install PCP build dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config protobuf-compiler libsodium-dev
+      # The enclave links tabernaculum's Minijail, built from source on Linux.
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcap-dev clang pkg-config protobuf-compiler libsodium-dev
       - name: API, host, storage and PCP keys against LocalStack
         env:
           LOCALSTACK_ENDPOINT: http://localhost:4566

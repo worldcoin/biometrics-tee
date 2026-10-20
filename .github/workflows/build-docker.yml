@@ -94,7 +94,7 @@ jobs:
           # The dev enclave receives its worker from tabernaculum's provisioner; migration still
           # boots from the carrier.
           enclaves='[
-            {"workload":"migration","image":"di-migration-enclave","dockerfile":"scripts/Dockerfile.carrier"},
+            {"workload":"migration","image":"di-migration-enclave","dockerfile":"scripts/Dockerfile.provisioner"},
             {"workload":"dev","image":"di-dev-enclave","dockerfile":"scripts/Dockerfile.provisioner"}
           ]'
           enclaves=$(jq -c --arg w "${WORKLOAD:-}" 'map(select($w == "" or .workload == $w))' <<<"$enclaves")

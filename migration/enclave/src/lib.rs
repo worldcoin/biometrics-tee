@@ -1,7 +1,8 @@
 //! Nitro enclave workload for the `DeepIdentifier` migration.
 //!
 //! Attests a per-boot channel key through the NSM, opens the PCPs apps seal to it, and seals the
-//! PCP back to the app. The migration in between echoes until it lands.
+//! PCP back to the app. A sandboxed biometric worker received from the parent runs the migration
+//! pipeline and returns the fresh biometric material used to build the output PCP.
 
 #![deny(
     clippy::all,
@@ -27,3 +28,5 @@ pub mod server;
 pub mod state;
 #[cfg(test)]
 mod test_support;
+/// The sandboxed biometric worker.
+pub mod worker;
