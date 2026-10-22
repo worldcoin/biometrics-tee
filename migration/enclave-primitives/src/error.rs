@@ -19,4 +19,13 @@ pub enum Error {
     CredentialSignatureInvalid,
     /// Credential claims mismatch.
     CredentialClaimsMismatch,
+    /// Failed to parse the PCP.
+    InvalidPcp,
+    /// Failed to build the PCP.
+    FailedToBuildPcp,
+    /// The device public key was not valid standard Base64.
+    InvalidDevicePublicKeyEncoding,
+    /// An error introduced by a newer enclave; the host must still record a failure.
+    #[serde(other)]
+    Unknown,
 }

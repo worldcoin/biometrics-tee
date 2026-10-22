@@ -177,7 +177,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|error| format!("download failed: {error}"))?;
             let migrated = opener.open(&blob).map_err(|error| error.to_string())?;
 
-            write_private(&out, &migrated.0)?;
+            write_private(&out, &migrated)?;
             eprintln!("migrated PCP written to {}", out.display());
             Ok(())
         }

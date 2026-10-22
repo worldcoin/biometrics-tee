@@ -110,7 +110,10 @@ jobs:
             done
           done
           nix eval --raw --no-update-lock-file .#lib.migrationImages --apply \
-            'mk: (mk { pcpKmsKeyArn = "arn:aws:kms:us-east-1:000000000000:alias/example"; }).di-migration-eif.drvPath'
+            'mk: (mk {
+              pcpKmsKeyArn = "arn:aws:kms:us-east-1:000000000000:alias/example";
+              pcpKmsSigningKeyArn = "arn:aws:kms:us-east-1:000000000000:alias/example-signing";
+            }).di-migration-eif.drvPath'
       # Build the OCI images so evaluation-only errors do not slip through. Cheap while no
       # enclave has private dependencies or models; revisit if that changes.
       - name: Build the enclave images

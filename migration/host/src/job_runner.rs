@@ -111,6 +111,9 @@ impl JobRunner {
                     enclave::Error::Operation(
                         enclave_primitives::Error::CredentialClaimsMismatch,
                     ) => Reason::CredentialClaimsMismatch,
+                    enclave::Error::Operation(
+                        enclave_primitives::Error::InvalidDevicePublicKeyEncoding,
+                    ) => Reason::InvalidDevicePublicKeyEncoding,
                     enclave::Error::Timeout => Reason::Timeout,
                     // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
                     enclave::Error::Operation(enclave_primitives::Error::RequestNotOpened) => {
@@ -118,6 +121,9 @@ impl JobRunner {
                     }
                     enclave::Error::Operation(
                         enclave_primitives::Error::InvalidInput
+                        | enclave_primitives::Error::InvalidPcp
+                        | enclave_primitives::Error::FailedToBuildPcp
+                        | enclave_primitives::Error::Unknown
                         | enclave_primitives::Error::Internal,
                     )
                     | enclave::Error::Transport(_) => Reason::EnclaveError,
@@ -184,6 +190,10 @@ mod tests {
 
         let migrations = enclave.migrations.lock().expect("migrations lock");
         assert_eq!(migrations.len(), 1);
+        // assert_eq!(
+        //     migrations[0].attested_key_thumbprint,
+        //     job(1).attested_key_thumbprint
+        // );
         assert_eq!(migrations[0].device_public_key, job(1).device_public_key);
         drop(migrations);
 
@@ -200,7 +210,7 @@ mod tests {
     /// Pins each failure to the reason the app sees.
     #[tokio::test]
     async fn each_failure_is_recorded_with_its_reason() {
-        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 8] = [
+        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 12] = [
             (
                 Arc::new(StubEnclave::default()),
                 Arc::new(MemoryStore::default()),
@@ -241,10 +251,38 @@ mod tests {
             ),
             (
                 Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_primitives::Error::InvalidPcp,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveError,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_primitives::Error::FailedToBuildPcp,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveError,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_primitives::Error::Unknown,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::EnclaveError,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
                     enclave_primitives::Error::CredentialSignatureInvalid,
                 ))),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
                 Reason::CredentialSignatureInvalid,
+            ),
+            (
+                Arc::new(FailingEnclave(enclave::Error::Operation(
+                    enclave_primitives::Error::InvalidDevicePublicKeyEncoding,
+                ))),
+                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
+                Reason::InvalidDevicePublicKeyEncoding,
             ),
             (
                 Arc::new(StubEnclave::default()),
