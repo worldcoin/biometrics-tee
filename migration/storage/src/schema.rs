@@ -11,7 +11,7 @@ pub mod attributes {
     pub const STATUS: &str = "status";
     /// One of [`di_migration_primitives::Reason`], set on `failed`.
     pub const REASON: &str = "reason";
-    /// S3 key of the migrated PCP, set on `migrated`.
+    /// S3 key of the migrated PCP, or encrypted diagnostic on `failed`.
     pub const RESULT_KEY: &str = "result_key";
     /// The app's attested key thumbprint.
     pub const DEVICE_KEY_THUMBPRINT: &str = "attested_key_thumbprint";
@@ -52,7 +52,7 @@ pub fn pcp_key(job_id: &JobId) -> String {
     format!("pcp/{job_id}")
 }
 
-/// S3 key the host writes the migrated PCP to.
+/// S3 key the host writes either the migrated PCP or an encrypted diagnostic to.
 #[must_use]
 pub fn result_key(job_id: &JobId) -> String {
     format!("result/{job_id}")

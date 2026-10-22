@@ -241,6 +241,17 @@ impl MigrationApiClient {
         Ok(blob.to_vec())
     }
 
+    /// Downloads and opens a failed migration's encrypted diagnostic using the personal-custody
+    /// private key. Obtain `error_url` through the signed migration status request.
+    pub async fn download_migration_error(
+        &self,
+        error_url: &str,
+        device_private_key: &[u8; 32],
+    ) -> Result<zeroize::Zeroizing<String>, Error> {
+        let blob = self.download_pcp(error_url).await?;
+        sealing::open_migration_error(&blob, device_private_key).map_err(Error::Sealing)
+    }
+
     /// Uploads a sealed PCP to a presigned URL returned by [`Self::init_migration`].
     pub async fn upload_pcp(&self, upload_url: &str, pcp: Vec<u8>) -> Result<(), Error> {
         let response = self

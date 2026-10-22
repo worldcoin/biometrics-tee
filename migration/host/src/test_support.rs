@@ -29,6 +29,7 @@ use crate::{
 pub struct StubEnclave {
     pub public_key: Vec<u8>,
     pub migrations: Mutex<Vec<MigrateRequest>>,
+    pub response: Option<MigrateResponse>,
 }
 
 impl Default for StubEnclave {
@@ -36,6 +37,7 @@ impl Default for StubEnclave {
         Self {
             public_key: vec![9u8; 1216],
             migrations: Mutex::new(Vec::new()),
+            response: None,
         }
     }
 }
@@ -59,7 +61,10 @@ impl EnclaveClient for StubEnclave {
             .lock()
             .expect("migrations lock")
             .push(request);
-        Ok(MigrateResponse { blob })
+        Ok(self
+            .response
+            .clone()
+            .unwrap_or(MigrateResponse { blob, error: None }))
     }
 }
 
@@ -137,7 +142,12 @@ impl JobStore for HealthyStore {
         unimplemented!("not exercised by these tests")
     }
 
-    async fn mark_failed(&self, _: &JobRequest, _: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(
+        &self,
+        _: &JobRequest,
+        _: Reason,
+        _: Option<&str>,
+    ) -> Result<(), StoreError> {
         unimplemented!("not exercised by these tests")
     }
 }
@@ -196,6 +206,7 @@ struct Memory {
     pcps: HashMap<String, Vec<u8>>,
     results: HashMap<JobId, Vec<u8>>,
     outcomes: HashMap<JobId, Outcome>,
+    error_keys: HashMap<JobId, String>,
     last_error: Option<StoreError>,
 }
 
@@ -235,6 +246,10 @@ impl MemoryStore {
 
     pub fn result(&self, job_id: &JobId) -> Option<Vec<u8>> {
         self.lock().results.get(job_id).cloned()
+    }
+
+    pub fn error_key(&self, job_id: &JobId) -> Option<String> {
+        self.lock().error_keys.get(job_id).cloned()
     }
 
     pub fn outcome(&self, job_id: &JobId) -> Option<Outcome> {
@@ -292,8 +307,19 @@ impl JobStore for MemoryStore {
         self.record(&job.job_id, Outcome::Migrated(result_key.to_owned()))
     }
 
-    async fn mark_failed(&self, job: &JobRequest, reason: Reason) -> Result<(), StoreError> {
-        self.record(&job.job_id, Outcome::Failed(reason))
+    async fn mark_failed(
+        &self,
+        job: &JobRequest,
+        reason: Reason,
+        result_key: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.record(&job.job_id, Outcome::Failed(reason))?;
+        if let Some(key) = result_key {
+            self.lock()
+                .error_keys
+                .insert(job.job_id.clone(), key.to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -332,7 +358,12 @@ impl JobStore for FailingStore {
         Err(unreachable())
     }
 
-    async fn mark_failed(&self, _: &JobRequest, _: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(
+        &self,
+        _: &JobRequest,
+        _: Reason,
+        _: Option<&str>,
+    ) -> Result<(), StoreError> {
         Err(unreachable())
     }
 }
