@@ -20,24 +20,33 @@ pub struct TargetOptions([ChallengeOption; 3]);
 pub struct ChallengeTranscript {
     pub challenge_id: [u8; 16],
     pub target_options: TargetOptions,
+    /// UTC milliseconds; the active run must retain and enforce its own deadline.
+    pub expires_at_unix_ms: u64,
 }
 
 impl ChallengeTranscript {
-    /// Sixteen ID bytes followed by the three option codes in challenge order.
-    pub fn encode(&self) -> [u8; 19] {
-        let mut bytes = [0; 19];
+    /// Sixteen ID bytes, three option codes, then an unsigned big-endian expiry.
+    pub fn encode(&self) -> [u8; 27] {
+        let mut bytes = [0; 27];
         bytes[..16].copy_from_slice(&self.challenge_id);
-        bytes[16..].copy_from_slice(&self.target_options.encode());
+        bytes[16..19].copy_from_slice(&self.target_options.encode());
+        bytes[19..].copy_from_slice(&self.expires_at_unix_ms.to_be_bytes());
         bytes
     }
 
     /// Reject wrong lengths, unknown option codes and repeated poses.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let bytes: &[u8; 19] = bytes.try_into().map_err(|_| Error)?;
+        let bytes: &[u8; 27] = bytes.try_into().map_err(|_| Error)?;
         Ok(Self {
             challenge_id: bytes[..16].try_into().map_err(|_| Error)?,
-            target_options: TargetOptions::decode(&bytes[16..])?,
+            target_options: TargetOptions::decode(&bytes[16..19])?,
+            expires_at_unix_ms: u64::from_be_bytes(bytes[19..].try_into().map_err(|_| Error)?),
         })
+    }
+
+    /// Equality with the deadline is expired. Receipt time must come from the enclave.
+    pub fn is_expired_at(&self, received_at_unix_ms: u64) -> bool {
+        received_at_unix_ms >= self.expires_at_unix_ms
     }
 }
 
