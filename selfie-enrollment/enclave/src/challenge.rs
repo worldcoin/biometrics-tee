@@ -102,9 +102,6 @@ mod tests {
 
     fn context() -> ChallengeContext {
         ChallengeContext {
-            contract_version: challenge::CONTRACT_VERSION,
-            generator_version: challenge::GENERATOR_VERSION,
-            evaluator_version: challenge::EVALUATOR_VERSION,
             challenge_id: [1; 16],
             session_binding: [2; 32],
             expires_at_unix_ms: 1792692000000,
@@ -154,10 +151,10 @@ mod tests {
             calls: 0,
         };
         let mut context = context();
-        context.generator_version = 2;
+        context.session_binding = [0; 32];
         assert!(matches!(
             PreparedChallenge::with_rng(context, &mut rng),
-            Err(Error::Contract(challenge::Error::UnsupportedVersion))
+            Err(Error::Contract(challenge::Error::InvalidContext))
         ));
         assert_eq!(rng.calls, 0);
     }

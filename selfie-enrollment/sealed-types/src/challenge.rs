@@ -6,20 +6,15 @@ use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-pub const CONTRACT_VERSION: u16 = 1;
-pub const GENERATOR_VERSION: u16 = 1;
-/// Reserved identifier for the proposed three-pose evaluator, not an implementation.
-pub const EVALUATOR_VERSION: u16 = 1;
-pub const CONTEXT_BYTES: usize = 134;
+pub const CONTEXT_BYTES: usize = 128;
 pub const TARGET_RESPONSES_BYTES: usize = 6;
 
+// One fixed draft format; these tags also separate commitment from generation.
 const COMMITMENT_DOMAIN: &[u8] = b"selfie-enrollment/challenge/commitment/v1\0";
 const GENERATION_DOMAIN: &[u8] = b"selfie-enrollment/challenge/generation/v1\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
-    #[error("unsupported challenge version")]
-    UnsupportedVersion,
     #[error("invalid challenge context")]
     InvalidContext,
     #[error("invalid challenge encoding")]
@@ -36,10 +31,9 @@ pub enum Error {
 /// A future run controller must validate their provenance and enforce the deadline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChallengeContext {
-    pub contract_version: u16,
-    pub generator_version: u16,
-    pub evaluator_version: u16,
+    /// Per-attempt ID assigned by the future enclave run controller.
     pub challenge_id: [u8; 16],
+    /// Binding to an authenticated requesting session; its derivation is not defined here.
     pub session_binding: [u8; 32],
     pub expires_at_unix_ms: u64,
     pub policy_digest: [u8; 32],
@@ -50,12 +44,6 @@ pub struct ChallengeContext {
 
 impl ChallengeContext {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.contract_version != CONTRACT_VERSION
-            || self.generator_version != GENERATOR_VERSION
-            || self.evaluator_version != EVALUATOR_VERSION
-        {
-            return Err(Error::UnsupportedVersion);
-        }
         if self.challenge_id == [0; 16]
             || self.session_binding == [0; 32]
             || self.policy_digest == [0; 32]
@@ -72,34 +60,28 @@ impl ChallengeContext {
     pub fn encode(&self) -> Result<[u8; CONTEXT_BYTES], Error> {
         self.validate()?;
         let mut bytes = [0; CONTEXT_BYTES];
-        bytes[0..2].copy_from_slice(&self.contract_version.to_be_bytes());
-        bytes[2..4].copy_from_slice(&self.generator_version.to_be_bytes());
-        bytes[4..6].copy_from_slice(&self.evaluator_version.to_be_bytes());
-        bytes[6..22].copy_from_slice(&self.challenge_id);
-        bytes[22..54].copy_from_slice(&self.session_binding);
-        bytes[54..62].copy_from_slice(&self.expires_at_unix_ms.to_be_bytes());
-        bytes[62..94].copy_from_slice(&self.policy_digest);
-        bytes[94..126].copy_from_slice(&self.randomness_source);
-        bytes[126..134].copy_from_slice(&self.randomness_round.to_be_bytes());
+        bytes[0..16].copy_from_slice(&self.challenge_id);
+        bytes[16..48].copy_from_slice(&self.session_binding);
+        bytes[48..56].copy_from_slice(&self.expires_at_unix_ms.to_be_bytes());
+        bytes[56..88].copy_from_slice(&self.policy_digest);
+        bytes[88..120].copy_from_slice(&self.randomness_source);
+        bytes[120..128].copy_from_slice(&self.randomness_round.to_be_bytes());
         Ok(bytes)
     }
 
-    /// Rejects truncation, trailing bytes, unknown versions and reserved empty fields.
+    /// Decodes this fixed format; rejects truncation, trailing bytes and empty fields.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != CONTEXT_BYTES {
             return Err(Error::InvalidEncoding);
         }
         let field = |range: std::ops::Range<usize>| &bytes[range];
         let context = Self {
-            contract_version: u16::from_be_bytes(field(0..2).try_into().unwrap()),
-            generator_version: u16::from_be_bytes(field(2..4).try_into().unwrap()),
-            evaluator_version: u16::from_be_bytes(field(4..6).try_into().unwrap()),
-            challenge_id: field(6..22).try_into().unwrap(),
-            session_binding: field(22..54).try_into().unwrap(),
-            expires_at_unix_ms: u64::from_be_bytes(field(54..62).try_into().unwrap()),
-            policy_digest: field(62..94).try_into().unwrap(),
-            randomness_source: field(94..126).try_into().unwrap(),
-            randomness_round: u64::from_be_bytes(field(126..134).try_into().unwrap()),
+            challenge_id: field(0..16).try_into().unwrap(),
+            session_binding: field(16..48).try_into().unwrap(),
+            expires_at_unix_ms: u64::from_be_bytes(field(48..56).try_into().unwrap()),
+            policy_digest: field(56..88).try_into().unwrap(),
+            randomness_source: field(88..120).try_into().unwrap(),
+            randomness_round: u64::from_be_bytes(field(120..128).try_into().unwrap()),
         };
         context.validate()?;
         Ok(context)
@@ -257,21 +239,6 @@ mod tests {
 
     fn fixture_context(value: &Value) -> ChallengeContext {
         ChallengeContext {
-            contract_version: value["contract_version"]
-                .as_u64()
-                .unwrap()
-                .try_into()
-                .unwrap(),
-            generator_version: value["generator_version"]
-                .as_u64()
-                .unwrap()
-                .try_into()
-                .unwrap(),
-            evaluator_version: value["evaluator_version"]
-                .as_u64()
-                .unwrap()
-                .try_into()
-                .unwrap(),
             challenge_id: bytes(&value["challenge_id"]),
             session_binding: bytes(&value["session_binding"]),
             expires_at_unix_ms: value["expires_at_unix_ms"].as_u64().unwrap(),
@@ -336,37 +303,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_versions_fail_at_decoding_and_generation_boundaries() {
-        for value in [0, 2, u16::MAX] {
-            for index in 0..3 {
-                let mut context = context();
-                let mut encoded = context.encode().unwrap();
-                encoded[index * 2..index * 2 + 2].copy_from_slice(&value.to_be_bytes());
-                assert_eq!(
-                    ChallengeContext::decode(&encoded),
-                    Err(Error::UnsupportedVersion)
-                );
-                match index {
-                    0 => context.contract_version = value,
-                    1 => context.generator_version = value,
-                    _ => context.evaluator_version = value,
-                }
-                assert_eq!(context.encode(), Err(Error::UnsupportedVersion));
-                assert_eq!(
-                    commitment(&context, &[0; 32]),
-                    Err(Error::UnsupportedVersion)
-                );
-                assert_eq!(
-                    derive_target_responses(&context, &[0; 32], &[0; 32]),
-                    Err(Error::UnsupportedVersion)
-                );
-            }
-        }
-    }
-
-    #[test]
     fn empty_identifiers_and_deadlines_are_rejected() {
-        for range in [6..22, 22..54, 54..62, 62..94, 94..126, 126..134] {
+        for range in [0..16, 16..48, 48..56, 56..88, 88..120, 120..128] {
             let mut encoded = context().encode().unwrap();
             encoded[range].fill(0);
             assert_eq!(
@@ -390,8 +328,8 @@ mod tests {
         let encoded = context.encode().unwrap();
         let original_commitment = commitment(&context, &[3; 32]).unwrap();
         let original_seed = derive_seed(&context, &[3; 32], &[4; 32]).unwrap();
-        // Change every byte in each accepted context field; versions are checked above.
-        for offset in 6..CONTEXT_BYTES {
+        // Change every byte in each accepted context field.
+        for offset in 0..CONTEXT_BYTES {
             let mut modified = encoded;
             modified[offset] ^= 1;
             let other = ChallengeContext::decode(&modified).unwrap();

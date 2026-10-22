@@ -20,9 +20,6 @@ assert hkdf(
 ).hex() == "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
 
 CONTEXT = {
-    "contract_version": 1,
-    "generator_version": 1,
-    "evaluator_version": 1,
     "challenge_id": bytes(range(16)).hex(),
     "session_binding": bytes(range(32, 64)).hex(),
     "expires_at_unix_ms": 1792692000000,
@@ -34,10 +31,7 @@ CONTEXT = {
 
 def vector(name, context, nonce, randomness):
     encoded = struct.pack(
-        ">HHH16s32sQ32s32sQ",
-        context["contract_version"],
-        context["generator_version"],
-        context["evaluator_version"],
+        ">16s32sQ32s32sQ",
         bytes.fromhex(context["challenge_id"]),
         bytes.fromhex(context["session_binding"]),
         context["expires_at_unix_ms"],
@@ -45,7 +39,7 @@ def vector(name, context, nonce, randomness):
         bytes.fromhex(context["randomness_source"]),
         context["randomness_round"],
     )
-    assert len(encoded) == 134
+    assert len(encoded) == 128
     commitment = hashlib.sha256(
         b"selfie-enrollment/challenge/commitment/v1\0" + encoded + nonce
     ).digest()
