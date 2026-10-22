@@ -179,9 +179,13 @@ mod tests {
     async fn a_migrated_blob_is_stored_and_the_job_marked_migrated() {
         let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed"));
 
-        job_runner(Arc::new(StubEnclave::default()), &store)
-            .handle(&job(1))
-            .await;
+        let enclave = Arc::new(StubEnclave::default());
+        job_runner(enclave.clone(), &store).handle(&job(1)).await;
+
+        let migrations = enclave.migrations.lock().expect("migrations lock");
+        assert_eq!(migrations.len(), 1);
+        assert_eq!(migrations[0].device_public_key, job(1).device_public_key);
+        drop(migrations);
 
         assert_eq!(
             store.result(&job(1).job_id).as_deref(),

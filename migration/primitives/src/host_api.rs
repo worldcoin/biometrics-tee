@@ -28,7 +28,9 @@ pub struct JobRequest {
     pub object_key: String,
     /// Account the ownership proof was verified for.
     pub sub: String,
-    /// The app's attested device key.
+    /// The app's attested key thumbprint.
+    pub attested_key_thumbprint: String,
+    /// Standard-Base64, 32-byte device public key used to encrypt the output PCP.
     pub device_public_key: String,
     /// The boot the PCP was sealed to; a restarted enclave refuses the job.
     pub enclave_id: EnclaveId,
@@ -115,7 +117,8 @@ mod tests {
                 .expect("uuid"),
             object_key: "pcp/3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a".to_owned(),
             sub: "sub".to_owned(),
-            device_public_key: "key".to_owned(),
+            attested_key_thumbprint: "key".to_owned(),
+            device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
             enclave_id: EnclaveId::from_commitment([1; 32]),
             deadline: 1_800_000_600,
         };
@@ -126,7 +129,8 @@ mod tests {
                 "job_id": "3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a",
                 "object_key": "pcp/3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a",
                 "sub": "sub",
-                "device_public_key": "key",
+                "attested_key_thumbprint": "key",
+                "device_public_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
                 "enclave_id": "01".repeat(32),
                 "deadline": 1_800_000_600,
             })
@@ -139,7 +143,7 @@ mod tests {
             "job_id": "not-a-uuid",
             "object_key": "pcp/x",
             "sub": "sub",
-            "device_public_key": "key",
+            "attested_key_thumbprint": "key",
             "enclave_id": "01".repeat(32),
         });
 

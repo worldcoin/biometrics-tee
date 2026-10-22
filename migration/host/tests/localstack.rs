@@ -152,7 +152,8 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
     jobs.create_job(&NewJob {
         job_id: job_id.clone(),
         sub: "sub".to_owned(),
-        device_public_key: "device-key".to_owned(),
+        attested_key_thumbprint: "device-key".to_owned(),
+        device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
         host_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         enclave_id: enclave::enclave_id(&PUBLIC_KEY),
         created_at: now,
@@ -204,7 +205,8 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         job_id: job_id.clone(),
         object_key: pcp_key(&job_id),
         sub: "sub".to_owned(),
-        device_public_key: "device-key".to_owned(),
+        attested_key_thumbprint: "device-key".to_owned(),
+        device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
         enclave_id: enclave::enclave_id(&PUBLIC_KEY),
         deadline,
     })
@@ -267,7 +269,8 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         job_id: job_id.clone(),
         object_key: pcp_key(&job_id),
         sub: "sub".to_owned(),
-        device_public_key: "device-key".to_owned(),
+        attested_key_thumbprint: "device-key".to_owned(),
+        device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
         enclave_id: enclave::enclave_id(&PUBLIC_KEY),
         deadline,
     };

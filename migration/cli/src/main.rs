@@ -92,11 +92,11 @@ struct InitArgs {
     #[arg(long, env = "DEVICE_SIGNER_SEED", default_value = "migration-cli")]
     device_signer_seed: String,
 
-    /// Device public key header for environments without an auth proxy (tests, local).
+    /// Attested key thumbprint header for environments without an auth proxy (tests, local).
     ///
     /// In production the proxy sets `x-attested-key-thumbprint` from the request signature.
-    #[arg(long, env = "DEVICE_PUBLIC_KEY")]
-    device_public_key: Option<String>,
+    #[arg(long, env = "DEVICE_KEY_THUMBPRINT")]
+    attested_key_thumbprint: Option<String>,
 
     /// Subject of the user being migrated.
     #[arg(long, env = "SUB")]
@@ -109,6 +109,10 @@ struct InitArgs {
     /// Challenge id the ownership proof was built for.
     #[arg(long, env = "CHALLENGE_ID")]
     challenge_id: String,
+
+    /// Standard-Base64, 32-byte Curve25519 device public key for the output PCP.
+    #[arg(long, env = "DEVICE_PUBLIC_KEY")]
+    device_public_key: String,
 }
 
 #[tokio::main]
@@ -124,10 +128,13 @@ async fn main() -> ExitCode {
     }
 }
 
-fn client(api_url: &Url, device_public_key: Option<&str>) -> Result<MigrationApiClient, String> {
+fn client(
+    api_url: &Url,
+    attested_key_thumbprint: Option<&str>,
+) -> Result<MigrationApiClient, String> {
     let mut client = MigrationApiClient::new(api_url).map_err(|error| error.to_string())?;
-    if let Some(key) = device_public_key {
-        client = client.with_device_public_key(key);
+    if let Some(key) = attested_key_thumbprint {
+        client = client.with_attested_key_thumbprint(key);
     }
     Ok(client)
 }
@@ -135,7 +142,7 @@ fn client(api_url: &Url, device_public_key: Option<&str>) -> Result<MigrationApi
 async fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Command::InitMigration(init) => {
-            let client = client(&cli.api_url, init.device_public_key.as_deref())?;
+            let client = client(&cli.api_url, init.attested_key_thumbprint.as_deref())?;
             let response = init_migration(&client, &init).await?;
             println!(
                 "{}",
@@ -151,7 +158,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             insecure_skip_measurements,
             credential,
         } => {
-            let client = client(&cli.api_url, init.device_public_key.as_deref())?;
+            let client = client(&cli.api_url, init.attested_key_thumbprint.as_deref())?;
             let verifier = match pcrs {
                 Some(path) => EnclaveVerifier::new(vec![read_pcrs(&path)?]),
                 None if insecure_skip_measurements => {
@@ -189,6 +196,7 @@ async fn init_migration(
             &init.sub,
             &init.proof,
             &init.challenge_id,
+            &init.device_public_key,
         )
         .await
         .map_err(|error| format!("init-migration failed: {error}"))

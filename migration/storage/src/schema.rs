@@ -13,7 +13,9 @@ pub mod attributes {
     pub const REASON: &str = "reason";
     /// S3 key of the migrated PCP, set on `migrated`.
     pub const RESULT_KEY: &str = "result_key";
-    /// The app's attested device key.
+    /// The app's attested key thumbprint.
+    pub const DEVICE_KEY_THUMBPRINT: &str = "attested_key_thumbprint";
+    /// Device public key used to encrypt the output PCP.
     pub const DEVICE_PUBLIC_KEY: &str = "device_public_key";
     /// The host the job is pinned to.
     pub const HOST_IP: &str = "host_ip";
