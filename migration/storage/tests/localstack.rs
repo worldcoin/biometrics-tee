@@ -216,8 +216,14 @@ async fn a_finished_job_frees_its_sub_but_a_late_one_stays_timed_out() {
         .await
         .expect("claimed");
     assert_eq!(
-        jobs.mark_failed(&late.job_id, "sub-f", Reason::EnclaveError, deadline + 1)
-            .await,
+        jobs.mark_failed(
+            &late.job_id,
+            "sub-f",
+            Reason::EnclaveError,
+            None,
+            deadline + 1
+        )
+        .await,
         Err(StorageError::NotMigrating)
     );
     let latest = jobs.latest_job("sub-f").await.expect("read").expect("job");

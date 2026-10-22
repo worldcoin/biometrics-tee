@@ -55,6 +55,7 @@ impl EnclaveClient for EchoEnclave {
     async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error> {
         Ok(MigrateResponse {
             blob: request.blob.to_vec(),
+            error: None,
         })
     }
 }
@@ -275,7 +276,7 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         deadline,
     };
     assert_eq!(
-        job_store.mark_failed(&late, Reason::Timeout).await,
+        job_store.mark_failed(&late, Reason::Timeout, None).await,
         Err(StoreError::NotMigrating)
     );
     assert_eq!(

@@ -21,7 +21,7 @@ pub trait BlobStore: Send + Sync {
     /// Reads the sealed PCP the app uploaded.
     async fn get_pcp(&self, object_key: &str) -> Result<Bytes, StoreError>;
 
-    /// Writes the migrated PCP once; a result already there is kept. Returns its key.
+    /// Writes the encrypted result or diagnostic once; a result already there is kept.
     async fn put_result(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError>;
 }
 
@@ -34,6 +34,12 @@ pub trait JobStore: Send + Sync {
     /// Marks a `migrating` job `migrated` and frees its `sub`, unless it is past its deadline.
     async fn mark_migrated(&self, job: &JobRequest, result_key: &str) -> Result<(), StoreError>;
 
-    /// Marks a `migrating` job `failed` and frees its `sub`, unless it is past its deadline.
-    async fn mark_failed(&self, job: &JobRequest, reason: Reason) -> Result<(), StoreError>;
+    /// Marks a `migrating` job `failed` with an optional encrypted diagnostic result key.
+    /// Frees its `sub`, unless it is past its deadline.
+    async fn mark_failed(
+        &self,
+        job: &JobRequest,
+        reason: Reason,
+        result_key: Option<&str>,
+    ) -> Result<(), StoreError>;
 }

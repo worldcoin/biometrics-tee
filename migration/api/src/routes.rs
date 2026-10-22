@@ -292,6 +292,8 @@ async fn migration_status(
         deadline: job.deadline,
         download_url: None,
         download_expires_at: None,
+        error_url: None,
+        error_expires_at: None,
     };
     tracing::info!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration status checked");
     match job.status {
@@ -312,6 +314,16 @@ async fn migration_status(
             status.download_expires_at = Some(now + state.presigned_url_ttl.as_secs());
             counter!("migration.status", "outcome" => "download").increment(1);
             tracing::info!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration downloaded");
+        }
+        Status::Failed if job.result_key.is_some() => {
+            status.error_url = Some(
+                state
+                    .bucket
+                    .presign_download(&job.job_id, state.presigned_url_ttl)
+                    .await
+                    .map_err(|error| ApiError::storage("s3", error.to_string()))?,
+            );
+            status.error_expires_at = Some(now + state.presigned_url_ttl.as_secs());
         }
         _ => {}
     }

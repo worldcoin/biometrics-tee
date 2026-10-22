@@ -25,6 +25,19 @@ pub struct MigrateResponse {
     /// Raw Tier 0 bytes only the app can open; the host just stores them.
     #[serde(with = "serde_bytes")]
     pub blob: Vec<u8>,
+    /// An encrypted diagnostic on failure; then `blob` is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<SealedMigrationError>,
+}
+
+/// A coarse failure reason and diagnostic encrypted to the personal-custody public key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedMigrationError {
+    /// Payload-free reason the host uses to mark the job failed.
+    pub reason: Error,
+    /// Libsodium sealed box containing UTF-8 diagnostic text, encrypted to `device_public_key`.
+    #[serde(with = "serde_bytes")]
+    pub blob: Vec<u8>,
 }
 
 #[cfg(test)]

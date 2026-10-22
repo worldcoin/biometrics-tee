@@ -57,7 +57,11 @@ impl JobRunner {
         }
         let recorded = match self.migrate(job).await {
             Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
-            Err(reason) => self.job_store.mark_failed(job, reason).await,
+            Err((reason, result_key)) => {
+                self.job_store
+                    .mark_failed(job, reason, result_key.as_deref())
+                    .await
+            }
         };
 
         match recorded {
@@ -76,15 +80,57 @@ impl JobRunner {
         }
     }
 
-    async fn migrate(&self, job: &JobRequest) -> Result<String, Reason> {
+    async fn migrate(&self, job: &JobRequest) -> Result<String, (Reason, Option<String>)> {
         let blob = self
             .blob_store
             .get_pcp(&job.object_key)
             .await
             .map_err(|error| {
                 tracing::error!(job_id = %job.job_id, %error, dependency = "s3", "failed to read the sealed PCP");
-                Reason::S3Error
+                (Reason::S3Error, None)
             })?;
+
+        let failure_reason = |error: &enclave::Error| {
+            let reason = match error {
+                enclave::Error::Operation(enclave_primitives::Error::CredentialSubMismatch) => {
+                    Reason::CredentialSubMismatch
+                }
+                enclave::Error::Operation(
+                    enclave_primitives::Error::CredentialDeserializationFailed,
+                ) => Reason::CredentialDeserializationFailed,
+                enclave::Error::Operation(
+                    enclave_primitives::Error::CredentialSignatureVerificationFailed,
+                ) => Reason::CredentialSignatureVerificationFailed,
+                enclave::Error::Operation(
+                    enclave_primitives::Error::CredentialSignatureInvalid,
+                ) => Reason::CredentialSignatureInvalid,
+                enclave::Error::Operation(enclave_primitives::Error::CredentialClaimsMismatch) => {
+                    Reason::CredentialClaimsMismatch
+                }
+                enclave::Error::Operation(
+                    enclave_primitives::Error::InvalidDevicePublicKeyEncoding,
+                ) => Reason::InvalidDevicePublicKeyEncoding,
+                enclave::Error::Timeout => Reason::Timeout,
+                // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
+                enclave::Error::Operation(enclave_primitives::Error::RequestNotOpened) => {
+                    Reason::EnclaveChanged
+                }
+                enclave::Error::Operation(
+                    enclave_primitives::Error::InvalidInput
+                    | enclave_primitives::Error::InvalidPcp
+                    | enclave_primitives::Error::FailedToBuildPcp
+                    | enclave_primitives::Error::Unknown
+                    | enclave_primitives::Error::Internal,
+                )
+                | enclave::Error::Transport(_) => Reason::EnclaveError,
+            };
+            if reason == Reason::EnclaveChanged {
+                tracing::warn!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
+            } else {
+                tracing::error!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
+            }
+            reason
+        };
 
         let migrated = self
             .enclave_client
@@ -94,54 +140,32 @@ impl JobRunner {
                 device_public_key: job.device_public_key.clone(),
             })
             .await
-            .map_err(|error| {
-                let reason = match &error {
-                    enclave::Error::Operation(enclave_primitives::Error::CredentialSubMismatch) => {
-                        Reason::CredentialSubMismatch
-                    }
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::CredentialDeserializationFailed,
-                    ) => Reason::CredentialDeserializationFailed,
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::CredentialSignatureVerificationFailed,
-                    ) => Reason::CredentialSignatureVerificationFailed,
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::CredentialSignatureInvalid,
-                    ) => Reason::CredentialSignatureInvalid,
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::CredentialClaimsMismatch,
-                    ) => Reason::CredentialClaimsMismatch,
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::InvalidDevicePublicKeyEncoding,
-                    ) => Reason::InvalidDevicePublicKeyEncoding,
-                    enclave::Error::Timeout => Reason::Timeout,
-                    // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
-                    enclave::Error::Operation(enclave_primitives::Error::RequestNotOpened) => {
-                        Reason::EnclaveChanged
-                    }
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::InvalidInput
-                        | enclave_primitives::Error::InvalidPcp
-                        | enclave_primitives::Error::FailedToBuildPcp
-                        | enclave_primitives::Error::Unknown
-                        | enclave_primitives::Error::Internal,
-                    )
-                    | enclave::Error::Transport(_) => Reason::EnclaveError,
-                };
-                if reason == Reason::EnclaveChanged {
-                    tracing::warn!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
-                } else {
-                    tracing::error!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
-                }
-                reason
+            .map_err(|error| (failure_reason(&error), None))?;
+
+        if let Some(error) = migrated.error {
+            // A response carries exactly one artifact; never store ambiguous or empty failures.
+            if !migrated.blob.is_empty() || error.blob.len() < 48 || error.blob.len() > 8192 {
+                tracing::error!(job_id = %job.job_id, "enclave returned an invalid diagnostic response");
+                return Err((Reason::EnclaveError, None));
+            }
+            let reason = failure_reason(&enclave::Error::Operation(error.reason));
+            let result_key = self.blob_store.put_result(&job.job_id, error.blob).await.map_err(|error| {
+                tracing::error!(job_id = %job.job_id, %error, dependency = "s3", "failed to write the encrypted diagnostic");
+                (Reason::S3Error, None)
             })?;
+            return Err((reason, Some(result_key)));
+        }
+        if migrated.blob.is_empty() {
+            tracing::error!(job_id = %job.job_id, "enclave returned no result artifact");
+            return Err((Reason::EnclaveError, None));
+        }
 
         self.blob_store
             .put_result(&job.job_id, migrated.blob)
             .await
             .map_err(|error| {
                 tracing::error!(job_id = %job.job_id, %error, dependency = "s3", "failed to write the result");
-                Reason::S3Error
+                (Reason::S3Error, None)
             })
     }
 }
@@ -205,6 +229,67 @@ mod tests {
             store.outcome(&job(1).job_id),
             Some(Outcome::Migrated(result_key(1)))
         );
+    }
+
+    #[tokio::test]
+    async fn an_encrypted_diagnostic_is_stored_and_the_job_stays_failed() {
+        let ciphertext = vec![7; 96];
+        for fail_upload in [false, true] {
+            let store = MemoryStore::with_pcp(&job(1), b"sealed");
+            let store = Arc::new(if fail_upload {
+                store.failing_writes()
+            } else {
+                store
+            });
+            let enclave = StubEnclave {
+                response: Some(enclave_primitives::MigrateResponse {
+                    blob: Vec::new(),
+                    error: Some(enclave_primitives::SealedMigrationError {
+                        reason: enclave_primitives::Error::CredentialSignatureInvalid,
+                        blob: ciphertext.clone(),
+                    }),
+                }),
+                ..StubEnclave::default()
+            };
+            job_runner(Arc::new(enclave), &store).handle(&job(1)).await;
+            let expected = if fail_upload {
+                Reason::S3Error
+            } else {
+                Reason::CredentialSignatureInvalid
+            };
+            assert_eq!(
+                store.outcome(&job(1).job_id),
+                Some(Outcome::Failed(expected))
+            );
+            if fail_upload {
+                assert!(store.error_key(&job(1).job_id).is_none());
+                assert!(store.result(&job(1).job_id).is_none());
+            } else {
+                assert_eq!(store.error_key(&job(1).job_id), Some(result_key(1)));
+                assert_eq!(store.result(&job(1).job_id), Some(ciphertext.clone()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_enclave_response_is_rejected() {
+        let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed"));
+        let enclave = StubEnclave {
+            response: Some(enclave_primitives::MigrateResponse {
+                blob: b"pcp".to_vec(),
+                error: Some(enclave_primitives::SealedMigrationError {
+                    reason: enclave_primitives::Error::Internal,
+                    blob: vec![7; 96],
+                }),
+            }),
+            ..StubEnclave::default()
+        };
+        job_runner(Arc::new(enclave), &store).handle(&job(1)).await;
+        assert_eq!(
+            store.outcome(&job(1).job_id),
+            Some(Outcome::Failed(Reason::EnclaveError))
+        );
+        assert!(store.result(&job(1).job_id).is_none());
     }
 
     /// Pins each failure to the reason the app sees.

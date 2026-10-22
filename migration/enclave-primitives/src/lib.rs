@@ -26,4 +26,4 @@ pub const MIGRATION_CHANNEL_DOMAIN: &str = "di-migration/migrate_v1";
 pub use error::Error;
 pub use health::HealthRequest;
 pub use keys::{GetEncryptionKeyRequest, KeyAttestation};
-pub use migrate::{MigrateRequest, MigrateResponse};
+pub use migrate::{MigrateRequest, MigrateResponse, SealedMigrationError};

@@ -32,9 +32,14 @@ impl JobStore for DynamoJobStore {
             .await
     }
 
-    async fn mark_failed(&self, job: &JobRequest, reason: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(
+        &self,
+        job: &JobRequest,
+        reason: Reason,
+        result_key: Option<&str>,
+    ) -> Result<(), StoreError> {
         self.table
-            .mark_failed(&job.job_id, &job.sub, reason, unix_now())
+            .mark_failed(&job.job_id, &job.sub, reason, result_key, unix_now())
             .await
     }
 }
