@@ -1,7 +1,7 @@
 # Builds and publishes the host, API and migration enclave images to GHCR (attested).
 #
 # Enclave OCI images and EIFs are built reproducibly by flake.nix; the enclave job wraps the
-# migration EIF in its carrier image.
+# migration EIF in its provisioner image.
 name: Build and Push Docker Image
 
 on:
@@ -170,7 +170,7 @@ jobs:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
 
-  # The migration enclave's carrier image, for tee-apps to deploy beside the host. The EIF is
+  # The migration enclave's provisioner image, for tee-apps to deploy beside the host. The EIF is
   # built reproducibly by flake.nix, so its PCRs match a local scripts/build-enclaves.sh run.
   enclave-build:
     name: Enclave build (di-migration-enclave)
@@ -224,7 +224,7 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: target/eif
-          file: scripts/Dockerfile.carrier
+          file: scripts/Dockerfile.provisioner
           build-args: EIF_FILE=di-migration-enclave.eif
           push: ${{ github.event_name == 'push' || inputs.push == true }}
           tags: ${{ steps.meta.outputs.tags }}

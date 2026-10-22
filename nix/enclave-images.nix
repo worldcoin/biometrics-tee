@@ -100,6 +100,7 @@ let
   };
   migration = buildEnclaveImage {
     pname = "di-migration-enclave";
+    sandboxed = true;
     # Terraform owns ARN validation. Copy its key identity and region into the EIF.
     environment = pkgs.lib.optionals (pcpKmsKeyArn != null) [
       "PCP_KMS_KEY_ARN=${pcpKmsKeyArn}"
