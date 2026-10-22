@@ -20,6 +20,22 @@ pub struct TargetResponses([TargetResponse; 3]);
 pub struct Error;
 
 impl TargetResponses {
+    /// Build one of the six permutations from an order number in 0..6.
+    /// Dividing by two selects the first pose; the remainder orders the other two.
+    pub fn from_order(order: u8) -> Option<Self> {
+        if order >= 6 {
+            return None;
+        }
+        use TargetResponse::{Forward, Left, Right};
+        let mut poses = [Forward, Left, Right];
+        // Select the first pose while preserving the order of those remaining.
+        poses[..=usize::from(order / 2)].rotate_right(1);
+        if order % 2 == 1 {
+            poses.swap(1, 2);
+        }
+        Some(Self(poses))
+    }
+
     pub fn poses(&self) -> &[TargetResponse; 3] {
         &self.0
     }
@@ -48,22 +64,17 @@ impl TargetResponses {
     }
 }
 
-/// Deterministically select one of the six orders from private random seed bytes.
+/// Deterministically sample an order number in 0..6 from private random seed bytes.
 ///
-/// Use the first byte below 252, then its remainder modulo six. Rejecting 252..255
-/// avoids favoring some orders. If every byte is rejected, return None so the
-/// enclave can sample a new seed (probability 2^-192 for uniform random bytes).
-/// Keep this table order fixed: it defines how seeds map to expected responses.
-pub fn derive_target_responses(seed: &[u8; 32]) -> Option<TargetResponses> {
-    use TargetResponse::{Forward, Left, Right};
-    const ORDERS: [[TargetResponse; 3]; 6] = [
-        [Forward, Left, Right],
-        [Forward, Right, Left],
-        [Left, Forward, Right],
-        [Left, Right, Forward],
-        [Right, Forward, Left],
-        [Right, Left, Forward],
-    ];
+/// 252 = floor(256 / 6) * 6, giving each outcome exactly 42 accepted byte values.
+/// Reject 252..255 to avoid bias. If every byte is rejected, return None so the
+/// enclave can resample (probability 2^-192 for uniform random bytes).
+pub fn order_from_seed(seed: &[u8; 32]) -> Option<u8> {
     let byte = seed.iter().copied().find(|&byte| byte < 252)?;
-    Some(TargetResponses(ORDERS[usize::from(byte % 6)]))
+    Some(byte % 6)
+}
+
+/// Sample the order number, then construct its expected responses.
+pub fn derive_target_responses(seed: &[u8; 32]) -> Option<TargetResponses> {
+    order_from_seed(seed).and_then(TargetResponses::from_order)
 }
