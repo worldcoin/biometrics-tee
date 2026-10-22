@@ -190,10 +190,6 @@ mod tests {
 
         let migrations = enclave.migrations.lock().expect("migrations lock");
         assert_eq!(migrations.len(), 1);
-        // assert_eq!(
-        //     migrations[0].attested_key_thumbprint,
-        //     job(1).attested_key_thumbprint
-        // );
         assert_eq!(migrations[0].device_public_key, job(1).device_public_key);
         drop(migrations);
 
