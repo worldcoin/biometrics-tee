@@ -15,7 +15,3 @@ zeroize = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 hkdf.workspace = true
 sha2.workspace = true
-
-[dev-dependencies]
-hex.workspace = true
-serde_json.workspace = true

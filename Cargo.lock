@@ -6978,12 +6978,10 @@ name = "selfie-enrollment-sealed-types"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "hex",
  "hkdf 0.12.4",
  "selfie-enrollment-api-types",
  "serde",
  "serde_bytes",
- "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.20",
  "zeroize",

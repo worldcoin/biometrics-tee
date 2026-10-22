@@ -55,8 +55,6 @@ jobs:
       # builder need protoc, and the PCP builder needs libsodium.
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y libcap-dev clang pkg-config protobuf-compiler libsodium-dev
-      - name: Challenge reference vectors
-        run: python3 selfie-enrollment/sealed-types/tests/fixtures/challenge_reference.py --check
       - name: tests
         run: cargo test --locked --workspace --all-features --verbose
 

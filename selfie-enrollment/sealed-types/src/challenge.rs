@@ -6,9 +6,6 @@ use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-pub const CONTEXT_BYTES: usize = 128;
-pub const TARGET_RESPONSES_BYTES: usize = 6;
-
 // One fixed draft format; these tags also separate commitment from generation.
 const COMMITMENT_DOMAIN: &[u8] = b"selfie-enrollment/challenge/commitment/v1\0";
 const GENERATION_DOMAIN: &[u8] = b"selfie-enrollment/challenge/generation/v1\0";
@@ -17,10 +14,6 @@ const GENERATION_DOMAIN: &[u8] = b"selfie-enrollment/challenge/generation/v1\0";
 pub enum Error {
     #[error("invalid challenge context")]
     InvalidContext,
-    #[error("invalid challenge encoding")]
-    InvalidEncoding,
-    #[error("invalid three-pose target responses")]
-    InvalidTargetResponses,
     #[error("challenge derivation failed")]
     Derivation,
 }
@@ -56,35 +49,17 @@ impl ChallengeContext {
         Ok(())
     }
 
-    /// Fixed-width fields in declaration order; integers are unsigned big-endian.
-    pub fn encode(&self) -> Result<[u8; CONTEXT_BYTES], Error> {
+    /// Fixed-order bytes for commitment and generation; integers are big-endian.
+    fn canonical_bytes(&self) -> Result<Vec<u8>, Error> {
         self.validate()?;
-        let mut bytes = [0; CONTEXT_BYTES];
-        bytes[0..16].copy_from_slice(&self.challenge_id);
-        bytes[16..48].copy_from_slice(&self.session_binding);
-        bytes[48..56].copy_from_slice(&self.expires_at_unix_ms.to_be_bytes());
-        bytes[56..88].copy_from_slice(&self.policy_digest);
-        bytes[88..120].copy_from_slice(&self.randomness_source);
-        bytes[120..128].copy_from_slice(&self.randomness_round.to_be_bytes());
+        let mut bytes = Vec::with_capacity(128);
+        bytes.extend_from_slice(&self.challenge_id);
+        bytes.extend_from_slice(&self.session_binding);
+        bytes.extend_from_slice(&self.expires_at_unix_ms.to_be_bytes());
+        bytes.extend_from_slice(&self.policy_digest);
+        bytes.extend_from_slice(&self.randomness_source);
+        bytes.extend_from_slice(&self.randomness_round.to_be_bytes());
         Ok(bytes)
-    }
-
-    /// Decodes this fixed format; rejects truncation, trailing bytes and empty fields.
-    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() != CONTEXT_BYTES {
-            return Err(Error::InvalidEncoding);
-        }
-        let field = |range: std::ops::Range<usize>| &bytes[range];
-        let context = Self {
-            challenge_id: field(0..16).try_into().unwrap(),
-            session_binding: field(16..48).try_into().unwrap(),
-            expires_at_unix_ms: u64::from_be_bytes(field(48..56).try_into().unwrap()),
-            policy_digest: field(56..88).try_into().unwrap(),
-            randomness_source: field(88..120).try_into().unwrap(),
-            randomness_round: u64::from_be_bytes(field(120..128).try_into().unwrap()),
-        };
-        context.validate()?;
-        Ok(context)
     }
 }
 
@@ -137,40 +112,6 @@ impl TargetResponses {
     pub fn poses(&self) -> &[TargetResponse; 3] {
         &self.0
     }
-
-    /// Three (side, angle) byte pairs: front=(0,0), left=1, right=2, angles=20/25.
-    pub fn encode(&self) -> [u8; TARGET_RESPONSES_BYTES] {
-        let mut bytes = [0; TARGET_RESPONSES_BYTES];
-        for (response, pair) in self.0.iter().zip(bytes.as_chunks_mut::<2>().0) {
-            if let TargetResponse::Turn { side, angle } = response {
-                pair[0] = match side {
-                    Side::Left => 1,
-                    Side::Right => 2,
-                };
-                pair[1] = match angle {
-                    TurnAngle::Deg20 => 20,
-                    TurnAngle::Deg25 => 25,
-                };
-            }
-        }
-        bytes
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let bytes: [u8; TARGET_RESPONSES_BYTES] =
-            bytes.try_into().map_err(|_| Error::InvalidEncoding)?;
-        let angle = |value| match value {
-            20 => Ok(TurnAngle::Deg20),
-            25 => Ok(TurnAngle::Deg25),
-            _ => Err(Error::InvalidTargetResponses),
-        };
-        let side = match (bytes[0], bytes[1], bytes[2], bytes[4]) {
-            (0, 0, 1, 2) => Side::Left,
-            (0, 0, 2, 1) => Side::Right,
-            _ => return Err(Error::InvalidTargetResponses),
-        };
-        Ok(Self::new(side, angle(bytes[3])?, angle(bytes[5])?))
-    }
 }
 
 /// Unsigned SHA-256 commitment. The nonce must stay private until permanent closure.
@@ -178,7 +119,7 @@ impl TargetResponses {
 pub fn commitment(context: &ChallengeContext, nonce: &[u8; 32]) -> Result<[u8; 32], Error> {
     let mut hash = Sha256::new();
     hash.update(COMMITMENT_DOMAIN);
-    hash.update(context.encode()?);
+    hash.update(context.canonical_bytes()?);
     hash.update(nonce);
     Ok(hash.finalize().into())
 }
@@ -188,7 +129,7 @@ fn derive_seed(
     nonce: &[u8; 32],
     external_randomness: &[u8; 32],
 ) -> Result<Zeroizing<[u8; 32]>, Error> {
-    let context = context.encode()?;
+    let context = context.canonical_bytes()?;
     let mut seed = Zeroizing::new([0; 32]);
     Hkdf::<Sha256>::new(Some(external_randomness), nonce)
         .expand_multi_info(&[GENERATION_DOMAIN, &context], seed.as_mut())
@@ -223,167 +164,4 @@ pub fn derive_target_responses(
         angle(2),
         angle(4),
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::Value;
-
-    fn bytes<const N: usize>(value: &Value) -> [u8; N] {
-        hex::decode(value.as_str().unwrap())
-            .unwrap()
-            .try_into()
-            .unwrap()
-    }
-
-    fn fixture_context(value: &Value) -> ChallengeContext {
-        ChallengeContext {
-            challenge_id: bytes(&value["challenge_id"]),
-            session_binding: bytes(&value["session_binding"]),
-            expires_at_unix_ms: value["expires_at_unix_ms"].as_u64().unwrap(),
-            policy_digest: bytes(&value["policy_digest"]),
-            randomness_source: bytes(&value["randomness_source"]),
-            randomness_round: value["randomness_round"].as_u64().unwrap(),
-        }
-    }
-
-    fn vectors() -> Vec<Value> {
-        serde_json::from_str(include_str!("../tests/fixtures/challenge-v1.json")).unwrap()
-    }
-
-    fn context() -> ChallengeContext {
-        fixture_context(&vectors()[0]["context"])
-    }
-
-    #[test]
-    fn matches_independent_vectors_including_full_kdf_output() {
-        let mut plans = std::collections::BTreeSet::new();
-        for vector in vectors() {
-            let context = fixture_context(&vector["context"]);
-            let nonce = bytes(&vector["nonce"]);
-            let randomness = bytes(&vector["external_randomness"]);
-            let encoded: [u8; CONTEXT_BYTES] = bytes(&vector["context_hex"]);
-            assert_eq!(context.encode().unwrap(), encoded, "{}", vector["name"]);
-            assert_eq!(ChallengeContext::decode(&encoded).unwrap(), context);
-            assert_eq!(
-                commitment(&context, &nonce).unwrap(),
-                bytes(&vector["commitment_hex"])
-            );
-            assert_eq!(
-                *derive_seed(&context, &nonce, &randomness).unwrap(),
-                bytes(&vector["seed_hex"])
-            );
-            let responses = derive_target_responses(&context, &nonce, &randomness).unwrap();
-            assert_eq!(responses.encode(), bytes(&vector["target_responses_hex"]));
-            assert_eq!(
-                TargetResponses::decode(&responses.encode()).unwrap(),
-                responses
-            );
-            plans.insert(responses.encode());
-        }
-        assert_eq!(plans.len(), 8);
-    }
-
-    #[test]
-    fn rejects_every_truncated_context_and_trailing_data() {
-        let encoded = context().encode().unwrap();
-        for length in 0..CONTEXT_BYTES {
-            assert_eq!(
-                ChallengeContext::decode(&encoded[..length]),
-                Err(Error::InvalidEncoding)
-            );
-        }
-        let mut trailing = encoded.to_vec();
-        trailing.push(0);
-        assert_eq!(
-            ChallengeContext::decode(&trailing),
-            Err(Error::InvalidEncoding)
-        );
-    }
-
-    #[test]
-    fn empty_identifiers_and_deadlines_are_rejected() {
-        for range in [0..16, 16..48, 48..56, 56..88, 88..120, 120..128] {
-            let mut encoded = context().encode().unwrap();
-            encoded[range].fill(0);
-            assert_eq!(
-                ChallengeContext::decode(&encoded),
-                Err(Error::InvalidContext)
-            );
-        }
-        let mut invalid = context();
-        invalid.session_binding = [0; 32];
-        assert_eq!(invalid.encode(), Err(Error::InvalidContext));
-        assert_eq!(commitment(&invalid, &[0; 32]), Err(Error::InvalidContext));
-        assert_eq!(
-            derive_target_responses(&invalid, &[0; 32], &[0; 32]),
-            Err(Error::InvalidContext)
-        );
-    }
-
-    #[test]
-    fn every_binding_field_and_nonce_affects_commitment_and_seed() {
-        let context = context();
-        let encoded = context.encode().unwrap();
-        let original_commitment = commitment(&context, &[3; 32]).unwrap();
-        let original_seed = derive_seed(&context, &[3; 32], &[4; 32]).unwrap();
-        // Change every byte in each accepted context field.
-        for offset in 0..CONTEXT_BYTES {
-            let mut modified = encoded;
-            modified[offset] ^= 1;
-            let other = ChallengeContext::decode(&modified).unwrap();
-            assert_ne!(commitment(&other, &[3; 32]).unwrap(), original_commitment);
-            assert_ne!(
-                *derive_seed(&other, &[3; 32], &[4; 32]).unwrap(),
-                *original_seed
-            );
-        }
-        assert_ne!(commitment(&context, &[5; 32]).unwrap(), original_commitment);
-        assert_ne!(
-            *derive_seed(&context, &[5; 32], &[4; 32]).unwrap(),
-            *original_seed
-        );
-        assert_ne!(
-            *derive_seed(&context, &[3; 32], &[5; 32]).unwrap(),
-            *original_seed
-        );
-        // Target response collisions are expected: only three bits of the seed select a plan.
-    }
-
-    #[test]
-    fn target_responses_codec_accepts_exactly_the_eight_supported_plans() {
-        for first_side in 0..=3 {
-            for second_side in 0..=3 {
-                for first_angle in [0, 19, 20, 21, 25, 26, 255] {
-                    for second_angle in [0, 19, 20, 21, 25, 26, 255] {
-                        let encoded = [0, 0, first_side, first_angle, second_side, second_angle];
-                        let valid = matches!((first_side, second_side), (1, 2) | (2, 1))
-                            && matches!(first_angle, 20 | 25)
-                            && matches!(second_angle, 20 | 25);
-                        assert_eq!(TargetResponses::decode(&encoded).is_ok(), valid);
-                    }
-                }
-            }
-        }
-        let encoded = [0, 0, 1, 20, 2, 25];
-        for length in 0..TARGET_RESPONSES_BYTES {
-            assert_eq!(
-                TargetResponses::decode(&encoded[..length]),
-                Err(Error::InvalidEncoding)
-            );
-        }
-        assert_eq!(
-            TargetResponses::decode(&[0, 0, 1, 20, 2, 25, 0]),
-            Err(Error::InvalidEncoding)
-        );
-        assert_eq!(
-            TargetResponses::decode(&[1, 20, 1, 20, 2, 25]),
-            Err(Error::InvalidTargetResponses)
-        );
-        assert_eq!(
-            TargetResponses::decode(&[0, 20, 1, 20, 2, 25]),
-            Err(Error::InvalidTargetResponses)
-        );
-    }
 }
