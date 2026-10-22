@@ -18,6 +18,14 @@ use support::{
     refresh_source_manifest, source_files,
 };
 
+struct SourcePcp;
+
+impl SourcePcp {
+    fn parse(files: Files) -> Result<di_migration_pcp::SourcePcp, Error> {
+        support::parse_source(files)
+    }
+}
+
 fn json_file(files: &Files, name: &str) -> Value {
     serde_json::from_slice(&files[name]).unwrap()
 }

@@ -3,11 +3,27 @@
 mod profiles;
 mod support;
 
-use di_migration_pcp::{Error, Files, SourcePcp};
+use di_migration_pcp::{Error, Files};
 use serde_json::{Value, json};
 
-use profiles::version_profile;
-use support::{refresh_source_manifest, source_files};
+use profiles::version_profile as opened_version_profile;
+use support::{refresh_source_manifest, source_files as opened_source_files};
+
+struct SourcePcp;
+
+impl SourcePcp {
+    fn parse(files: Files) -> Result<di_migration_pcp::SourcePcp, Error> {
+        support::parse_encrypted_source(files)
+    }
+}
+
+fn source_files(version: &str) -> Files {
+    support::encrypt_source(opened_source_files(version))
+}
+
+fn version_profile(version: &str, optional: bool) -> Files {
+    support::encrypt_source(opened_version_profile(version, optional))
+}
 
 fn edit_json(files: &mut Files, name: &str, edit: impl FnOnce(&mut Value)) {
     let mut value = serde_json::from_slice(&files[name]).unwrap();
@@ -57,7 +73,7 @@ fn fixed_hash_vectors_cover_bytes_salted_text_and_integer_precision() {
             .into_iter()
             .map(|(name, bytes)| (name.into(), bytes))
             .collect();
-            let source = SourcePcp::parse(files).unwrap();
+            let source = SourcePcp::parse(support::encrypt_source(files)).unwrap();
             assert_eq!(
                 source.info().timestamp.as_deref(),
                 Some(timestamp.to_string().as_str())
@@ -68,13 +84,20 @@ fn fixed_hash_vectors_cover_bytes_salted_text_and_integer_precision() {
 
 #[test]
 fn every_source_artifact_is_checked_including_replaced_outputs_and_keys() {
-    let original = version_profile("2.8", true);
+    let original = opened_version_profile("2.8", true);
     for name in original
         .keys()
         .filter(|name| !matches!(name.as_str(), "info.json" | "hashes.json" | "hashes.sign"))
     {
         let mut files = original.clone();
         files.get_mut(name).unwrap().push(b' ');
+        if name == "backend_keys.json" {
+            // The encryption helper replaces the synthetic backend key envelope.
+            files = support::encrypt_source(original.clone());
+            files.get_mut(name).unwrap().push(b' ');
+        } else {
+            files = support::encrypt_source(files);
+        }
         parse_fails(files, "manifest_hash_mismatch");
     }
 }
@@ -102,7 +125,6 @@ fn optional_files_can_only_be_absent_when_unlisted() {
     for name in [
         "iris_codes.json",
         "iris_code_shares_0.json",
-        "backend_keys.json",
         "di_iris_embeddings.pb",
     ] {
         let mut files = version_profile("2.8", true);

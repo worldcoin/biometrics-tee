@@ -1,8 +1,12 @@
 use std::str::FromStr;
 
+use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use orb_pcp_defs::v1;
 use serde::{Deserialize, de::IntoDeserializer};
+use zeroize::Zeroizing;
 
+use crate::archive::files_from_tar;
 use crate::integrity::{JsonObject, Manifest};
 use crate::{Error, Files, parse_json, validate_files};
 
@@ -60,6 +64,21 @@ impl FromStr for SourceVersion {
     }
 }
 
+/// Opens the KMS envelope stored for one source archive key.
+#[async_trait::async_trait]
+pub trait BackendKeyDecryptor: Send + Sync {
+    /// Returns the raw private key without logging or retaining it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a payload-free error if the envelope cannot be decrypted.
+    async fn decrypt_backend_key(
+        &self,
+        encrypted_private_key: &[u8],
+        archive_role: &'static str,
+    ) -> Result<Zeroizing<Vec<u8>>, Error>;
+}
+
 /// An opened source package whose artifacts and protected metadata match its
 /// manifest. It contains the pipeline images, `signup_id`, `orb_id`, and a
 /// signature. Optional content must match the manifest when present.
@@ -73,43 +92,50 @@ pub struct SourcePcp {
 }
 
 impl SourcePcp {
-    /// Parse and hash-check an opened source. Inner-archive members use logical
-    /// paths: the `iris.tar` member `left_ir.png` is `iris/left_ir.png`, and so on.
+    /// Verifies an encrypted source PCP, unwraps its backend keys, and opens its
+    /// encrypted inner archives before mapping their members to logical paths.
     ///
-    /// Artifact bytes and salted capture values must match `hashes.json` one to
-    /// one. Duplicate manifest/metadata keys and ambiguous member names fail.
-    /// Protected values require their original salts. No signature verification
-    /// is performed here; the original manifest bytes are retained unchanged.
+    /// The backend key envelope is checked against the manifest before KMS is
+    /// called. The full manifest covers the opened inner members, not their
+    /// encrypted archives, so it is checked after decryption. Each unwrapped
+    /// private key must match the public key in `backend_keys.json`.
     ///
-    /// `info.json` fields that the shared `pcp.v1.Info` message does not define
-    /// are dropped after hash validation. Missing and `null` fields read as unset.
-    /// Unlisted metadata, including image IDs, is not protected by the manifest.
-    pub fn parse(files: Files) -> Result<Self, Error> {
-        validate_files(&files)?;
+    /// # Errors
+    ///
+    /// Returns an error for malformed packages, failed KMS unwraps, mismatched
+    /// key pairs, failed archive decryption, or unsafe/duplicate archive members.
+    pub async fn parse(
+        mut files: Files,
+        decryptor: &impl BackendKeyDecryptor,
+    ) -> Result<Self, Error> {
+        validate_source_files(&files)?;
         let manifest = Manifest::parse(required(&files, "hashes.json")?)?;
         required(&files, "hashes.sign")?;
-        if files.contains_key("face_ir_and_thermal.tar") {
-            return Err(Error::UnopenedArtifact("face_ir_and_thermal.tar"));
+        let info: JsonObject = parse_json(required(&files, "info.json")?, "info.json")?;
+        validate_capture_fields(&info)?;
+        let backend_keys_bytes = required(&files, "backend_keys.json")?;
+        manifest.verify_file("backend_keys.json", backend_keys_bytes)?;
+        let backend_keys: v1::BackendKeys = parse_json(backend_keys_bytes, "backend_keys.json")?;
+        for &(archive_name, role) in &ARCHIVES {
+            let Some(ciphertext) = files.remove(archive_name) else {
+                continue;
+            };
+            let directory = archive_name
+                .strip_suffix(".tar")
+                .ok_or(Error::InvalidArchive)?;
+            let members = open_archive(ciphertext, role, &backend_keys, decryptor).await?;
+            insert_archive_members(&mut files, directory, members)?;
         }
-        // A new source artifact needs a deliberate carry-over or replace decision.
-        if files.keys().any(|path| !known_source_artifact(path)) {
-            return Err(Error::UnsupportedArtifact);
-        }
+        manifest.verify(&files, &info)?;
+        Self::from_opened_files(files, manifest.version)
+    }
+
+    fn from_opened_files(files: Files, version: SourceVersion) -> Result<Self, Error> {
+        validate_source_files(&files)?;
         for path in PIPELINE_IMAGES {
             required(&files, path)?;
         }
         let info_bytes = required(&files, "info.json")?;
-        let raw_info: JsonObject = parse_json(info_bytes, "info.json")?;
-        for field in ["signup_id", "orb_id"] {
-            if raw_info
-                .0
-                .get(field)
-                .is_none_or(|value| value.is_null() || value.as_str().is_some_and(str::is_empty))
-            {
-                return Err(Error::MissingCaptureField(field));
-            }
-        }
-        manifest.verify(&files, &raw_info)?;
         let info: v1::Info = parse_json::<SourceInfo>(info_bytes, "info.json")?.into();
         let iris_codes = optional_json(&files, "iris_codes.json")?;
         let iris_code_shares = [
@@ -118,7 +144,7 @@ impl SourcePcp {
             optional_json(&files, "iris_code_shares_2.json")?,
         ];
         Ok(Self {
-            version: manifest.version,
+            version,
             info,
             iris_codes,
             iris_code_shares,
@@ -129,6 +155,7 @@ impl SourcePcp {
     pub const fn version(&self) -> SourceVersion {
         self.version
     }
+
     pub const fn info(&self) -> &v1::Info {
         &self.info
     }
@@ -145,6 +172,104 @@ impl SourcePcp {
             thumbnail_png,
         }
     }
+}
+
+fn validate_source_files(files: &Files) -> Result<(), Error> {
+    validate_files(files)?;
+    if files.keys().any(|path| !known_source_artifact(path)) {
+        return Err(Error::UnsupportedArtifact);
+    }
+    Ok(())
+}
+
+async fn open_archive(
+    ciphertext: Vec<u8>,
+    role: &'static str,
+    backend_keys: &v1::BackendKeys,
+    decryptor: &impl BackendKeyDecryptor,
+) -> Result<Files, Error> {
+    let backend_key = backend_key(backend_keys, role).ok_or(Error::InvalidBackendKey(role))?;
+    let public_key = decode_key_field(backend_key.public_key.as_deref(), role)?;
+    let encrypted_private_key =
+        decode_key_field(backend_key.encrypted_private_key.as_deref(), role)?;
+    let private_key = decryptor
+        .decrypt_backend_key(&encrypted_private_key, role)
+        .await?;
+    let keypair = keypair(&private_key, &public_key, role)?;
+
+    let plaintext_length = ciphertext
+        .len()
+        .checked_sub(sealedbox::OVERHEAD_LENGTH)
+        .ok_or(Error::ArchiveDecryption(role))?;
+    let mut plaintext = Zeroizing::new(vec![0; plaintext_length]);
+    sealedbox::decrypt(&ciphertext, &keypair, &mut plaintext)
+        .map_err(|_| Error::ArchiveDecryption(role))?;
+    files_from_tar(&plaintext)
+}
+
+fn insert_archive_members(files: &mut Files, directory: &str, members: Files) -> Result<(), Error> {
+    for (member, bytes) in members {
+        if files
+            .insert(format!("{directory}/{member}"), bytes)
+            .is_some()
+        {
+            return Err(Error::InvalidArchive);
+        }
+    }
+    Ok(())
+}
+
+fn validate_capture_fields(info: &JsonObject) -> Result<(), Error> {
+    for field in ["signup_id", "orb_id"] {
+        if info
+            .0
+            .get(field)
+            .is_none_or(|value| value.is_null() || value.as_str().is_some_and(str::is_empty))
+        {
+            return Err(Error::MissingCaptureField(field));
+        }
+    }
+    Ok(())
+}
+
+fn backend_key<'a>(keys: &'a v1::BackendKeys, role: &str) -> Option<&'a v1::BackendKey> {
+    match role {
+        "iris" => keys.iris.as_ref(),
+        "normalized_iris" => keys.normalized_iris.as_ref(),
+        "face" => keys.face.as_ref(),
+        "tier2" => keys.tier2.as_ref(),
+        _ => None,
+    }
+}
+
+fn decode_key_field(value: Option<&str>, role: &'static str) -> Result<Vec<u8>, Error> {
+    let value = value
+        .filter(|value| !value.is_empty())
+        .ok_or(Error::InvalidBackendKey(role))?;
+    STANDARD
+        .decode(value)
+        .map_err(|_| Error::InvalidBackendKey(role))
+}
+
+fn keypair(
+    private_key: &[u8],
+    public_key: &[u8],
+    role: &'static str,
+) -> Result<sealedbox::Keypair, Error> {
+    if private_key.len() != sealedbox::PRIVATE_KEY_LENGTH
+        || public_key.len() != sealedbox::PUBLIC_KEY_LENGTH
+    {
+        return Err(Error::InvalidBackendKey(role));
+    }
+    let mut private =
+        sealedbox::PrivateKey::new_empty().map_err(|_| Error::InvalidBackendKey(role))?;
+    private.copy_from_slice(private_key);
+    let keypair = sealedbox::Keypair::from_private_key(&private)
+        .map_err(|_| Error::InvalidBackendKey(role))?;
+    if keypair.public_key.as_slice() != public_key {
+        return Err(Error::BackendKeyMismatch(role));
+    }
+    Ok(keypair)
 }
 
 /// Borrowed image payloads. The sandbox owns image decoding and geometry checks.
@@ -289,11 +414,20 @@ const REPLACED_OUTPUTS: [&str; 5] = [
     "di_iris_embeddings_shares_2.pb",
 ];
 
+const ARCHIVES: [(&str, &str); 5] = [
+    ("iris.tar", "iris"),
+    ("normalized_iris.tar", "normalized_iris"),
+    ("face.tar", "face"),
+    ("fraud.tar", "face"),
+    ("face_ir_and_thermal.tar", "tier2"),
+];
+
 fn known_source_artifact(path: &str) -> bool {
     raw_image(path)
         || normalized_artifact(path)
         || IRIS_CODE_FILES.contains(&path)
         || REPLACED_OUTPUTS.contains(&path)
+        || ARCHIVES.iter().any(|(archive, _)| path == *archive)
         // The manifest covers source hashes; signature authentication is external.
         // Backend keys open the source's inner archives.
         || matches!(
@@ -301,3 +435,6 @@ fn known_source_artifact(path: &str) -> bool {
             "info.json" | "hashes.json" | "hashes.sign" | "backend_keys.json"
         )
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,27 +1,29 @@
 //! Migrate opened PCPs with the shared PCP builder.
 //!
-//! [`SourcePcp::parse`] checks an opened source against its manifest.
+//! [`SourcePcp::parse`] checks and decrypts a source against its manifest.
 //! [`build`] prepares the migration request and delegates encryption and archive
 //! assembly to the shared builder, using the supplied manifest signer.
 //! [`verify_completed_pcp`] checks the opened result. The caller owns source
-//! decryption and authentication, inference, share generation and recipient keys.
+//! authentication, inference, share generation and recipient keys.
 //! Hash consistency does not authenticate the source manifest or unlisted metadata.
 //! Sensitive types deliberately do not implement `Debug`; never log their JSON.
 
+mod archive;
 mod builder;
 mod integrity;
 mod mapping;
 mod preservation;
 mod source;
 
+pub use archive::files_from_tar_gz;
 pub use builder::{BuildError, OutputRecipients, build, validate_build_inputs, with_build_request};
 pub use mapping::{MigrationContext, PreparedBiometrics};
 pub use orb_wld_data_id::{S3Region, SignupId};
 pub use preservation::verify_completed_pcp;
-pub use source::{PipelineInputs, SourcePcp, SourceVersion};
+pub use source::{BackendKeyDecryptor, PipelineInputs, SourcePcp, SourceVersion};
 
-/// Decrypted logical artifact paths and bytes, after opening the nested archives.
-/// The extractor must reject duplicate members before constructing this map.
+/// PCP artifact paths and bytes. After parsing, inner archive members use their
+/// decrypted logical paths.
 pub type Files = std::collections::BTreeMap<String, Vec<u8>>;
 
 /// Bounded, payload-free errors suitable for operational reporting.
@@ -47,8 +49,16 @@ pub enum Error {
     SizeLimit,
     #[error("unsafe logical artifact path")]
     UnsafePath,
-    #[error("source archive must be opened before mapping: {0}")]
-    UnopenedArtifact(&'static str),
+    #[error("invalid source PCP archive")]
+    InvalidArchive,
+    #[error("invalid backend key for source archive: {0}")]
+    InvalidBackendKey(&'static str),
+    #[error("could not decrypt backend key for source archive: {0}")]
+    BackendKeyDecryption(&'static str),
+    #[error("backend key does not match its public key for source archive: {0}")]
+    BackendKeyMismatch(&'static str),
+    #[error("could not decrypt source archive: {0}")]
+    ArchiveDecryption(&'static str),
     #[error("unsupported source artifact; an explicit mapping is required")]
     UnsupportedArtifact,
     #[error("source PCP integrity check failed: {0}")]

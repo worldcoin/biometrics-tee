@@ -3023,6 +3023,7 @@ version = "0.1.0"
 dependencies = [
  "alkali",
  "anyhow",
+ "async-trait",
  "aws-sdk-kms",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
@@ -3056,6 +3057,7 @@ dependencies = [
  "bytes",
  "ciborium",
  "pontifex",
+ "rmp-serde",
  "serde",
  "serde_bytes",
 ]
@@ -3092,6 +3094,8 @@ name = "di-migration-pcp"
 version = "0.1.0"
 dependencies = [
  "alkali",
+ "async-trait",
+ "base64 0.22.1",
  "flate2",
  "orb-pcp",
  "orb-pcp-defs",
@@ -3102,6 +3106,8 @@ dependencies = [
  "sha2 0.10.9",
  "tar",
  "thiserror 2.0.20",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

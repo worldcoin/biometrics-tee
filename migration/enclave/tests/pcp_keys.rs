@@ -53,7 +53,7 @@ use di_migration_enclave::{
     kms::{Error, KeyWrapper},
     pcp_keys::{self, BackendKeys},
 };
-use di_migration_pcp::{SourcePcp, validate_build_inputs, verify_completed_pcp};
+use di_migration_pcp::{validate_build_inputs, verify_completed_pcp};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use support::{open_tier, unseal};
@@ -118,7 +118,7 @@ fn recover_key(bytes: &[u8], public_key: &[u8]) -> sealedbox::Keypair {
     pair
 }
 
-fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
+async fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
     let mut input = support::source_files("2.8");
     input.insert(
         "face_ir_and_thermal/face_ir.png".into(),
@@ -130,7 +130,7 @@ fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
     );
     input.insert("fraud/scc_rgb.png".into(), b"synthetic-fraud".to_vec());
     support::refresh_source_manifest(&mut input);
-    let source = SourcePcp::parse(input).unwrap();
+    let source = support::parse_source_async(input).await.unwrap();
     let bio = support::pipeline();
     let ctx = support::context();
     let user = sealedbox::Keypair::generate().unwrap();
@@ -203,7 +203,8 @@ async fn wrapped_keys_build_a_package_that_opens_with_the_recovered_keys() {
     );
     check_package(&keys, |envelope| {
         unseal(&STANDARD.decode(envelope).unwrap(), &master)
-    });
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -331,7 +332,7 @@ async fn localstack_ciphertexts_round_trip_into_the_archive_keys() {
         .send()
         .await
         .unwrap();
-    check_package(&keys, |envelope| unwrapped[envelope].clone());
+    check_package(&keys, |envelope| unwrapped[envelope].clone()).await;
 }
 
 #[tokio::test]

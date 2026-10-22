@@ -8,7 +8,9 @@ set -euo pipefail
 #
 # Needs x86_64-linux. Nitro hardware is only needed to run.
 #
-# Usage: scripts/build-enclaves.sh [--workload <name>] [output-dir]
+# Usage: STAGING_PCP_KMS_KEY_ARN=<arn> STAGING_PCP_KMS_SIGNING_KEY_ARN=<arn> \\
+#        scripts/build-enclaves.sh [--workload <name>] [--pcp-kms-key-arn <arn>]
+#        [--pcp-kms-signing-key-arn <arn>] [output-dir]
 #        (workload defaults to dev, output-dir to target/eif)
 #
 # Outputs in <output-dir>:
@@ -21,13 +23,15 @@ WORKLOADS=("migration" "dev" "selfie-enrollment")
 
 usage() {
   printf '%s\n' \
-    "Usage: scripts/build-enclaves.sh [--workload <name>] [output-dir]" \
+    "Usage: scripts/build-enclaves.sh [--workload <name>] [--pcp-kms-key-arn <arn>]" \
+    "                                 [--pcp-kms-signing-key-arn <arn>] [output-dir]" \
     "" \
     "Build a workload's enclave EIF and emit its PCR measurements." \
     "" \
     "Options:" \
     "  --workload <name>  Which enclave to build: ${WORKLOADS[*]} (default dev)." \
-    "  --pcp-kms-key-arn <arn>  Bake a full wrapping key/alias ARN into the migration EIF." \
+    "  --pcp-kms-key-arn <arn>  Bake a full wrapping key/alias ARN into the migration EIF (overrides STAGING_PCP_KMS_KEY_ARN)." \
+    "  --pcp-kms-signing-key-arn <arn>  Bake a full manifest-signing key/alias ARN into the migration EIF (overrides STAGING_PCP_KMS_SIGNING_KEY_ARN)." \
     "  -h, --help         Show this help."
 }
 
@@ -36,7 +40,10 @@ usage() {
 workload="dev"
 out_dir="target/eif"
 output_dir_provided=false
-pcp_kms_key_arn=""
+# Deployment automation supplies these as protected environment variables. Keep command-line
+# flags as explicit overrides for local builds, but never require ARNs in repository config.
+pcp_kms_key_arn="${STAGING_PCP_KMS_KEY_ARN:-}"
+pcp_kms_signing_key_arn="${STAGING_PCP_KMS_SIGNING_KEY_ARN:-}"
 
 while (( $# > 0 )); do
   case "$1" in
@@ -46,6 +53,14 @@ while (( $# > 0 )); do
         exit 2
       fi
       pcp_kms_key_arn="$2"
+      shift
+      ;;
+    --pcp-kms-signing-key-arn)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "[ERROR] --pcp-kms-signing-key-arn needs a full key/alias ARN." >&2
+        exit 2
+      fi
+      pcp_kms_signing_key_arn="$2"
       shift
       ;;
     --workload)
@@ -81,8 +96,8 @@ if [[ ! " ${WORKLOADS[*]} " == *" $workload "* ]]; then
   exit 2
 fi
 
-if [[ -n "$pcp_kms_key_arn" && "$workload" != "migration" ]]; then
-  echo "[ERROR] --pcp-kms-key-arn requires --workload migration." >&2
+if [[ ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) && "$workload" != "migration" ]]; then
+  echo "[ERROR] PCP KMS key options require --workload migration." >&2
   exit 2
 fi
 
@@ -96,14 +111,22 @@ cd "$repo_root"
 
 build_output() {
   local format="$1"
-  if [[ -n "$pcp_kms_key_arn" ]]; then
-    # Terraform validates the ARN. Pass it as data, never interpolated Nix source;
-    # the image embeds the key identity and its region in the measured environment.
-    PCP_BUILD_ROOT="$repo_root" PCP_BUILD_KEY_ARN="$pcp_kms_key_arn" PCP_BUILD_FORMAT="$format" \
+  if [[ -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ]]; then
+    # Terraform validates the ARNs. Pass them as data, never interpolated Nix source;
+    # the image embeds their identities in the measured environment.
+    PCP_BUILD_ROOT="$repo_root" PCP_BUILD_KEY_ARN="$pcp_kms_key_arn" PCP_BUILD_SIGNING_KEY_ARN="$pcp_kms_signing_key_arn" PCP_BUILD_FORMAT="$format" \
       nix build --impure --no-update-lock-file --no-link --print-out-paths --expr '
         let
-          flake = builtins.getFlake ("git+file://" + builtins.getEnv "PCP_BUILD_ROOT");
-          images = flake.lib.migrationImages { pcpKmsKeyArn = builtins.getEnv "PCP_BUILD_KEY_ARN"; };
+          # GitHub Actions checks out a shallow repository. This tells Nix that the local
+          # git+file source is intentionally shallow, so it does not require revCount.
+          flake = builtins.getFlake ("git+file://" + builtins.getEnv "PCP_BUILD_ROOT" + "?shallow=1");
+          optionalArn = name:
+            let value = builtins.getEnv name;
+            in if value == "" then null else value;
+          images = flake.lib.migrationImages {
+            pcpKmsKeyArn = optionalArn "PCP_BUILD_KEY_ARN";
+            pcpKmsSigningKeyArn = optionalArn "PCP_BUILD_SIGNING_KEY_ARN";
+          };
         in builtins.getAttr ("di-migration-" + builtins.getEnv "PCP_BUILD_FORMAT") images
       '
   else

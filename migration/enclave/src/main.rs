@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use di_migration_enclave::{
     attestation::{self, NsmAttestor},
-    kms::KeyWrapper,
+    kms::{KeyWrapper, ManifestSigner},
     rng, server,
     state::EnclaveState,
 };
@@ -27,17 +27,29 @@ async fn main() -> anyhow::Result<()> {
         EnclaveState::from_env(Arc::new(NsmAttestor)).context("failed to boot enclave state")?;
     match std::env::var("PCP_KMS_KEY_ARN") {
         Ok(arn) => {
-            let region =
-                std::env::var("PCP_KMS_REGION").context("measured KMS region is missing")?;
             state.set_key_wrapper(
-                KeyWrapper::from_parent(arn, region)
-                    .context("invalid measured KMS configuration")?,
+                KeyWrapper::from_parent(arn).context("invalid measured KMS configuration")?,
             );
             tracing::info!("PCP key wrapping configured");
         }
         Err(std::env::VarError::NotPresent) => tracing::info!("PCP key wrapping is not configured"),
         Err(std::env::VarError::NotUnicode(_)) => {
             anyhow::bail!("invalid measured KMS configuration")
+        }
+    }
+    match std::env::var("PCP_KMS_SIGNING_KEY_ARN") {
+        Ok(arn) => {
+            state.set_manifest_signer(
+                ManifestSigner::from_parent(arn)
+                    .context("invalid manifest-signing KMS configuration")?,
+            );
+            tracing::info!("PCP manifest signing configured");
+        }
+        Err(std::env::VarError::NotPresent) => {
+            tracing::info!("PCP manifest signing is not configured")
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("invalid manifest-signing KMS configuration")
         }
     }
     let refresh = state.start_attestation_refresh();
