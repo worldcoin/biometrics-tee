@@ -407,7 +407,7 @@ mod tests {
         }
         request
             .body(Body::from(
-                serde_json::json!({"sub": sub, "proof": proof, "challenge_id": CHALLENGE_ID})
+                serde_json::json!({"sub": sub, "proof": proof, "challenge_id": CHALLENGE_ID, "device_public_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="})
                     .to_string(),
             ))
             .unwrap()
@@ -451,7 +451,11 @@ mod tests {
         let writes = writes.lock().unwrap();
         assert_eq!(writes.len(), 1, "one transaction: job row and lock");
         let job = &writes[0]["TransactItems"][0]["Put"]["Item"];
-        assert_eq!(job["device_public_key"]["S"], "device-key");
+        assert_eq!(job["attested_key_thumbprint"]["S"], "device-key");
+        assert_eq!(
+            job["device_public_key"]["S"],
+            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+        );
         assert_eq!(job["host_ip"]["S"], "127.0.0.1");
         assert_eq!(job["enclave_id"]["S"], enclave_id().as_str());
         let lock = &writes[0]["TransactItems"][1]["Put"]["Item"];
@@ -474,6 +478,56 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(error_code(response).await, "invalid_device_key");
+    }
+
+    #[tokio::test]
+    async fn requests_without_an_attested_key_thumbprint_are_rejected() {
+        for mut request in [
+            valid_init(),
+            migrations_request("POST", "device-key"),
+            migrations_request("GET", "device-key"),
+        ] {
+            request.headers_mut().remove(DEVICE_KEY_THUMBPRINT);
+            let response = routes::router(unavailable_state())
+                .oneshot(request)
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(error_code(response).await, "invalid_device_key");
+        }
+    }
+
+    #[tokio::test]
+    async fn init_rejects_malformed_device_public_keys() {
+        for key in [
+            "".to_owned(),
+            "!".repeat(44),
+            "YQ==".to_owned(),
+            "Bw==".repeat(256),
+            "Bw".repeat(22),
+        ] {
+            let request = Request::post("/v1/init-migration")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(DEVICE_KEY_THUMBPRINT, "device-key")
+                .body(Body::from(
+                    serde_json::json!({
+                        "sub": "test-sub",
+                        "proof": "YQ==",
+                        "challenge_id": CHALLENGE_ID,
+                        "device_public_key": key,
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            let response = routes::router(unavailable_state())
+                .oneshot(request)
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(error_code(response).await, "invalid_device_public_key");
+        }
     }
 
     /// Hosts at the admission threshold take no jobs; the app backs off for a jittered while.
@@ -507,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_init_for_a_running_or_foreign_job_is_in_progress() {
         let mut foreign = job_row("created", now(), &[]);
-        foreign["device_public_key"] = serde_json::json!({"S": "other-device"});
+        foreign["attested_key_thumbprint"] = serde_json::json!({"S": "other-device"});
         for current in [job_row("migrating", now(), &[]), foreign] {
             let replacements = Arc::new(Mutex::new(Vec::new()));
             let dynamodb = dynamodb_with_active_job(current, Arc::clone(&replacements)).await;
@@ -632,13 +686,14 @@ mod tests {
         let response =
             di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
                 .unwrap()
-                .with_device_public_key("device-key")
+                .with_attested_key_thumbprint("device-key")
                 .init_migration(
                     &token,
                     &signer,
                     "test-sub",
                     "0xa100ff00deadbeef",
                     CHALLENGE_ID,
+                    "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
                 )
                 .await
                 .unwrap();
@@ -797,7 +852,8 @@ mod tests {
         let mut row = serde_json::json!({
             "id": {"S": format!("job#{JOB_ID}")},
             "status": {"S": status},
-            "device_public_key": {"S": "device-key"},
+            "attested_key_thumbprint": {"S": "device-key"},
+            "device_public_key": {"S": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="},
             "host_ip": {"S": "127.0.0.1"},
             "enclave_id": {"S": enclave_id().as_str()},
             "created_at": {"N": created_at.to_string()},
@@ -945,7 +1001,11 @@ mod tests {
         assert_eq!(seen[0]["job_id"], JOB_ID);
         assert_eq!(seen[0]["object_key"], format!("pcp/{JOB_ID}"));
         assert_eq!(seen[0]["sub"], "test-sub");
-        assert_eq!(seen[0]["device_public_key"], "device-key");
+        assert_eq!(seen[0]["attested_key_thumbprint"], "device-key");
+        assert_eq!(
+            seen[0]["device_public_key"],
+            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+        );
         assert_eq!(seen[0]["enclave_id"], enclave_id().as_str());
     }
 
@@ -1125,20 +1185,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_migrated_job_carries_a_fresh_download_url() {
+    async fn only_the_stored_attested_key_thumbprint_gets_a_result_url() {
         let host: SocketAddr = "127.0.0.1:9".parse().unwrap();
         let row = job_row(
             "migrated",
             now(),
-            &[(
-                "result_key",
-                serde_json::json!({"S": format!("result/{JOB_ID}")}),
-            )],
+            &[
+                (
+                    "result_key",
+                    serde_json::json!({"S": format!("result/{JOB_ID}")}),
+                ),
+                (
+                    "attested_key_thumbprint",
+                    serde_json::json!({"S": "result-owner"}),
+                ),
+            ],
         );
         let (state, _) = migration_state(Some(row), StatusCode::OK, host).await;
 
+        for (thumbprint, expected_status, expected_code) in [
+            (None, StatusCode::BAD_REQUEST, "invalid_device_key"),
+            (Some(""), StatusCode::BAD_REQUEST, "invalid_device_key"),
+            (Some(" "), StatusCode::BAD_REQUEST, "invalid_device_key"),
+            (
+                Some("device-key"),
+                StatusCode::FORBIDDEN,
+                "device_key_mismatch",
+            ),
+        ] {
+            let mut request = migrations_request("GET", thumbprint.unwrap_or_default());
+            if thumbprint.is_none() {
+                request.headers_mut().remove(DEVICE_KEY_THUMBPRINT);
+            }
+            let response = routes::router(state.clone())
+                .oneshot(request)
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), expected_status);
+            let body = json(response).await;
+            assert_eq!(body["error"]["code"], expected_code);
+            assert_eq!(body["allowRetry"], false);
+            assert!(body.get("download_url").is_none());
+            assert!(body.get("download_expires_at").is_none());
+        }
+
         let response = routes::router(state)
-            .oneshot(migrations_request("GET", "device-key"))
+            .oneshot(migrations_request("GET", "result-owner"))
             .await
             .unwrap();
 
@@ -1177,7 +1270,7 @@ mod tests {
         let client =
             di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
                 .unwrap()
-                .with_device_public_key("device-key");
+                .with_attested_key_thumbprint("device-key");
         let signer = Arc::new(test_signer());
         let token = test_integrity_token(&signer);
 
@@ -1190,7 +1283,7 @@ mod tests {
 
         assert_eq!(migrating.status, di_migration_primitives::Status::Migrating);
         assert_eq!(status.status, di_migration_primitives::Status::Created);
-        let other = client.with_device_public_key("other-key");
+        let other = client.with_attested_key_thumbprint("other-key");
         assert!(matches!(
             other
                 .migration_status(&token, &signer, "test-sub")

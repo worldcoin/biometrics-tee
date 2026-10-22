@@ -8,6 +8,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use di_migration_primitives::{
     JobId, Reason, Status,
     app_api::{
@@ -29,8 +30,8 @@ use crate::{
 /// Bounds the subject we accept; real subjects are short opaque identifiers.
 const MAX_SUB_LEN: usize = 255;
 
-/// Bounds the device key we store; a real key is a few hundred bytes of base64.
-const MAX_DEVICE_KEY_LEN: usize = 1024;
+/// Bounds the attested key thumbprint accepted from the auth proxy.
+const MAX_DEVICE_KEY_THUMBPRINT_LEN: usize = 1024;
 
 /// Base `Retry-After` when the fleet is full; up to as much again is added as jitter, so
 /// rejected apps do not return together.
@@ -93,8 +94,16 @@ async fn init_migration(
     headers: HeaderMap,
     Json(request): Json<InitMigrationRequest>,
 ) -> Result<Json<InitMigrationResponse>, ApiError> {
-    let device_public_key = device_public_key(&headers).ok_or_else(ApiError::invalid_device_key)?;
+    let attested_key_thumbprint =
+        attested_key_thumbprint(&headers).ok_or_else(ApiError::invalid_device_key)?;
     let sub = valid_sub(&request.sub)?;
+    if request.device_public_key.len() != 44
+        || STANDARD
+            .decode(&request.device_public_key)
+            .map_or(true, |key| key.len() != 32)
+    {
+        return Err(ApiError::invalid_device_public_key());
+    }
 
     let verification = proof::VerificationRequest {
         challenge_id: request.challenge_id,
@@ -132,7 +141,8 @@ async fn init_migration(
     let job = NewJob {
         job_id: JobId::new(),
         sub: sub.to_owned(),
-        device_public_key,
+        attested_key_thumbprint,
+        device_public_key: request.device_public_key,
         // The address we reached, which migrate dials again.
         host_ip: host.ip(),
         enclave_id: attestation.enclave_id.clone(),
@@ -175,7 +185,8 @@ async fn replace_unclaimed_job(state: &AppState, job: &NewJob) -> Result<(), Api
         .await
         .map_err(|error| ApiError::storage("dynamodb", error.to_string()))?;
     let Some(current) = current.filter(|current| {
-        current.status == Status::Created && current.device_public_key == job.device_public_key
+        current.status == Status::Created
+            && current.attested_key_thumbprint == job.attested_key_thumbprint
     }) else {
         return Err(ApiError::migration_in_progress());
     };
@@ -237,6 +248,7 @@ async fn migrate(
         object_key: pcp_key(&job.job_id),
         job_id: job.job_id.clone(),
         sub: sub.to_owned(),
+        attested_key_thumbprint: job.attested_key_thumbprint,
         device_public_key: job.device_public_key,
         enclave_id: job.enclave_id,
         deadline,
@@ -266,6 +278,7 @@ async fn migrate(
 
 /// The `sub`'s latest job. A `migrating` job past its deadline reads as `failed (timeout)`
 /// without a write; a `migrated` one carries a fresh download URL.
+/// Ownership is checked against the stored attested key thumbprint before issuing a URL.
 async fn migration_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -328,13 +341,14 @@ const fn accepted(deadline: u64) -> (StatusCode, Json<MigrateResponse>) {
     )
 }
 
-/// The `sub`'s latest job, if the caller's device key is the one it was created with.
+/// The `sub`'s latest job, if the caller's attested key thumbprint matches the stored one.
 async fn owned_job<'a>(
     state: &AppState,
     headers: &HeaderMap,
     sub: &'a str,
 ) -> Result<(&'a str, JobRecord), ApiError> {
-    let device_public_key = device_public_key(headers).ok_or_else(ApiError::invalid_device_key)?;
+    let attested_key_thumbprint =
+        attested_key_thumbprint(headers).ok_or_else(ApiError::invalid_device_key)?;
     let sub = valid_sub(sub)?;
     let job = state
         .jobs
@@ -342,7 +356,7 @@ async fn owned_job<'a>(
         .await
         .map_err(|error| ApiError::storage("dynamodb", error.to_string()))?
         .ok_or_else(ApiError::not_found)?;
-    if job.device_public_key != device_public_key {
+    if job.attested_key_thumbprint != attested_key_thumbprint {
         return Err(ApiError::device_key_mismatch());
     }
     Ok((sub, job))
@@ -357,10 +371,10 @@ fn valid_sub(sub: &str) -> Result<&str, ApiError> {
     Ok(sub)
 }
 
-/// The device key the auth proxy forwards; the API does not verify devices itself.
-fn device_public_key(headers: &HeaderMap) -> Option<String> {
+/// The attested key thumbprint the auth proxy forwards; the API does not verify devices itself.
+fn attested_key_thumbprint(headers: &HeaderMap) -> Option<String> {
     let key = headers.get(DEVICE_KEY_THUMBPRINT)?.to_str().ok()?.trim();
-    (!key.is_empty() && key.len() <= MAX_DEVICE_KEY_LEN).then(|| key.to_owned())
+    (!key.is_empty() && key.len() <= MAX_DEVICE_KEY_THUMBPRINT_LEN).then(|| key.to_owned())
 }
 
 fn unix_now() -> u64 {

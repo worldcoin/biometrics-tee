@@ -28,12 +28,14 @@ use crate::{
 /// Answers every call with a fixed key and document.
 pub struct StubEnclave {
     pub public_key: Vec<u8>,
+    pub migrations: Mutex<Vec<MigrateRequest>>,
 }
 
 impl Default for StubEnclave {
     fn default() -> Self {
         Self {
             public_key: vec![9u8; 1216],
+            migrations: Mutex::new(Vec::new()),
         }
     }
 }
@@ -52,9 +54,12 @@ impl EnclaveClient for StubEnclave {
     }
 
     async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error> {
-        Ok(MigrateResponse {
-            blob: request.blob.to_vec(),
-        })
+        let blob = request.blob.to_vec();
+        self.migrations
+            .lock()
+            .expect("migrations lock")
+            .push(request);
+        Ok(MigrateResponse { blob })
     }
 }
 
@@ -362,7 +367,8 @@ pub fn job(n: u64) -> JobRequest {
         object_key: di_migration_storage::schema::pcp_key(&job_id),
         job_id,
         sub: "sub".to_owned(),
-        device_public_key: "device-key".to_owned(),
+        attested_key_thumbprint: "device-key".to_owned(),
+        device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
         enclave_id: crate::enclave::enclave_id(&StubEnclave::default().public_key),
         deadline: u64::MAX,
     }

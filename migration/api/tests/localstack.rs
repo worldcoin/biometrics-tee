@@ -34,7 +34,7 @@ use di_migration_primitives::{
 };
 use di_migration_storage::{JobTable, PcpBucket};
 
-const DEVICE_KEY: &str = "device-key";
+const DEVICE_KEY_THUMBPRINT: &str = "device-key";
 const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
 const PCP: &[u8] = b"sealed pcp";
 
@@ -294,26 +294,40 @@ async fn a_migration_runs_from_init_to_download() {
     .await;
     let client = MigrationApiClient::new(&base_url.parse().expect("url"))
         .expect("client")
-        .with_device_public_key(DEVICE_KEY);
-    let other = client.with_device_public_key("other-device");
+        .with_attested_key_thumbprint(DEVICE_KEY_THUMBPRINT);
+    let other = client.with_attested_key_thumbprint("other-device");
     let sub = format!("sub-{}", JobId::new());
     let signer = Arc::new(test_signer());
     let token = test_integrity_token(&signer);
 
     // Init pins the job to the host's enclave and hands out an upload URL.
     let lost = client
-        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(
+            &token,
+            &signer,
+            &sub,
+            "YQ==",
+            CHALLENGE_ID,
+            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        )
         .await
         .expect("init should succeed");
     assert!(matches!(
         other
-            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
+            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID, "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=")
             .await,
         Err(Error::Api { code, .. }) if code == "migration_in_progress"
     ));
     // The same device, e.g. after losing that response, starts over with a new job.
     let init = client
-        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(
+            &token,
+            &signer,
+            &sub,
+            "YQ==",
+            CHALLENGE_ID,
+            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        )
         .await
         .expect("a repeated init replaces the unclaimed job");
     assert_ne!(init.upload_url, lost.upload_url);
@@ -336,7 +350,7 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(migrating.status, Status::Migrating);
     assert!(matches!(
         client
-            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
+            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID, "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=")
             .await,
         Err(Error::Api { code, .. }) if code == "migration_in_progress"
     ));
@@ -346,7 +360,11 @@ async fn a_migration_runs_from_init_to_download() {
         jobs[0].clone()
     };
     assert_eq!(job.enclave_id, enclave_id());
-    assert_eq!(job.device_public_key, DEVICE_KEY);
+    assert_eq!(job.attested_key_thumbprint, DEVICE_KEY_THUMBPRINT);
+    assert_eq!(
+        job.device_public_key,
+        "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+    );
     assert_eq!(
         client
             .migration_status(&token, &signer, &sub)
@@ -371,7 +389,7 @@ async fn a_migration_runs_from_init_to_download() {
         .await
         .expect("the host marks the job migrated");
 
-    // Status hands out the result, readable only by the right device.
+    // Only the stored attested key thumbprint can obtain the presigned result URL.
     let done = client
         .migration_status(&token, &signer, &sub)
         .await
@@ -389,7 +407,14 @@ async fn a_migration_runs_from_init_to_download() {
 
     // The finished job frees the sub, so the app can start another migration at once.
     client
-        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
+        .init_migration(
+            &token,
+            &signer,
+            &sub,
+            "YQ==",
+            CHALLENGE_ID,
+            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        )
         .await
         .expect("a finished migration no longer blocks init");
 

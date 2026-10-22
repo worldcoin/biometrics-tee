@@ -6,7 +6,7 @@ use crate::{EnclaveId, Reason, Status};
 
 pub use crate::host_api::{ErrorBody, ErrorEnvelope};
 
-/// The caller's device public key, set by the auth proxy in front of the API once it has
+/// The caller's attested key thumbprint, set by the auth proxy in front of the API once it has
 /// verified the device.
 pub const DEVICE_KEY_THUMBPRINT: &str = "x-attested-key-thumbprint";
 
@@ -19,6 +19,8 @@ pub struct InitMigrationRequest {
     pub proof: String,
     /// The challenge the proof was built for.
     pub challenge_id: String,
+    /// Standard-Base64, 32-byte Curve25519 device public key for the output PCP.
+    pub device_public_key: String,
 }
 
 /// `200` body of `POST /v1/init-migration`.
@@ -57,6 +59,8 @@ pub struct MigrationStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<u64>,
     /// Presigned S3 URL of the result, sealed to the app, once `migrated`.
+    /// Issued only to the job's stored attested key thumbprint; possession of the URL
+    /// authorizes an S3 download until it expires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_url: Option<String>,
     /// Unix seconds `download_url` stops working; poll again for a fresh one.
@@ -67,15 +71,17 @@ pub struct MigrationStatus {
 /// Machine-readable error codes. A migrate whose dispatch failed answers with the [`Reason`]
 /// as its code.
 pub mod codes {
-    /// The device key header is missing or invalid.
+    /// The attested key thumbprint header is missing or invalid.
     pub const INVALID_DEVICE_KEY: &str = "invalid_device_key";
+    /// The device public key is not standard Base64 encoding of 32 bytes.
+    pub const INVALID_DEVICE_PUBLIC_KEY: &str = "invalid_device_public_key";
     /// No host has room; retry after `Retry-After`.
     pub const AT_CAPACITY: &str = "at_capacity";
     /// The `sub` already has an active migration; poll it instead.
     pub const MIGRATION_IN_PROGRESS: &str = "migration_in_progress";
     /// The `sub` has no migration.
     pub const NOT_FOUND: &str = "not_found";
-    /// The device key does not match the one stored at init.
+    /// The attested key thumbprint does not match the one stored at init.
     pub const DEVICE_KEY_MISMATCH: &str = "device_key_mismatch";
     /// Migrate was called before the sealed PCP was uploaded.
     pub const NOT_UPLOADED: &str = "not_uploaded";

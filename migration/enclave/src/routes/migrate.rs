@@ -1,5 +1,6 @@
 use std::{io::Read, path::Path, sync::Arc};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use di_migration_enclave_primitives::{
     self as enclave_primitives, MigrateRequest, MigrateResponse, pcp_payload,
 };
@@ -25,6 +26,15 @@ pub async fn handler(
         tracing::warn!("migrate request carried no blob");
         return Err(enclave_primitives::Error::InvalidInput);
     }
+
+    let _device_public_key: [u8; 32] = STANDARD
+        .decode(&request.device_public_key)
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| {
+            tracing::warn!("invalid device public key encoding or length");
+            enclave_primitives::Error::InvalidInput
+        })?;
 
     // Opening and sealing are CPU-bound; keep them off the async workers.
     tokio::task::spawn_blocking(move || {
@@ -186,7 +196,7 @@ mod tests {
             MigrateRequest {
                 blob: blob.into(),
                 sub: sub.into(),
-                device_public_key: "device-key".to_owned(),
+                device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
             },
             opener,
         )
@@ -335,6 +345,20 @@ mod tests {
             .expect_err("a new boot cannot open it");
 
         assert_eq!(error, enclave_primitives::Error::RequestNotOpened);
+    }
+
+    #[tokio::test]
+    async fn malformed_device_public_keys_are_rejected() {
+        let state = Arc::new(test_support::state());
+        let (request, _) = sealed(&state, b"payload", "sub");
+        for key in ["", "not-base64", "YQ=="] {
+            let mut request = request.clone();
+            request.device_public_key = key.to_owned();
+            assert_eq!(
+                handler(Arc::clone(&state), request).await,
+                Err(enclave_primitives::Error::InvalidInput)
+            );
+        }
     }
 
     #[tokio::test]

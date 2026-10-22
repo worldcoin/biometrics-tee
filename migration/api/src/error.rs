@@ -77,12 +77,22 @@ impl ApiError {
         self.code
     }
 
-    /// The device key header is missing, blank or oversized.
+    /// The attested key thumbprint header is missing, blank or oversized.
     pub const fn invalid_device_key() -> Self {
         Self::new(
             StatusCode::BAD_REQUEST,
             codes::INVALID_DEVICE_KEY,
-            "The device key is invalid",
+            "The attested key thumbprint is invalid",
+            false,
+        )
+    }
+
+    /// The output PCP recipient is not standard Base64 encoding of a 32-byte key.
+    pub const fn invalid_device_public_key() -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            codes::INVALID_DEVICE_PUBLIC_KEY,
+            "The device public key is invalid",
             false,
         )
     }
@@ -119,12 +129,12 @@ impl ApiError {
         )
     }
 
-    /// The caller's device key is not the one the job was created with.
+    /// The caller's attested key thumbprint differs from the stored one.
     pub const fn device_key_mismatch() -> Self {
         Self::new(
             StatusCode::FORBIDDEN,
             codes::DEVICE_KEY_MISMATCH,
-            "The device key does not match the migration",
+            "The attested key thumbprint does not match the migration",
             false,
         )
     }
