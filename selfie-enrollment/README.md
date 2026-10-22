@@ -2,10 +2,6 @@
 
 This application follows Flamingo's public host / measured enclave / private sandboxed worker split. It exposes one operation: extract an embedding from a VanillaSelfie image. It does not issue credentials, construct a PCP or implement interactive biometric challenges.
 
-The [draft challenge contract](challenge-protocol.md) adds separately testable
-commitment and deterministic three-pose generation primitives. They are not wired
-into the extraction service or an image evaluator.
-
 ## Protocol
 
 `GET /v1/embeddings` upgrades to a WebSocket. Like Flamingo, the client sends `{"type":"assignment_request"}` and the host replies with `{"type":"assignment","attestation":"…","public_key":"…"}`. One encrypted binary request and response follow, then the socket closes. Errors use Flamingo's `{ "allowRetry": true, "error": { "code": "…", "message": "…" } }` envelope. There is no admission challenge, ticket issuer or host Origin policy; access control belongs to the future upstream proxy. Experimental staging currently connects directly to the host.

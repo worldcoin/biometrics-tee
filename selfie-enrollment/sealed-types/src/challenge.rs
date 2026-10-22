@@ -1,7 +1,7 @@
 //! Draft three-pose contract and deterministic generator.
 //!
 //! These primitives do not authenticate sessions or randomness, enforce expiry,
-//! sign commitments, or evaluate images. See `selfie-enrollment/challenge-protocol.md`.
+//! sign commitments, or evaluate images.
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
