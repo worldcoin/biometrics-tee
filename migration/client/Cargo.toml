@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Exposes [`MigrationApiClient::with_device_public_key`] for tests and local tooling
+# Exposes [`MigrationApiClient::with_attested_key_thumbprint`] for tests and local tooling
 # that talk to the API without an auth proxy.
 test-util = []
 

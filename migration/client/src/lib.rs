@@ -62,8 +62,8 @@ pub struct MigrationApiClient {
     ///
     /// In production the auth proxy populates this header from the request signature; leave
     /// unset there. Under the `test-util` feature (and in this crate's tests), set it via
-    /// [`Self::with_device_public_key`].
-    device_public_key: Option<String>,
+    /// [`Self::with_attested_key_thumbprint`].
+    attested_key_thumbprint: Option<String>,
 }
 
 /// Arguments of [`MigrationApiClient::start_migration`].
@@ -81,6 +81,8 @@ pub struct StartMigration<'a, S> {
     pub proof: &'a str,
     /// Challenge id the proof was built for.
     pub challenge_id: &'a str,
+    /// Standard-Base64, 32-byte device public key for the output PCP.
+    pub device_public_key: &'a str,
     /// PCP sealed to the enclave and uploaded.
     pub pcp: &'a [u8],
     /// Self-custody credential sealed with the PCP.
@@ -103,25 +105,26 @@ impl MigrationApiClient {
         Ok(Self {
             http,
             base_url: base_url.clone(),
-            device_public_key: None,
+            attested_key_thumbprint: None,
         })
     }
 
-    /// Sets the device public key header for tests and local tooling without an auth proxy.
+    /// Sets the attested key thumbprint header for tests and local tooling without an auth proxy.
     ///
     /// In production leave this unset; the proxy injects [`DEVICE_KEY_THUMBPRINT`] after
     /// verifying the signature.
     #[cfg(any(test, feature = "test-util"))]
-    pub fn with_device_public_key(&self, device_public_key: impl Into<String>) -> Self {
+    pub fn with_attested_key_thumbprint(&self, attested_key_thumbprint: impl Into<String>) -> Self {
         Self {
-            device_public_key: Some(device_public_key.into()),
+            attested_key_thumbprint: Some(attested_key_thumbprint.into()),
             http: self.http.clone(),
             base_url: self.base_url.clone(),
         }
     }
 
     /// Starts a migration for `sub` with a standard-base64 ownership `proof` and the
-    /// `challenge_id` the proof was built for.
+    /// `challenge_id` the proof was built for. `device_public_key` is the standard-Base64
+    /// 32-byte Curve25519 recipient key for the output PCP.
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
     /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
@@ -133,6 +136,7 @@ impl MigrationApiClient {
         sub: &str,
         proof: &str,
         challenge_id: &str,
+        device_public_key: &str,
     ) -> Result<InitMigrationResponse, Error>
     where
         S: Send + Sync + 'static,
@@ -142,6 +146,7 @@ impl MigrationApiClient {
             sub: sub.to_owned(),
             proof: proof.to_owned(),
             challenge_id: challenge_id.to_owned(),
+            device_public_key: device_public_key.to_owned(),
         })
         .map_err(Error::Encode)?;
 
@@ -151,8 +156,8 @@ impl MigrationApiClient {
             .post(url)
             .header(CONTENT_TYPE, "application/json")
             .body(body);
-        if let Some(device_public_key) = &self.device_public_key {
-            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        if let Some(attested_key_thumbprint) = &self.attested_key_thumbprint {
+            request = request.header(DEVICE_KEY_THUMBPRINT, attested_key_thumbprint);
         }
 
         let signed = sign(request, integrity_token, Arc::clone(signer)).await?;
@@ -176,8 +181,8 @@ impl MigrationApiClient {
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let mut request = self.http.post(self.url(&["v1", "migrations", sub]));
-        if let Some(device_public_key) = &self.device_public_key {
-            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        if let Some(attested_key_thumbprint) = &self.attested_key_thumbprint {
+            request = request.header(DEVICE_KEY_THUMBPRINT, attested_key_thumbprint);
         }
         let request = sign(request, integrity_token, Arc::clone(signer)).await?;
 
@@ -200,8 +205,8 @@ impl MigrationApiClient {
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let mut request = self.http.get(self.url(&["v1", "migrations", sub]));
-        if let Some(device_public_key) = &self.device_public_key {
-            request = request.header(DEVICE_KEY_THUMBPRINT, device_public_key);
+        if let Some(attested_key_thumbprint) = &self.attested_key_thumbprint {
+            request = request.header(DEVICE_KEY_THUMBPRINT, attested_key_thumbprint);
         }
         let request = sign(request, integrity_token, Arc::clone(signer)).await?;
 
@@ -269,6 +274,7 @@ impl MigrationApiClient {
             sub,
             proof,
             challenge_id,
+            device_public_key,
             pcp,
             credential,
         }: StartMigration<'_, S>,
@@ -278,7 +284,14 @@ impl MigrationApiClient {
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let response = self
-            .init_migration(integrity_token, signer, sub, proof, challenge_id)
+            .init_migration(
+                integrity_token,
+                signer,
+                sub,
+                proof,
+                challenge_id,
+                device_public_key,
+            )
             .await?;
         let enclave_id = response.enclave_id.clone();
         let upload_url = response.upload_url.clone();
@@ -496,6 +509,10 @@ mod tests {
                 async move {
                     let (parts, body) = request.into_parts();
                     let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+                    assert_eq!(
+                        parts.headers[di_migration_primitives::app_api::DEVICE_KEY_THUMBPRINT],
+                        "device-key"
+                    );
                     verifier.verify(&parts, &body).await.unwrap();
 
                     let mut tampered_body = body.to_vec();
@@ -505,6 +522,10 @@ mod tests {
                     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(body["sub"], "test-sub");
                     assert_eq!(body["proof"], "cHJvb2Y=");
+                    assert_eq!(
+                        body["device_public_key"],
+                        "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+                    );
                     assert_eq!(body["challenge_id"], "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31");
                     Json(serde_json::json!({
                         "enclave_id": "ab".repeat(32),
@@ -524,13 +545,14 @@ mod tests {
         let signer = Arc::new(test_client.signer);
         let response = MigrationApiClient::new(&url)
             .unwrap()
-            .with_device_public_key("device-key")
+            .with_attested_key_thumbprint("device-key")
             .init_migration(
                 &token,
                 &signer,
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
+                "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
             )
             .await
             .unwrap();
@@ -552,13 +574,14 @@ mod tests {
         let token = test_token(&signer);
         let error = MigrationApiClient::new(&url)
             .unwrap()
-            .with_device_public_key("device-key")
+            .with_attested_key_thumbprint("device-key")
             .init_migration(
                 &token,
                 &signer,
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
+                "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
             )
             .await
             .unwrap_err();

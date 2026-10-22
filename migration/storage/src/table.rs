@@ -164,7 +164,9 @@ pub struct NewJob {
     pub job_id: JobId,
     /// The account the ownership proof was verified for.
     pub sub: String,
-    /// The app's attested device key; later calls must be signed by it.
+    /// The app's attested key thumbprint; later calls must use the same key.
+    pub attested_key_thumbprint: String,
+    /// Standard-Base64, 32-byte device public key used to encrypt the output PCP.
     pub device_public_key: String,
     /// The host the job is pinned to.
     pub host_ip: IpAddr,
@@ -188,7 +190,9 @@ pub struct JobRecord {
     pub status: Status,
     /// Why it failed, once `failed`.
     pub reason: Option<Reason>,
-    /// The app's attested device key.
+    /// The app's attested key thumbprint.
+    pub attested_key_thumbprint: String,
+    /// Standard-Base64, 32-byte device public key used to encrypt the output PCP.
     pub device_public_key: String,
     /// The host the job is pinned to.
     pub host_ip: IpAddr,
@@ -258,11 +262,19 @@ impl JobTable {
         let previous_row = ConditionCheck::builder()
             .table_name(&self.table_name)
             .key(attributes::ID, string(&row_id(previous)))
-            .condition_expression("#status = :created AND #device_public_key = :device_public_key")
+            .condition_expression(
+                "#status = :created AND #attested_key_thumbprint = :attested_key_thumbprint",
+            )
             .expression_attribute_names("#status", attributes::STATUS)
-            .expression_attribute_names("#device_public_key", attributes::DEVICE_PUBLIC_KEY)
+            .expression_attribute_names(
+                "#attested_key_thumbprint",
+                attributes::DEVICE_KEY_THUMBPRINT,
+            )
             .expression_attribute_values(":created", string(Status::Created.as_str()))
-            .expression_attribute_values(":device_public_key", string(&job.device_public_key))
+            .expression_attribute_values(
+                ":attested_key_thumbprint",
+                string(&job.attested_key_thumbprint),
+            )
             .build()
             .map_err(|error| failed(OPERATION, &error))?;
 
@@ -288,6 +300,10 @@ impl JobTable {
             .table_name(&self.table_name)
             .item(attributes::ID, string(&row_id(&job.job_id)))
             .item(attributes::STATUS, string(Status::Created.as_str()))
+            .item(
+                attributes::DEVICE_KEY_THUMBPRINT,
+                string(&job.attested_key_thumbprint),
+            )
             .item(
                 attributes::DEVICE_PUBLIC_KEY,
                 string(&job.device_public_key),
@@ -335,6 +351,7 @@ impl JobTable {
             reason: optional_text(&row, attributes::REASON)
                 .map(|reason| reason.parse().map_err(|_| malformed(attributes::REASON)))
                 .transpose()?,
+            attested_key_thumbprint: text(&row, attributes::DEVICE_KEY_THUMBPRINT)?.to_owned(),
             device_public_key: text(&row, attributes::DEVICE_PUBLIC_KEY)?.to_owned(),
             host_ip: text(&row, attributes::HOST_IP)?
                 .parse()

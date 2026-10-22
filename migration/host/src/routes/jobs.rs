@@ -45,9 +45,12 @@ fn validate(job: &JobRequest) -> Result<(), ApiError> {
     if job.object_key != pcp_key(&job.job_id) {
         return Err(ApiError::invalid_job("object_key does not match job_id"));
     }
-    if job.sub.trim().is_empty() || job.device_public_key.trim().is_empty() {
+    if job.sub.trim().is_empty()
+        || job.attested_key_thumbprint.trim().is_empty()
+        || job.device_public_key.trim().is_empty()
+    {
         return Err(ApiError::invalid_job(
-            "sub and device_public_key are required",
+            "sub, attested_key_thumbprint and device_public_key are required",
         ));
     }
     Ok(())
