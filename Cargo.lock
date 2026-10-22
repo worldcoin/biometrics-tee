@@ -3905,15 +3905,6 @@ checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 
 [[package]]
 name = "hkdf"
-version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
-dependencies = [
- "hmac 0.12.1",
-]
-
-[[package]]
-name = "hkdf"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
@@ -3956,7 +3947,7 @@ checksum = "a5324110b02044183df000f0bd7d2d7e61f1000631508627e77f63983b6fdffb"
 dependencies = [
  "aead",
  "chacha20poly1305",
- "hkdf 0.13.0",
+ "hkdf",
  "hybrid-array",
  "ml-kem",
  "rand_core 0.10.1",
@@ -6978,11 +6969,9 @@ name = "selfie-enrollment-sealed-types"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "hkdf 0.12.4",
  "selfie-enrollment-api-types",
  "serde",
  "serde_bytes",
- "sha2 0.10.9",
  "thiserror 2.0.20",
  "zeroize",
 ]
