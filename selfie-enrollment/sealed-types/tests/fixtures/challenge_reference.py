@@ -53,7 +53,7 @@ def vector(name, context, nonce, randomness):
         nonce, randomness, b"selfie-enrollment/challenge/generation/v1\0" + encoded
     )
     first_side = 1 + (seed[0] & 1)
-    targets = bytes(
+    responses = bytes(
         [0, 0, first_side, 20 + 5 * ((seed[0] >> 1) & 1),
          3 - first_side, 20 + 5 * ((seed[0] >> 2) & 1)]
     )
@@ -65,7 +65,7 @@ def vector(name, context, nonce, randomness):
         "context_hex": encoded.hex(),
         "commitment_hex": commitment.hex(),
         "seed_hex": seed.hex(),
-        "targets_hex": targets.hex(),
+        "target_responses_hex": responses.hex(),
     }
 
 

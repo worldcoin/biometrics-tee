@@ -3,7 +3,7 @@
 //! Run creation/authorization, expiry, randomness verification, signing and reveal
 //! gating are subsequent work. This helper must only receive enclave-owned context.
 use rand::{CryptoRng, RngCore, rngs::OsRng};
-use selfie_enrollment_sealed_types::challenge::{self, ChallengeContext, Targets};
+use selfie_enrollment_sealed_types::challenge::{self, ChallengeContext, TargetResponses};
 use zeroize::Zeroizing;
 
 #[derive(Debug, thiserror::Error)]
@@ -55,8 +55,11 @@ impl PreparedChallenge {
 
     /// Pure derivation, not instruction issuance. The future controller must admit
     /// exactly one verified value for the committed source/round before calling it.
-    pub fn targets(&self, external_randomness: &[u8; 32]) -> Result<Targets, Error> {
-        Ok(challenge::derive_targets(
+    pub fn target_responses(
+        &self,
+        external_randomness: &[u8; 32],
+    ) -> Result<TargetResponses, Error> {
+        Ok(challenge::derive_target_responses(
             &self.context,
             &self.nonce,
             external_randomness,
@@ -125,9 +128,9 @@ mod tests {
             prepared.commitment(),
             challenge::commitment(&context, &[7; 32]).unwrap()
         );
-        let expected = challenge::derive_targets(&context, &[7; 32], &[8; 32]).unwrap();
-        assert_eq!(prepared.targets(&[8; 32]).unwrap(), expected);
-        assert_eq!(prepared.targets(&[8; 32]).unwrap(), expected);
+        let expected = challenge::derive_target_responses(&context, &[7; 32], &[8; 32]).unwrap();
+        assert_eq!(prepared.target_responses(&[8; 32]).unwrap(), expected);
+        assert_eq!(prepared.target_responses(&[8; 32]).unwrap(), expected);
         assert_eq!(rng.calls, 1);
     }
 

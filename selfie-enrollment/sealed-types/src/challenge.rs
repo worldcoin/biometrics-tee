@@ -11,7 +11,7 @@ pub const GENERATOR_VERSION: u16 = 1;
 /// Reserved identifier for the proposed three-pose evaluator, not an implementation.
 pub const EVALUATOR_VERSION: u16 = 1;
 pub const CONTEXT_BYTES: usize = 134;
-pub const TARGET_BYTES: usize = 6;
+pub const TARGET_RESPONSES_BYTES: usize = 6;
 
 const COMMITMENT_DOMAIN: &[u8] = b"selfie-enrollment/challenge/commitment/v1\0";
 const GENERATION_DOMAIN: &[u8] = b"selfie-enrollment/challenge/generation/v1\0";
@@ -24,8 +24,8 @@ pub enum Error {
     InvalidContext,
     #[error("invalid challenge encoding")]
     InvalidEncoding,
-    #[error("invalid three-pose targets")]
-    InvalidTargets,
+    #[error("invalid three-pose target responses")]
+    InvalidTargetResponses,
     #[error("challenge derivation failed")]
     Derivation,
 }
@@ -127,38 +127,40 @@ pub enum TurnAngle {
     Deg25,
 }
 
+/// The pose the participant is expected to produce for one challenge step.
+/// This describes the expected response, not submitted evidence or an evaluation result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PoseTarget {
+pub enum TargetResponse {
     Front,
     Turn { side: Side, angle: TurnAngle },
 }
 
-/// Exactly one frontal reference, then a turn to each side. Fields are private so
-/// callers cannot construct plans that bypass the generator's shape constraints.
+/// Expected responses: one frontal reference, then a turn to each side.
+/// Fields are private so callers cannot bypass the generator's shape constraints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Targets([PoseTarget; 3]);
+pub struct TargetResponses([TargetResponse; 3]);
 
-impl Targets {
+impl TargetResponses {
     fn new(side: Side, first: TurnAngle, second: TurnAngle) -> Self {
         Self([
-            PoseTarget::Front,
-            PoseTarget::Turn { side, angle: first },
-            PoseTarget::Turn {
+            TargetResponse::Front,
+            TargetResponse::Turn { side, angle: first },
+            TargetResponse::Turn {
                 side: side.opposite(),
                 angle: second,
             },
         ])
     }
 
-    pub fn poses(&self) -> &[PoseTarget; 3] {
+    pub fn poses(&self) -> &[TargetResponse; 3] {
         &self.0
     }
 
     /// Three (side, angle) byte pairs: front=(0,0), left=1, right=2, angles=20/25.
-    pub fn encode(&self) -> [u8; TARGET_BYTES] {
-        let mut bytes = [0; TARGET_BYTES];
-        for (target, pair) in self.0.iter().zip(bytes.as_chunks_mut::<2>().0) {
-            if let PoseTarget::Turn { side, angle } = target {
+    pub fn encode(&self) -> [u8; TARGET_RESPONSES_BYTES] {
+        let mut bytes = [0; TARGET_RESPONSES_BYTES];
+        for (response, pair) in self.0.iter().zip(bytes.as_chunks_mut::<2>().0) {
+            if let TargetResponse::Turn { side, angle } = response {
                 pair[0] = match side {
                     Side::Left => 1,
                     Side::Right => 2,
@@ -173,16 +175,17 @@ impl Targets {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let bytes: [u8; TARGET_BYTES] = bytes.try_into().map_err(|_| Error::InvalidEncoding)?;
+        let bytes: [u8; TARGET_RESPONSES_BYTES] =
+            bytes.try_into().map_err(|_| Error::InvalidEncoding)?;
         let angle = |value| match value {
             20 => Ok(TurnAngle::Deg20),
             25 => Ok(TurnAngle::Deg25),
-            _ => Err(Error::InvalidTargets),
+            _ => Err(Error::InvalidTargetResponses),
         };
         let side = match (bytes[0], bytes[1], bytes[2], bytes[4]) {
             (0, 0, 1, 2) => Side::Left,
             (0, 0, 2, 1) => Side::Right,
-            _ => return Err(Error::InvalidTargets),
+            _ => return Err(Error::InvalidTargetResponses),
         };
         Ok(Self::new(side, angle(bytes[3])?, angle(bytes[5])?))
     }
@@ -211,16 +214,16 @@ fn derive_seed(
     Ok(seed)
 }
 
-/// Reproducible targets from the committed nonce and the selected round's value.
+/// Reproducible target responses from the committed nonce and the selected round's value.
 ///
 /// The caller must verify the randomness source/round separately. This generator
 /// has only eight possible plans; the 256-bit seed does not imply 256-bit challenge
 /// entropy or resistance to an adaptive image generator.
-pub fn derive_targets(
+pub fn derive_target_responses(
     context: &ChallengeContext,
     nonce: &[u8; 32],
     external_randomness: &[u8; 32],
-) -> Result<Targets, Error> {
+) -> Result<TargetResponses, Error> {
     let seed = derive_seed(context, nonce, external_randomness)?;
     let angle = |mask| {
         if seed[0] & mask == 0 {
@@ -229,7 +232,7 @@ pub fn derive_targets(
             TurnAngle::Deg25
         }
     };
-    Ok(Targets::new(
+    Ok(TargetResponses::new(
         if seed[0] & 1 == 0 {
             Side::Left
         } else {
@@ -304,10 +307,13 @@ mod tests {
                 *derive_seed(&context, &nonce, &randomness).unwrap(),
                 bytes(&vector["seed_hex"])
             );
-            let targets = derive_targets(&context, &nonce, &randomness).unwrap();
-            assert_eq!(targets.encode(), bytes(&vector["targets_hex"]));
-            assert_eq!(Targets::decode(&targets.encode()).unwrap(), targets);
-            plans.insert(targets.encode());
+            let responses = derive_target_responses(&context, &nonce, &randomness).unwrap();
+            assert_eq!(responses.encode(), bytes(&vector["target_responses_hex"]));
+            assert_eq!(
+                TargetResponses::decode(&responses.encode()).unwrap(),
+                responses
+            );
+            plans.insert(responses.encode());
         }
         assert_eq!(plans.len(), 8);
     }
@@ -351,7 +357,7 @@ mod tests {
                     Err(Error::UnsupportedVersion)
                 );
                 assert_eq!(
-                    derive_targets(&context, &[0; 32], &[0; 32]),
+                    derive_target_responses(&context, &[0; 32], &[0; 32]),
                     Err(Error::UnsupportedVersion)
                 );
             }
@@ -373,7 +379,7 @@ mod tests {
         assert_eq!(invalid.encode(), Err(Error::InvalidContext));
         assert_eq!(commitment(&invalid, &[0; 32]), Err(Error::InvalidContext));
         assert_eq!(
-            derive_targets(&invalid, &[0; 32], &[0; 32]),
+            derive_target_responses(&invalid, &[0; 32], &[0; 32]),
             Err(Error::InvalidContext)
         );
     }
@@ -404,11 +410,11 @@ mod tests {
             *derive_seed(&context, &[3; 32], &[5; 32]).unwrap(),
             *original_seed
         );
-        // Target collisions are expected: only three bits of the seed select a plan.
+        // Target response collisions are expected: only three bits of the seed select a plan.
     }
 
     #[test]
-    fn target_codec_accepts_exactly_the_eight_supported_plans() {
+    fn target_responses_codec_accepts_exactly_the_eight_supported_plans() {
         for first_side in 0..=3 {
             for second_side in 0..=3 {
                 for first_angle in [0, 19, 20, 21, 25, 26, 255] {
@@ -417,29 +423,29 @@ mod tests {
                         let valid = matches!((first_side, second_side), (1, 2) | (2, 1))
                             && matches!(first_angle, 20 | 25)
                             && matches!(second_angle, 20 | 25);
-                        assert_eq!(Targets::decode(&encoded).is_ok(), valid);
+                        assert_eq!(TargetResponses::decode(&encoded).is_ok(), valid);
                     }
                 }
             }
         }
         let encoded = [0, 0, 1, 20, 2, 25];
-        for length in 0..TARGET_BYTES {
+        for length in 0..TARGET_RESPONSES_BYTES {
             assert_eq!(
-                Targets::decode(&encoded[..length]),
+                TargetResponses::decode(&encoded[..length]),
                 Err(Error::InvalidEncoding)
             );
         }
         assert_eq!(
-            Targets::decode(&[0, 0, 1, 20, 2, 25, 0]),
+            TargetResponses::decode(&[0, 0, 1, 20, 2, 25, 0]),
             Err(Error::InvalidEncoding)
         );
         assert_eq!(
-            Targets::decode(&[1, 20, 1, 20, 2, 25]),
-            Err(Error::InvalidTargets)
+            TargetResponses::decode(&[1, 20, 1, 20, 2, 25]),
+            Err(Error::InvalidTargetResponses)
         );
         assert_eq!(
-            Targets::decode(&[0, 20, 1, 20, 2, 25]),
-            Err(Error::InvalidTargets)
+            TargetResponses::decode(&[0, 20, 1, 20, 2, 25]),
+            Err(Error::InvalidTargetResponses)
         );
     }
 }
