@@ -1,4 +1,6 @@
 //! Plaintext types used only by the client and enclave. Sensitive buffers are redacted and erased.
+pub mod challenge;
+
 use selfie_enrollment_api_types::{MAX_IMAGE_BYTES, MAX_REQUEST_BYTES, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::Cursor;
