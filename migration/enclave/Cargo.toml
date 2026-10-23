@@ -21,12 +21,15 @@ aws-types = "1"
 base64.workspace = true
 bytes.workspace = true
 di-migration-pcp = { path = "../pcp" }
+di-migration-shares = { path = "../shares" }
 di-migration-enclave-primitives.workspace = true
+di-worker-protocol.workspace = true
 flate2.workspace = true
 hex.workspace = true
 orb-pcp.workspace = true
 orb-pcp-defs.workspace = true
 pontifex = { workspace = true, features = ["channel", "kms", "nsm", "server"] }
+rand.workspace = true
 serde_json.workspace = true
 tar.workspace = true
 thiserror.workspace = true
@@ -37,7 +40,6 @@ world-id-primitives.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-di-worker-protocol.workspace = true
 tabernaculum.workspace = true
 
 [dev-dependencies]

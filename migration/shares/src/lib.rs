@@ -7,6 +7,9 @@
 use ampc_secret_sharing::iris_vector::{IRIS_VECTOR_SIZE, IrisVector};
 use rand::{CryptoRng, Rng};
 
+/// Locked Git revision of the AMPC implementation used to produce these shares.
+pub const VERSION: &str = env!("AMPC_SECRET_SHARING_VERSION");
+
 /// Sharing failures without embedding values. The caller supplies eye and mirror context.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

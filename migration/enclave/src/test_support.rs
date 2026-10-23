@@ -67,6 +67,13 @@ pub struct FakeWorker {
 }
 
 impl Worker for FakeWorker {
+    fn migrate(
+        &self,
+        _inputs: di_migration_pcp::PipelineInputs<'_>,
+    ) -> Result<crate::worker::MigrationOutput, di_worker_protocol::migration::Failure> {
+        panic!("test did not configure a biometric migration result")
+    }
+
     fn check_alive(&self) {
         self.checks.fetch_add(1, Ordering::SeqCst);
     }

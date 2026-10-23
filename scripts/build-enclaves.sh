@@ -35,8 +35,7 @@ usage() {
     "  -h, --help         Show this help."
 }
 
-# dev is the default because it is the workload that actually gets deployed; migration is
-# still a skeleton.
+# Keep dev as the default for local provisioning checks; select migration explicitly for its EIF.
 workload="dev"
 out_dir="target/eif"
 output_dir_provided=false
@@ -96,7 +95,7 @@ if [[ ! " ${WORKLOADS[*]} " == *" $workload "* ]]; then
   exit 2
 fi
 
-if [[ ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) && "$workload" != "migration" ]]; then
+if [[ ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) && "$workload" != "migration"  && "$workload" != "dev" ]]; then
   echo "[ERROR] PCP KMS key options require --workload migration." >&2
   exit 2
 fi

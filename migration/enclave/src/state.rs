@@ -116,6 +116,18 @@ impl EnclaveState {
         self.worker.check_alive();
     }
 
+    /// Runs the provisioned biometric migration pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns the worker's validated rejection for invalid or rejected images.
+    pub fn migrate(
+        &self,
+        inputs: di_migration_pcp::PipelineInputs<'_>,
+    ) -> Result<crate::worker::MigrationOutput, di_worker_protocol::migration::Failure> {
+        self.worker.migrate(inputs)
+    }
+
     /// The latest document attesting the channel key's commitment.
     pub async fn channel_key_attestation(&self) -> Vec<u8> {
         self.attested_channel_key.document().await
