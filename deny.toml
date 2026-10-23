@@ -91,6 +91,4 @@ allow-git = [
     "https://github.com/tf-encrypted/aes-prng.git",
     "https://github.com/worldcoin/orb-software",
     "https://github.com/worldcoin/hyrax-pcs-commit.git",
-    # Pinned 1.24.0 bindings with a one-line ZIP >=9 build-dependency fix.
-    "https://github.com/kchaw2005/libsodium-sys-stable",
 ]
