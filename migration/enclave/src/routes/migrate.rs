@@ -464,6 +464,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_device_public_keys_are_rejected() {
+        let state = Arc::new(test_support::state());
+        let (request, _) = sealed(&state, b"payload", "sub");
+        for key in ["", "not-base64", "YQ=="] {
+            let mut request = request.clone();
+            request.device_public_key = key.to_owned();
+            assert_eq!(
+                handler(Arc::clone(&state), request).await,
+                Err(enclave_primitives::Error::InvalidInput)
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn an_unknown_payload_or_empty_blob_is_invalid() {
         let state = Arc::new(test_support::state());
         let (unknown, _) = sealed(&state, &[9, 1, 2], "sub");

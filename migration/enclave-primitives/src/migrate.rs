@@ -10,7 +10,7 @@ pub struct MigrateRequest {
     pub blob: bytes::Bytes,
     /// Account the ownership proof was verified for; sealed into the new PCP.
     pub sub: String,
-    /// Standard-Base64, 32-byte device public key used to encrypt the output PCP.
+    /// Standard-Base64, 32-byte device public key for the output PCP.
     pub device_public_key: String,
 }
 
