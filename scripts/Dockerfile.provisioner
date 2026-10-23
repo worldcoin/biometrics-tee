@@ -1,0 +1,10 @@
+# syntax=docker/dockerfile:1
+# Boots an enclave EIF on Nitro-enabled nodes and provisions its sandboxed worker from S3.
+# Consumes an EIF, does not build one — scripts/build-enclaves.sh does. The EIF is baked in, so
+# the digest covers the artifact whose PCRs clients attest. Context is build-enclaves.sh's output
+# dir, so EIF_FILE is a bare filename:
+#   docker build -f scripts/Dockerfile.provisioner --build-arg EIF_FILE=di-dev-enclave.eif target/eif
+FROM ghcr.io/worldcoin/tabernaculum-provisioner:v0.1.0@sha256:a7d2f60029e3731193c2f134a05726d1a04fd5bf7e60bb1590dd1398761d8783
+
+ARG EIF_FILE
+COPY ${EIF_FILE} /home/enclave.eif
