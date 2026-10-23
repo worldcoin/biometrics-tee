@@ -1,10 +1,18 @@
-use std::{io::Read, path::Path, sync::Arc};
+use std::{
+    io::Read,
+    path::Path,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
+use crate::pcp_keys::BackendKeys;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use di_migration_enclave_primitives::{
     self as enclave_primitives, MigrateRequest, MigrateResponse, pcp_payload,
 };
+use di_migration_pcp::{MigrationContext, PreparedBiometrics, S3Region, SourcePcp};
 use flate2::read::GzDecoder;
+use orb_pcp_defs::v1;
 use tar::Archive;
 use world_id_primitives::{
     Credential, EdDSAPublicKey, poseidon::ds, sponge::hash_bytes_to_field_element,
@@ -12,12 +20,26 @@ use world_id_primitives::{
 
 use crate::state::EnclaveState;
 
+struct UnconfiguredKeyDecryptor;
+
+#[async_trait::async_trait]
+impl di_migration_pcp::BackendKeyDecryptor for UnconfiguredKeyDecryptor {
+    async fn decrypt_backend_key(
+        &self,
+        _encrypted_private_key: &[u8],
+        archive_role: &'static str,
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, di_migration_pcp::Error> {
+        Err(di_migration_pcp::Error::BackendKeyDecryption(archive_role))
+    }
+}
+
 /// Ceiling for `hashes.json` inside a PCP; the file is a small JSON manifest.
 const MAX_HASHES_JSON_BYTES: usize = 1024 * 1024;
+const TEE_SOFTWARE_VERSION: &str = "1.0.0";
 
 /// Opens the app's PCP with this boot's key and seals it back to the app's one-time response
-/// key, so the host only ever handles ciphertext. Echoes the PCP until the migration lands;
-/// `sub` and the device key are unused until then.
+/// key, so the host only ever handles ciphertext. The PCP tiers are encrypted to the
+/// device public key supplied at init.
 pub async fn handler(
     state: Arc<EnclaveState>,
     request: MigrateRequest,
@@ -27,7 +49,7 @@ pub async fn handler(
         return Err(enclave_primitives::Error::InvalidInput);
     }
 
-    let _device_public_key: [u8; 32] = STANDARD
+    let device_public_key: [u8; 32] = STANDARD
         .decode(&request.device_public_key)
         .ok()
         .and_then(|key| key.try_into().ok())
@@ -45,24 +67,61 @@ pub async fn handler(
         let pcp_with_credential = pcp_payload::decode(&plaintext).inspect_err(|_| {
             tracing::warn!("migrate request carried an unknown payload");
         })?;
-        if state.credential_verification_enabled() {
-            verify_credential(
-                state.issuer_pubkey(),
-                &request.sub,
-                &pcp_with_credential.credential,
-                &pcp_with_credential.pcp,
-            )?;
-        }
+        verify_credential(
+            state.issuer_pubkey(),
+            &request.sub,
+            &pcp_with_credential.credential,
+            &pcp_with_credential.pcp,
+        )?;
 
-        let blob = sealer
-            .seal(
-                &pcp_payload::encode(&pcp_with_credential.pcp, &pcp_with_credential.credential)
-                    .map_err(|_| enclave_primitives::Error::Internal)?,
-            )
+        let files =
+            di_migration_pcp::files_from_tar_gz(&pcp_with_credential.pcp).map_err(|error| {
+                tracing::warn!(%error, "migrate request PCP archive could not be opened");
+                enclave_primitives::Error::InvalidPcp
+            })?;
+        let source_pcp = parse_source_pcp(&state, files)?;
+        let prepared_biometrics = pipeline();
+        let migrated_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| enclave_primitives::Error::Internal)?
+            .as_secs();
+        let context = MigrationContext::new(
+            TEE_SOFTWARE_VERSION.to_owned(),
+            migrated_ts,
+            S3Region::UsEast1,
+        );
+
+        let key_wrapper = state.key_wrapper().ok_or_else(|| {
+            tracing::error!("PCP key wrapping is not configured");
+            enclave_primitives::Error::Internal
+        })?;
+        let backend_keys = tokio::runtime::Handle::current()
+            .block_on(BackendKeys::generate(key_wrapper))
             .map_err(|error| {
-                tracing::error!(?error, "failed to seal the migrated PCP");
+                tracing::error!(%error, "failed to generate and wrap PCP backend recipients");
                 enclave_primitives::Error::Internal
             })?;
+        let recipients = backend_keys.recipients(&device_public_key);
+        let manifest_signer = state.manifest_signer().ok_or_else(|| {
+            tracing::error!("PCP manifest signing is not configured");
+            enclave_primitives::Error::Internal
+        })?;
+        let package = di_migration_pcp::build(
+            &source_pcp,
+            &prepared_biometrics,
+            &context,
+            recipients,
+            |digest| tokio::runtime::Handle::current().block_on(manifest_signer.sign(digest)),
+        )
+        .map_err(|error| {
+            tracing::warn!(%error, "failed to build output PCP");
+            enclave_primitives::Error::FailedToBuildPcp
+        })?;
+
+        let blob = sealer.seal(&package.tier0).map_err(|error| {
+            tracing::error!(?error, "failed to seal the migrated PCP");
+            enclave_primitives::Error::Internal
+        })?;
         Ok(MigrateResponse { blob })
     })
     .await
@@ -75,6 +134,28 @@ pub async fn handler(
         tracing::error!(%error, "migration task was cancelled");
         enclave_primitives::Error::Internal
     })?
+}
+
+fn parse_source_pcp(
+    state: &EnclaveState,
+    files: di_migration_pcp::Files,
+) -> Result<SourcePcp, enclave_primitives::Error> {
+    let parsed = match state.key_wrapper() {
+        Some(key_wrapper) => {
+            tokio::runtime::Handle::current().block_on(SourcePcp::parse(files, key_wrapper))
+        }
+        None => tokio::runtime::Handle::current()
+            .block_on(SourcePcp::parse(files, &UnconfiguredKeyDecryptor)),
+    };
+    parsed.map_err(|error| {
+        if matches!(error, di_migration_pcp::Error::BackendKeyDecryption(_)) {
+            tracing::error!(%error, dependency = "kms", "source PCP key unwrap failed");
+            enclave_primitives::Error::Internal
+        } else {
+            tracing::warn!(%error, "migrate request PCP could not be parsed");
+            enclave_primitives::Error::InvalidPcp
+        }
+    })
 }
 
 /// Checks the credential's subject, issuer signature, and PCP `hashes.json` claim.
@@ -165,13 +246,66 @@ fn hashes_json_from_pcp(pcp: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error
     Err(enclave_primitives::Error::InvalidInput)
 }
 
+// TODO: This is work in progress. Replace these fixed values with the biometric pipeline outputs
+// once the biometric pipeline is available in the enclave.
+fn pipeline() -> PreparedBiometrics<'static> {
+    let normalized = || orb_pcp::NormalizedIrisFrame {
+        image: &[1; 16],
+        mask: &[2; 16],
+        image_resized: &[3; 8],
+        mask_resized: &[4; 8],
+    };
+    let model = || "1.2.3".to_owned();
+    let encoding = || "test-di-encoding".to_owned();
+    PreparedBiometrics {
+        biometric_pipeline_version: "pipeline-1".into(),
+        face_embeddings: vec![v1::FaceEmbedding {
+            embedding: Some("new-face".into()),
+            embedding_type: Some("test-face".into()),
+            embedding_version: Some("face-2".into()),
+            embedding_inference_backend: Some("test-runtime".into()),
+        }],
+        di_embeddings: v1::DiIrisEmbeddings {
+            embedding_v1: Some(v1::DiIrisEmbeddingV1 {
+                model_version: model(),
+                embedding_inference_backend: "test-runtime".into(),
+                embedding_version: encoding(),
+                left_embedding: vec![1, 2],
+                left_mirror_embedding: vec![3, 4],
+                right_embedding: vec![1, 2],
+                right_mirror_embedding: vec![3, 4],
+                left_embedding_f32: vec![0.1, 0.2],
+                left_mirror_embedding_f32: vec![0.3, 0.4],
+                right_embedding_f32: vec![0.1, 0.2],
+                right_mirror_embedding_f32: vec![0.3, 0.4],
+            }),
+        },
+        di_embedding_shares: [1_u32, 2, 3].map(|recipient| {
+            let base = 10 * recipient;
+            v1::DiIrisEmbeddingShares {
+                share_v1: Some(v1::DiIrisEmbeddingShareV1 {
+                    model_version: model(),
+                    shares_version: "test-di-shares".into(),
+                    embedding_version: encoding(),
+                    left_share: vec![base + 1, base + 2],
+                    left_mirror_share: vec![base + 3, base + 4],
+                    right_share: vec![base + 1, base + 2],
+                    right_mirror_share: vec![base + 3, base + 4],
+                }),
+            }
+        }),
+        left_normalized: normalized(),
+        right_normalized: normalized(),
+        extra_normalized: std::collections::BTreeMap::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{io::Write, sync::Arc};
 
     use di_migration_enclave_primitives::{
-        self as enclave_primitives, MIGRATION_CHANNEL_DOMAIN, MigrateRequest,
-        pcp_payload::{self, PcpWithCredential},
+        self as enclave_primitives, MIGRATION_CHANNEL_DOMAIN, MigrateRequest, pcp_payload,
     };
     use flate2::write::GzEncoder;
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ResponseOpener};
@@ -241,11 +375,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_sealed_pcp_round_trips_to_the_app() {
+    async fn a_source_pcp_must_contain_all_migration_artifacts() {
         let issuer = EdDSAPrivateKey::from_bytes([7u8; 32]);
         let state = Arc::new(test_support::state_with_issuer_pubkey(issuer.public()));
 
-        // Compact hashes.json as orbs emit; iris base64-encodes these bytes as the claim input.
         let hashes_json = br#"{"thumbnail.png":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         let pcp = pcp_with_hashes_json(hashes_json);
         let sub = FieldElement::from(42u64);
@@ -253,14 +386,10 @@ mod tests {
         let payload = pcp_payload::encode(&pcp, &credential).expect("encode");
 
         let (request, opener) = sealed(&state, &payload, sub.to_string());
-        let response = handler(state, request).await.expect("should migrate");
-
-        let plaintext = opener
-            .open_from_enclave(&response.blob)
-            .expect("the app should open it");
+        let _ = opener;
         assert_eq!(
-            pcp_payload::decode(&plaintext).expect("decode"),
-            PcpWithCredential { pcp, credential }
+            handler(state, request).await,
+            Err(enclave_primitives::Error::InvalidPcp)
         );
     }
 
@@ -301,33 +430,6 @@ mod tests {
         assert_eq!(
             handler(state, request).await,
             Err(enclave_primitives::Error::CredentialSignatureVerificationFailed)
-        );
-    }
-
-    #[tokio::test]
-    async fn credential_verification_can_be_disabled() {
-        let state = Arc::new(
-            test_support::state_with_issuer_pubkey_and_credential_verification(
-                EdDSAPrivateKey::from_bytes([7u8; 32]).public(),
-                false,
-            ),
-        );
-        let payload = pcp_payload::encode(b"old pcp", "not-a-credential").expect("encode");
-        let (request, opener) = sealed(&state, &payload, "sub");
-
-        let response = handler(state, request)
-            .await
-            .expect("migrate should skip credential checks");
-
-        let plaintext = opener
-            .open_from_enclave(&response.blob)
-            .expect("the app should open it");
-        assert_eq!(
-            pcp_payload::decode(&plaintext).expect("decode"),
-            PcpWithCredential {
-                pcp: b"old pcp".to_vec(),
-                credential: "not-a-credential".to_owned(),
-            }
         );
     }
 

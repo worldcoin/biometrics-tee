@@ -43,9 +43,9 @@
       # Key identity is part of the measured filesystem, supplied by deployment
       # configuration. Account-specific values are not stored in this repository.
       lib.migrationImages =
-        { pcpKmsKeyArn }:
+        { pcpKmsKeyArn, pcpKmsSigningKeyArn ? null }:
         import ./nix/enclave-images.nix {
-          inherit system pkgs nitro-util enclaveBins pcpKmsKeyArn;
+          inherit system pkgs nitro-util enclaveBins pcpKmsKeyArn pcpKmsSigningKeyArn;
         };
 
       devShells = import ./nix/dev-shells.nix {

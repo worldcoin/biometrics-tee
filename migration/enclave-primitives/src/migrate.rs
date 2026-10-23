@@ -10,7 +10,7 @@ pub struct MigrateRequest {
     pub blob: bytes::Bytes,
     /// Account the ownership proof was verified for; sealed into the new PCP.
     pub sub: String,
-    /// Standard-Base64, 32-byte device public key for the output PCP.
+    /// Standard-Base64, 32-byte device public key used to encrypt the output PCP.
     pub device_public_key: String,
 }
 
@@ -19,10 +19,10 @@ impl Request for MigrateRequest {
     type Response = Result<MigrateResponse, Error>;
 }
 
-/// The migrated PCP, sealed back to the app's one-time response key.
+/// The encrypted Tier 0 PCP, sealed back to the app's one-time response key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateResponse {
-    /// A [`crate::pcp_payload`] only the app can open; the host just stores it.
+    /// Raw Tier 0 bytes only the app can open; the host just stores them.
     #[serde(with = "serde_bytes")]
     pub blob: Vec<u8>,
 }
