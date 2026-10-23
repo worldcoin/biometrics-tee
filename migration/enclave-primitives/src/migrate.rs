@@ -19,10 +19,10 @@ impl Request for MigrateRequest {
     type Response = Result<MigrateResponse, Error>;
 }
 
-/// The migrated PCP, sealed back to the app's one-time response key.
+/// The encrypted Tier 0 PCP, sealed back to the app's one-time response key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateResponse {
-    /// A [`crate::pcp_payload`] only the app can open; the host just stores it.
+    /// Raw Tier 0 bytes only the app can open; the host just stores them.
     #[serde(with = "serde_bytes")]
     pub blob: Vec<u8>,
 }

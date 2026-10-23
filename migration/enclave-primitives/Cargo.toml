@@ -12,3 +12,6 @@ ciborium.workspace = true
 pontifex.workspace = true
 serde.workspace = true
 serde_bytes.workspace = true
+
+[dev-dependencies]
+rmp-serde = "1.3"

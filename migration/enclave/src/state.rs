@@ -8,15 +8,15 @@ use pontifex::channel::{ChannelDomain, ChannelEnclave};
 use tokio::task::JoinHandle;
 use world_id_primitives::EdDSAPublicKey;
 
-use crate::attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
+use crate::{
+    attestation::{AttestedKey, Attestor, MAX_CACHED_AGE},
+    worker::Worker,
+};
 
 /// Decimal `BabyJubJub` affine X coordinate of the credential issuer pubkey.
 pub const ISSUER_PUBKEY_X_ENV: &str = "ISSUER_PUBKEY_X";
 /// Decimal `BabyJubJub` affine Y coordinate of the credential issuer pubkey.
 pub const ISSUER_PUBKEY_Y_ENV: &str = "ISSUER_PUBKEY_Y";
-/// Feature flag: when `false`/`0`/`off`, migrate skips credential verification
-/// (staging convenience). Defaults to enabled when unset.
-pub const CREDENTIAL_VERIFICATION_ENABLED_ENV: &str = "CREDENTIAL_VERIFICATION_ENABLED";
 
 /// State fixed for the life of one enclave boot.
 pub struct EnclaveState {
@@ -24,10 +24,10 @@ pub struct EnclaveState {
     /// Attests the channel key's commitment, which apps check before sealing a PCP.
     attested_channel_key: AttestedKey,
     key_wrapper: Option<crate::kms::KeyWrapper>,
+    manifest_signer: Option<crate::kms::ManifestSigner>,
     /// Signup-service credential signer key used to verify PCP credentials.
     issuer_pubkey: EdDSAPublicKey,
-    /// Feature flag: when false, migrate skips credential checks (staging only).
-    credential_verification_enabled: bool,
+    worker: Box<dyn Worker>,
 }
 
 impl EnclaveState {
@@ -40,7 +40,7 @@ impl EnclaveState {
     pub fn generate(
         attestor: Arc<dyn Attestor>,
         issuer_pubkey: EdDSAPublicKey,
-        credential_verification_enabled: bool,
+        worker: Box<dyn Worker>,
     ) -> Result<Self, enclave_primitives::Error> {
         let channel = ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))
             .map_err(|error| {
@@ -57,28 +57,22 @@ impl EnclaveState {
             channel,
             attested_channel_key,
             key_wrapper: None,
+            manifest_signer: None,
             issuer_pubkey,
-            credential_verification_enabled,
+            worker,
         })
     }
 
     /// Loads [`Self::generate`] with the issuer pubkey from [`ISSUER_PUBKEY_X_ENV`] /
-    /// [`ISSUER_PUBKEY_Y_ENV`] and the [`CREDENTIAL_VERIFICATION_ENABLED_ENV`] feature flag.
+    /// [`ISSUER_PUBKEY_Y_ENV`].
     ///
     /// # Errors
     ///
     /// When an env var is missing or not a decimal field element, or when key generation /
     /// attestation fails.
-    pub fn from_env(attestor: Arc<dyn Attestor>) -> anyhow::Result<Self> {
+    pub fn from_env(attestor: Arc<dyn Attestor>, worker: Box<dyn Worker>) -> anyhow::Result<Self> {
         let issuer_pubkey = issuer_pubkey_from_env()?;
-        let credential_verification_enabled = credential_verification_enabled_from_env()?;
-        if !credential_verification_enabled {
-            tracing::warn!(
-                env = CREDENTIAL_VERIFICATION_ENABLED_ENV,
-                "credential verification feature flag is disabled"
-            );
-        }
-        Self::generate(attestor, issuer_pubkey, credential_verification_enabled).map_err(|error| {
+        Self::generate(attestor, issuer_pubkey, worker).map_err(|error| {
             anyhow::anyhow!("failed to generate and attest the channel key: {error:?}")
         })
     }
@@ -95,12 +89,6 @@ impl EnclaveState {
         &self.issuer_pubkey
     }
 
-    /// Feature flag: whether migrate checks the credential's subject, signature, and claims.
-    #[must_use]
-    pub const fn credential_verification_enabled(&self) -> bool {
-        self.credential_verification_enabled
-    }
-
     /// Installs wrapping configuration fixed by the measured image at boot.
     pub fn set_key_wrapper(&mut self, wrapper: crate::kms::KeyWrapper) {
         self.key_wrapper = Some(wrapper);
@@ -110,6 +98,34 @@ impl EnclaveState {
     #[must_use]
     pub const fn key_wrapper(&self) -> Option<&crate::kms::KeyWrapper> {
         self.key_wrapper.as_ref()
+    }
+
+    /// Installs the manifest signer fixed by the measured image at boot.
+    pub fn set_manifest_signer(&mut self, signer: crate::kms::ManifestSigner) {
+        self.manifest_signer = Some(signer);
+    }
+
+    /// KMS signer for output PCP manifests, when enabled in the EIF.
+    #[must_use]
+    pub const fn manifest_signer(&self) -> Option<&crate::kms::ManifestSigner> {
+        self.manifest_signer.as_ref()
+    }
+
+    /// Exits the enclave if the worker died.
+    pub fn check_worker(&self) {
+        self.worker.check_alive();
+    }
+
+    /// Runs the provisioned biometric migration pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns the worker's validated rejection for invalid or rejected images.
+    pub fn migrate(
+        &self,
+        inputs: di_migration_pcp::PipelineInputs<'_>,
+    ) -> Result<crate::worker::MigrationOutput, di_worker_protocol::migration::Failure> {
+        self.worker.migrate(inputs)
     }
 
     /// The latest document attesting the channel key's commitment.
@@ -148,27 +164,6 @@ fn issuer_pubkey_from_decimals(x: &str, y: &str) -> anyhow::Result<EdDSAPublicKe
     Ok(EdDSAPublicKey {
         pk: EdwardsAffine { x, y },
     })
-}
-
-/// Reads [`CREDENTIAL_VERIFICATION_ENABLED_ENV`]; unset means the feature is on.
-///
-/// # Errors
-///
-/// When the value is set but not a recognized boolean.
-fn credential_verification_enabled_from_env() -> anyhow::Result<bool> {
-    match env::var(CREDENTIAL_VERIFICATION_ENABLED_ENV) {
-        Err(env::VarError::NotPresent) => Ok(true),
-        Err(error) => Err(anyhow::anyhow!(
-            "{CREDENTIAL_VERIFICATION_ENABLED_ENV}: {error}"
-        )),
-        Ok(value) => match value.to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Ok(true),
-            "0" | "false" | "no" | "off" => Ok(false),
-            other => Err(anyhow::anyhow!(
-                "{CREDENTIAL_VERIFICATION_ENABLED_ENV} must be true or false, got {other:?}"
-            )),
-        },
-    }
 }
 
 #[cfg(test)]

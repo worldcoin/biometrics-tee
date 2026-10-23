@@ -115,6 +115,8 @@ pub enum Reason {
     CredentialSignatureInvalid,
     /// The credential claims did not match the PCP `hashes.json`.
     CredentialClaimsMismatch,
+    /// The device public key was not valid standard Base64.
+    InvalidDevicePublicKeyEncoding,
     /// Reading the PCP or writing the result failed.
     S3Error,
     /// The job did not finish before its deadline.
@@ -123,7 +125,7 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, for parsing.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::HostBusy,
         Self::EnclaveChanged,
         Self::EnclaveError,
@@ -132,6 +134,7 @@ impl Reason {
         Self::CredentialSignatureVerificationFailed,
         Self::CredentialSignatureInvalid,
         Self::CredentialClaimsMismatch,
+        Self::InvalidDevicePublicKeyEncoding,
         Self::S3Error,
         Self::Timeout,
     ];
@@ -150,6 +153,7 @@ impl Reason {
             }
             Self::CredentialSignatureInvalid => "credential_signature_invalid",
             Self::CredentialClaimsMismatch => "credential_claims_mismatch",
+            Self::InvalidDevicePublicKeyEncoding => "invalid_device_public_key_encoding",
             Self::S3Error => "s3_error",
             Self::Timeout => "timeout",
         }
@@ -268,6 +272,10 @@ mod tests {
             (
                 Reason::CredentialClaimsMismatch,
                 "credential_claims_mismatch",
+            ),
+            (
+                Reason::InvalidDevicePublicKeyEncoding,
+                "invalid_device_public_key_encoding",
             ),
             (Reason::S3Error, "s3_error"),
             (Reason::Timeout, "timeout"),

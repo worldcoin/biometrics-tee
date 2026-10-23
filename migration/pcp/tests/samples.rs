@@ -11,6 +11,14 @@ use std::path::{Path, PathBuf};
 use di_migration_pcp::*;
 use support::{build_and_open, context, pipeline};
 
+struct SourcePcp;
+
+impl SourcePcp {
+    fn parse(files: Files) -> Result<di_migration_pcp::SourcePcp, Error> {
+        support::parse_source(files)
+    }
+}
+
 #[test]
 #[ignore = "needs local sample packages in PCP_SAMPLES_DIR"]
 fn local_samples_migrate_and_pass_the_final_check() {
