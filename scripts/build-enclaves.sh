@@ -96,8 +96,8 @@ if [[ ! " ${WORKLOADS[*]} " == *" $workload "* ]]; then
   exit 2
 fi
 
-if [[ ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) && "$workload" != "migration" ]]; then
-  echo "[ERROR] PCP KMS key options require --workload migration." >&2
+if [[ ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) && "$workload" != "migration" && "$workload" != "dev" ]]; then
+  echo "[ERROR] PCP KMS key options require --workload migration or dev." >&2
   exit 2
 fi
 
