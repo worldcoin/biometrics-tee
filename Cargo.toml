@@ -7,6 +7,7 @@ members = [
     "selfie-enrollment/api-types",
     "selfie-enrollment/sealed-types",
     "selfie-enrollment/enclave-types",
+    "selfie-enrollment/shares",
 
     "dev/api-primitives",
     "dev/client",

@@ -19,12 +19,24 @@ The sealed CBOR request contains protocol version 1 and an image of at most 8 Mi
 - `api-types`: public session messages and limits.
 - `enclave-types`: ciphertext-only Pontifex RPCs and health.
 - `sealed-types`: client/enclave plaintext types and strict codecs.
+- `shares` (`embedding-shares`): standalone Oxide-compatible face embedding decoding, quantization, share generation and recipient encryption through `embedding_shares::generate(...)` and `embedding_shares::encrypt(...)`; not yet wired into extraction.
 - `enclave`: worker bootstrap, Minijail adapter, attested keys, extraction policy.
 - `host`: bounded WebSocket relay, health/readiness and graceful shutdown.
 - `e2e`: native diagnostic command and loopback-only browser harness.
 - `client`: shared verification and sealing, native transport, browser WASM transport with bounded incoming queue and AbortSignal support.
 
 The enclave runs its worker through [tabernaculum](https://github.com/worldcoin/tabernaculum), pinned by git revision in both the manifest and lockfile; its bundle receiver and worker transport remain byte-oriented. Enrollment uses the published `biometric-engines-protocol` face contract rather than DI's vendored migration protocol. The worker is started before broker keys or executor threads exist. Worker transport/protocol failures terminate the enclave; image/quality rejections remain recoverable.
+
+`embedding_shares::encrypt(&shares, &recipient_keys, &mut rng)` accepts three
+`crypto_box::PublicKey` values in AMPC party order 0, 1, 2 and returns three
+standard-base64 sealed boxes. Each box encrypts the same-index share's
+`{version, share_data}` JSON, matching Oxide. The helper borrows the plaintext
+shares so the caller can also use them for PCP assembly, and erases temporary
+JSON buffers. It rejects non-canonical, duplicate and low-order keys before
+consuming randomness.
+The caller must authenticate the recipient keys; this helper does not establish
+their provenance. Key provisioning and extraction/submission integration remain
+separate work.
 
 ## Review against Flamingo
 
@@ -51,7 +63,8 @@ The assignment and sealed-request changes require a matching client/server relea
 
 ```sh
 cargo test --locked -p selfie-enrollment-api-types -p selfie-enrollment-sealed-types \
-  -p selfie-enrollment-enclave -p selfie-enrollment-host -p selfie-enrollment-client
+  -p selfie-enrollment-enclave -p selfie-enrollment-host -p selfie-enrollment-client \
+  -p embedding-shares
 cargo check --locked -p selfie-enrollment-client --target wasm32-unknown-unknown
 scripts/build-enclaves.sh --workload selfie-enrollment target/eif
 ```
