@@ -64,6 +64,9 @@ fn config() -> aws_sdk_kms::config::Builder {
     aws_sdk_kms::config::Builder::new()
         .behavior_version(BehaviorVersion::latest())
         .region(Region::new("us-east-1"))
+        .http_client(test_client(|_| {
+            panic!("test did not configure a KMS response")
+        }))
         .retry_config(
             aws_sdk_kms::config::retry::RetryConfig::standard()
                 .with_initial_backoff(std::time::Duration::ZERO),

@@ -6,6 +6,12 @@ use aws_sdk_kms::{
     Client,
     config::{BehaviorVersion, Region},
 };
+use aws_smithy_runtime_api::client::{
+    http::{
+        HttpConnector, HttpConnectorFuture, SharedHttpClient, SharedHttpConnector, http_client_fn,
+    },
+    orchestrator::HttpRequest,
+};
 use di_migration_enclave_primitives as enclave_primitives;
 use world_id_primitives::{EdDSAPrivateKey, EdDSAPublicKey};
 
@@ -83,7 +89,22 @@ fn test_key_wrapper() -> crate::kms::KeyWrapper {
     let config = aws_sdk_kms::Config::builder()
         .behavior_version(BehaviorVersion::latest())
         .region(Region::new("us-east-1"))
+        .http_client(test_http_client())
         .build();
     crate::kms::KeyWrapper::new(&Client::from_conf(config), KEY_ARN.to_owned())
         .expect("test key ARN should be valid")
+}
+
+#[derive(Debug)]
+struct UnexpectedKmsConnector;
+
+impl HttpConnector for UnexpectedKmsConnector {
+    fn call(&self, _request: HttpRequest) -> HttpConnectorFuture {
+        panic!("this test must not call KMS")
+    }
+}
+
+fn test_http_client() -> SharedHttpClient {
+    let connector = SharedHttpConnector::new(UnexpectedKmsConnector);
+    http_client_fn(move |_, _| connector.clone())
 }
