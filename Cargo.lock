@@ -3082,6 +3082,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "aws-sdk-kms",
+ "aws-smithy-http-client",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "aws-types",

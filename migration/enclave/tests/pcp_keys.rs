@@ -285,7 +285,12 @@ async fn invalid_kms_responses_are_rejected() {
 #[ignore = "requires LOCALSTACK_ENDPOINT with KMS"]
 async fn localstack_ciphertexts_round_trip_into_the_archive_keys() {
     let endpoint = std::env::var("LOCALSTACK_ENDPOINT").expect("LOCALSTACK_ENDPOINT is required");
-    let client = Client::from_conf(config().endpoint_url(endpoint).build());
+    let client = Client::from_conf(
+        config()
+            .http_client(aws_smithy_http_client::Builder::new().build_http())
+            .endpoint_url(endpoint)
+            .build(),
+    );
     let created = client.create_key().send().await.unwrap();
     let arn = created.key_metadata.unwrap().arn.unwrap();
     let alias = format!("alias/pcp-test-{}", arn.rsplit('/').next().unwrap());
