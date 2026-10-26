@@ -54,7 +54,7 @@ pub struct SandboxWorker {
 impl SandboxWorker {
     /// Wraps a started worker with the immutable bundle release identifier.
     #[must_use]
-    pub fn new(worker: tabernaculum::Worker, pipeline_version: String) -> Self {
+    pub const fn new(worker: tabernaculum::Worker, pipeline_version: String) -> Self {
         Self {
             worker: std::sync::Mutex::new(worker),
             next_id: std::sync::atomic::AtomicU64::new(1),
@@ -75,9 +75,7 @@ impl Worker for SandboxWorker {
             left_iris: inputs.left_ir_png.to_vec(),
             right_iris: inputs.right_ir_png.to_vec(),
         };
-        if let Err(failure) = di_worker_protocol::migration::check_image_limits(&request) {
-            return Err(failure);
-        }
+        di_worker_protocol::migration::check_image_limits(&request)?;
 
         let mut worker = self
             .worker
@@ -116,7 +114,9 @@ impl Worker for SandboxWorker {
             }
             Err(_) => worker.fail(),
         };
-        let result = decode_result(&response, id).unwrap_or_else(|()| worker.fail())?;
+        let result = decode_result(&response, id).unwrap_or_else(|()| worker.fail());
+        drop(worker);
+        let result = result?;
         Ok(MigrationOutput {
             pipeline_version: self.pipeline_version.clone(),
             result,

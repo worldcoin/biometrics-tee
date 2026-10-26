@@ -8,7 +8,9 @@ use ampc_secret_sharing::iris_vector::{IRIS_VECTOR_SIZE, IrisVector};
 use rand::{CryptoRng, Rng};
 
 /// Locked Git revision of the AMPC implementation used to produce these shares.
-pub const VERSION: &str = env!("AMPC_SECRET_SHARING_VERSION");
+///
+/// This must match the `ampc-secret-sharing` revision pinned in this crate's `Cargo.toml`.
+pub const VERSION: &str = "f27c39547b75b6ab7b87dd64c513cc70b003b83a";
 
 /// Sharing failures without embedding values. The caller supplies eye and mirror context.
 #[derive(Debug, thiserror::Error)]
