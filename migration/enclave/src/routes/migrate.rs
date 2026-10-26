@@ -35,7 +35,7 @@ impl di_migration_pcp::BackendKeyDecryptor for UnconfiguredKeyDecryptor {
 
 /// Ceiling for `hashes.json` inside a PCP; the file is a small JSON manifest.
 const MAX_HASHES_JSON_BYTES: usize = 1024 * 1024;
-const TEE_SOFTWARE_VERSION: &str = "1.0.0";
+const TEE_SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Opens the app's PCP with this boot's key and seals it back to the app's one-time response
 /// key, so the host only ever handles ciphertext. The PCP tiers are encrypted to the

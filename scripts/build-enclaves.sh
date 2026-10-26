@@ -111,7 +111,7 @@ cd "$repo_root"
 
 build_output() {
   local format="$1"
-  if [[ -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ]]; then
+  if [[ "$workload" == "migration" && ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) ]]; then
     # Terraform validates the ARNs. Pass them as data, never interpolated Nix source;
     # the image embeds their identities in the measured environment.
     PCP_BUILD_ROOT="$repo_root" PCP_BUILD_KEY_ARN="$pcp_kms_key_arn" PCP_BUILD_SIGNING_KEY_ARN="$pcp_kms_signing_key_arn" PCP_BUILD_FORMAT="$format" \
