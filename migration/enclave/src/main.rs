@@ -23,20 +23,13 @@ async fn main() -> anyhow::Result<()> {
     attestation::connect()
         .await
         .context("Nitro Secure Module is unavailable")?;
-    let mut state =
-        EnclaveState::from_env(Arc::new(NsmAttestor)).context("failed to boot enclave state")?;
-    match std::env::var("PCP_KMS_KEY_ARN") {
-        Ok(arn) => {
-            state.set_key_wrapper(
-                KeyWrapper::from_parent(arn).context("invalid measured KMS configuration")?,
-            );
-            tracing::info!("PCP key wrapping configured");
-        }
-        Err(std::env::VarError::NotPresent) => tracing::info!("PCP key wrapping is not configured"),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            anyhow::bail!("invalid measured KMS configuration")
-        }
-    }
+    let key_arn = std::env::var("PCP_KMS_KEY_ARN")
+        .context("PCP_KMS_KEY_ARN is not configured in the measured environment")?;
+    let key_wrapper =
+        KeyWrapper::from_parent(key_arn).context("invalid measured KMS configuration")?;
+    let mut state = EnclaveState::from_env(Arc::new(NsmAttestor), key_wrapper)
+        .context("failed to boot enclave state")?;
+    tracing::info!("PCP key wrapping configured");
     match std::env::var("PCP_KMS_SIGNING_KEY_ARN") {
         Ok(arn) => {
             state.set_manifest_signer(

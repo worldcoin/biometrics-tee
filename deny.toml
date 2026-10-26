@@ -20,6 +20,11 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is required by the worker embedding wire format and pinned Hyrax serialization; changing it requires upstream compatibility validation" },
     { id = "RUSTSEC-2024-0388", reason = "derivative 2.2.0 is a transitive macro dependency of Hyrax/arkworks 0.4; no compatible upstream replacement" },
     { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive macro dependency of Hyrax/arkworks 0.4; no compatible upstream replacement" },
+    { id = "RUSTSEC-2026-0381", reason = "only hit is the webpki-roots 0.26.11 shim, which re-exports webpki-roots 1.x (locked at 1.0.10)" },
+    # The patched crypto-bigint line starts at 0.7.6. The remaining 0.5.5 is required by
+    # elliptic-curve 0.13 through attested-request and world-id-primitives, and has no
+    # compatible patched release. Remove this when both upstreams use RustCrypto 0.14.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 is pinned by upstream RustCrypto 0.13 users; no patched 0.5 release exists" },
 ]
 
 [bans]

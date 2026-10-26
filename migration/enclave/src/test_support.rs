@@ -2,6 +2,10 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use aws_sdk_kms::{
+    Client,
+    config::{BehaviorVersion, Region},
+};
 use di_migration_enclave_primitives as enclave_primitives;
 use world_id_primitives::{EdDSAPrivateKey, EdDSAPublicKey};
 
@@ -67,6 +71,19 @@ pub fn state_with_issuer_pubkey(issuer_pubkey: EdDSAPublicKey) -> crate::state::
     crate::state::EnclaveState::generate(
         std::sync::Arc::new(CountingAttestor::default()),
         issuer_pubkey,
+        test_key_wrapper(),
     )
     .expect("should generate a key")
+}
+
+/// A syntactically valid wrapper for tests that finish before making a KMS request.
+fn test_key_wrapper() -> crate::kms::KeyWrapper {
+    const KEY_ARN: &str =
+        "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000001";
+    let config = aws_sdk_kms::Config::builder()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::new("us-east-1"))
+        .build();
+    crate::kms::KeyWrapper::new(&Client::from_conf(config), KEY_ARN.to_owned())
+        .expect("test key ARN should be valid")
 }

@@ -20,19 +20,6 @@ use world_id_primitives::{
 
 use crate::state::EnclaveState;
 
-struct UnconfiguredKeyDecryptor;
-
-#[async_trait::async_trait]
-impl di_migration_pcp::BackendKeyDecryptor for UnconfiguredKeyDecryptor {
-    async fn decrypt_backend_key(
-        &self,
-        _encrypted_private_key: &[u8],
-        archive_role: &'static str,
-    ) -> Result<zeroize::Zeroizing<Vec<u8>>, di_migration_pcp::Error> {
-        Err(di_migration_pcp::Error::BackendKeyDecryption(archive_role))
-    }
-}
-
 /// Ceiling for `hashes.json` inside a PCP; the file is a small JSON manifest.
 const MAX_HASHES_JSON_BYTES: usize = 1024 * 1024;
 const TEE_SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -91,12 +78,8 @@ pub async fn handler(
             S3Region::UsEast1,
         );
 
-        let key_wrapper = state.key_wrapper().ok_or_else(|| {
-            tracing::error!("PCP key wrapping is not configured");
-            enclave_primitives::Error::Internal
-        })?;
         let backend_keys = tokio::runtime::Handle::current()
-            .block_on(BackendKeys::generate(key_wrapper))
+            .block_on(BackendKeys::generate(state.key_wrapper()))
             .map_err(|error| {
                 tracing::error!(%error, "failed to generate and wrap PCP backend recipients");
                 enclave_primitives::Error::Internal
@@ -140,13 +123,8 @@ fn parse_source_pcp(
     state: &EnclaveState,
     files: di_migration_pcp::Files,
 ) -> Result<SourcePcp, enclave_primitives::Error> {
-    let parsed = match state.key_wrapper() {
-        Some(key_wrapper) => {
-            tokio::runtime::Handle::current().block_on(SourcePcp::parse(files, key_wrapper))
-        }
-        None => tokio::runtime::Handle::current()
-            .block_on(SourcePcp::parse(files, &UnconfiguredKeyDecryptor)),
-    };
+    let parsed =
+        tokio::runtime::Handle::current().block_on(SourcePcp::parse(files, state.key_wrapper()));
     parsed.map_err(|error| {
         if matches!(error, di_migration_pcp::Error::BackendKeyDecryption(_)) {
             tracing::error!(%error, dependency = "kms", "source PCP key unwrap failed");

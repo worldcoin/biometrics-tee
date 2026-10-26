@@ -20,7 +20,7 @@ pub struct EnclaveState {
     channel: ChannelEnclave,
     /// Attests the channel key's commitment, which apps check before sealing a PCP.
     attested_channel_key: AttestedKey,
-    key_wrapper: Option<crate::kms::KeyWrapper>,
+    key_wrapper: crate::kms::KeyWrapper,
     manifest_signer: Option<crate::kms::ManifestSigner>,
     /// Signup-service credential signer key used to verify PCP credentials.
     issuer_pubkey: EdDSAPublicKey,
@@ -36,6 +36,7 @@ impl EnclaveState {
     pub fn generate(
         attestor: Arc<dyn Attestor>,
         issuer_pubkey: EdDSAPublicKey,
+        key_wrapper: crate::kms::KeyWrapper,
     ) -> Result<Self, enclave_primitives::Error> {
         let channel = ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))
             .map_err(|error| {
@@ -51,7 +52,7 @@ impl EnclaveState {
         Ok(Self {
             channel,
             attested_channel_key,
-            key_wrapper: None,
+            key_wrapper,
             manifest_signer: None,
             issuer_pubkey,
         })
@@ -64,9 +65,12 @@ impl EnclaveState {
     ///
     /// When an env var is missing or not a decimal field element, or when key generation /
     /// attestation fails.
-    pub fn from_env(attestor: Arc<dyn Attestor>) -> anyhow::Result<Self> {
+    pub fn from_env(
+        attestor: Arc<dyn Attestor>,
+        key_wrapper: crate::kms::KeyWrapper,
+    ) -> anyhow::Result<Self> {
         let issuer_pubkey = issuer_pubkey_from_env()?;
-        Self::generate(attestor, issuer_pubkey).map_err(|error| {
+        Self::generate(attestor, issuer_pubkey, key_wrapper).map_err(|error| {
             anyhow::anyhow!("failed to generate and attest the channel key: {error:?}")
         })
     }
@@ -83,15 +87,10 @@ impl EnclaveState {
         &self.issuer_pubkey
     }
 
-    /// Installs wrapping configuration fixed by the measured image at boot.
-    pub fn set_key_wrapper(&mut self, wrapper: crate::kms::KeyWrapper) {
-        self.key_wrapper = Some(wrapper);
-    }
-
-    /// KMS wrapper for per-package recipient generation, when enabled in the EIF.
+    /// KMS wrapper for source-key decryption and per-package recipient generation.
     #[must_use]
-    pub const fn key_wrapper(&self) -> Option<&crate::kms::KeyWrapper> {
-        self.key_wrapper.as_ref()
+    pub const fn key_wrapper(&self) -> &crate::kms::KeyWrapper {
+        &self.key_wrapper
     }
 
     /// Installs the manifest signer fixed by the measured image at boot.
