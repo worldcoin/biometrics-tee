@@ -209,6 +209,9 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
       - name: Build EIF and measurements
+        env:
+          STAGING_PCP_KMS_KEY_ARN: ${{ secrets.STAGING_PCP_KMS_KEY_ARN }}
+          STAGING_PCP_KMS_SIGNING_KEY_ARN: ${{ secrets.STAGING_PCP_KMS_SIGNING_KEY_ARN }}
         run: scripts/build-enclaves.sh --workload ${{ matrix.workload }} target/eif
 
       - name: Show measurements

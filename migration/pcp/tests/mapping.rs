@@ -12,6 +12,14 @@ use support::{
     check_request, context, iris_code_share, open, pipeline, refresh_source_manifest, source_files,
 };
 
+struct SourcePcp;
+
+impl SourcePcp {
+    fn parse(files: Files) -> Result<di_migration_pcp::SourcePcp, Error> {
+        support::parse_source(files)
+    }
+}
+
 const VERSIONS: [&str; 11] = [
     "0.2", "0.3", "2.0", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8",
 ];
@@ -190,6 +198,7 @@ fn absent_or_empty_pipeline_images_fail_by_presence_not_version() {
                 } else {
                     files.remove(name);
                 }
+                refresh_source_manifest(&mut files);
                 assert_eq!(
                     SourcePcp::parse(files).err(),
                     Some(Error::MissingArtifact(name))
@@ -312,13 +321,13 @@ fn malformed_fields_versions_and_duplicates_are_rejected_without_payloads() {
             Error::UnsupportedVersion
         );
     }
-    let mut files = source_files("2.8");
+    let mut files = support::encrypt_source(source_files("2.8"));
     files.insert(
         "info.json".into(),
         br#"{"signup_id":"first","signup_id":"second","orb_id":"o"}"#.to_vec(),
     );
     assert!(matches!(
-        SourcePcp::parse(files).err().unwrap(),
+        support::parse_encrypted_source(files).err().unwrap(),
         Error::InvalidJson { .. }
     ));
 }
@@ -667,12 +676,12 @@ fn builder_generated_orb_captures_open_as_sources() {
 }
 
 #[test]
-fn unopened_thermal_archive_requires_extraction() {
+fn malformed_thermal_archive_is_rejected() {
     let mut files = source_files("2.5");
     files.insert("face_ir_and_thermal.tar".into(), vec![255, 0, 1]);
     assert_eq!(
         SourcePcp::parse(files).err(),
-        Some(Error::UnopenedArtifact("face_ir_and_thermal.tar"))
+        Some(Error::ArchiveDecryption("tier2"))
     );
 }
 

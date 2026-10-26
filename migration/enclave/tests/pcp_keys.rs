@@ -53,7 +53,7 @@ use di_migration_enclave::{
     kms::{Error, KeyWrapper},
     pcp_keys::{self, BackendKeys},
 };
-use di_migration_pcp::{SourcePcp, validate_build_inputs, verify_completed_pcp};
+use di_migration_pcp::{validate_build_inputs, verify_completed_pcp};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use support::{open_tier, unseal};
@@ -64,6 +64,9 @@ fn config() -> aws_sdk_kms::config::Builder {
     aws_sdk_kms::config::Builder::new()
         .behavior_version(BehaviorVersion::latest())
         .region(Region::new("us-east-1"))
+        .http_client(test_client(|_| {
+            panic!("test did not configure a KMS response")
+        }))
         .retry_config(
             aws_sdk_kms::config::retry::RetryConfig::standard()
                 .with_initial_backoff(std::time::Duration::ZERO),
@@ -118,7 +121,7 @@ fn recover_key(bytes: &[u8], public_key: &[u8]) -> sealedbox::Keypair {
     pair
 }
 
-fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
+async fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
     let mut input = support::source_files("2.8");
     input.insert(
         "face_ir_and_thermal/face_ir.png".into(),
@@ -130,7 +133,7 @@ fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
     );
     input.insert("fraud/scc_rgb.png".into(), b"synthetic-fraud".to_vec());
     support::refresh_source_manifest(&mut input);
-    let source = SourcePcp::parse(input).unwrap();
+    let source = support::parse_source_async(input).await.unwrap();
     let bio = support::pipeline();
     let ctx = support::context();
     let user = sealedbox::Keypair::generate().unwrap();
@@ -203,7 +206,8 @@ async fn wrapped_keys_build_a_package_that_opens_with_the_recovered_keys() {
     );
     check_package(&keys, |envelope| {
         unseal(&STANDARD.decode(envelope).unwrap(), &master)
-    });
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -281,7 +285,12 @@ async fn invalid_kms_responses_are_rejected() {
 #[ignore = "requires LOCALSTACK_ENDPOINT with KMS"]
 async fn localstack_ciphertexts_round_trip_into_the_archive_keys() {
     let endpoint = std::env::var("LOCALSTACK_ENDPOINT").expect("LOCALSTACK_ENDPOINT is required");
-    let client = Client::from_conf(config().endpoint_url(endpoint).build());
+    let client = Client::from_conf(
+        config()
+            .http_client(aws_smithy_http_client::Builder::new().build_http())
+            .endpoint_url(endpoint)
+            .build(),
+    );
     let created = client.create_key().send().await.unwrap();
     let arn = created.key_metadata.unwrap().arn.unwrap();
     let alias = format!("alias/pcp-test-{}", arn.rsplit('/').next().unwrap());
@@ -331,7 +340,7 @@ async fn localstack_ciphertexts_round_trip_into_the_archive_keys() {
         .send()
         .await
         .unwrap();
-    check_package(&keys, |envelope| unwrapped[envelope].clone());
+    check_package(&keys, |envelope| unwrapped[envelope].clone()).await;
 }
 
 #[tokio::test]

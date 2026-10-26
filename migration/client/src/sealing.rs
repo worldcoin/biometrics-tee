@@ -29,8 +29,6 @@ pub enum SealingError {
     Seal(#[source] ChannelError),
     #[error("failed to open the migrated PCP: {0}")]
     Open(#[source] ChannelError),
-    #[error("the migrated PCP carried an unknown payload")]
-    UnknownPayload,
 }
 
 /// Checks enclave attestations against the PCRs of the enclave builds the app trusts.
@@ -121,11 +119,9 @@ impl PcpOpener {
     ///
     /// # Errors
     ///
-    /// [`SealingError`] when `blob` was not sealed to this request or carries an unknown payload.
-    pub fn open(self, blob: &[u8]) -> Result<(Zeroizing<Vec<u8>>, String), SealingError> {
-        let payload = self.0.open_from_enclave(blob).map_err(SealingError::Open)?;
-        let pcp = pcp_payload::decode(&payload).map_err(|_| SealingError::UnknownPayload)?;
-        Ok((Zeroizing::new(pcp.pcp), pcp.credential))
+    /// [`SealingError::Open`] when `blob` was not sealed to this request.
+    pub fn open(self, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SealingError> {
+        self.0.open_from_enclave(blob).map_err(SealingError::Open)
     }
 }
 
@@ -162,9 +158,7 @@ mod tests {
     fn migrate(enclave: &ChannelEnclave, blob: &[u8]) -> Vec<u8> {
         let (plaintext, sealer) = enclave.open(blob).expect("sealed to this enclave");
         let pcp = pcp_payload::decode(&plaintext).expect("a PCP payload");
-        sealer
-            .seal(&pcp_payload::encode(&pcp.pcp, &pcp.credential).expect("encode"))
-            .expect("should seal")
+        sealer.seal(&pcp.pcp).expect("should seal")
     }
 
     #[test]
@@ -180,8 +174,7 @@ mod tests {
             .expect("should seal");
         let pcp = opener.open(&migrate(&enclave, &blob)).expect("should open");
 
-        assert_eq!(pcp.0.as_slice(), b"old pcp");
-        assert_eq!(pcp.1, "self-custody");
+        assert_eq!(pcp.as_slice(), b"old pcp");
     }
 
     #[test]
@@ -271,26 +264,5 @@ mod tests {
             matches!(error, SealingError::EnclaveIdMismatch { .. }),
             "{error}"
         );
-    }
-
-    #[test]
-    fn a_reply_with_an_unknown_payload_version_is_rejected() {
-        let enclave = ChannelEnclave::generate(domain()).expect("should generate");
-        let channel = EnclaveChannel(
-            ChannelConsumer::from_unverified_public_key(domain(), &enclave.public_key())
-                .expect("valid key"),
-        );
-        let (blob, opener) = channel
-            .seal(b"old pcp", "self-custody")
-            .expect("should seal");
-
-        // An enclave build that replies with a payload version this client does not know.
-        let (_, sealer) = enclave.open(&blob).expect("sealed to this enclave");
-        let reply = sealer
-            .seal(&[pcp_payload::PCP_WITH_CREDENTIAL_VERSION + 1, 0x42])
-            .expect("should seal");
-        let error = opener.open(&reply).expect_err("an unknown payload");
-
-        assert!(matches!(error, SealingError::UnknownPayload), "{error}");
     }
 }

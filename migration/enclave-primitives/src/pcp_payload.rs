@@ -1,4 +1,4 @@
-//! The plaintext inside the sealed channel, in both directions: a version byte, then the body.
+//! The request plaintext inside the sealed channel: a version byte, then the body.
 //!
 //! The version lets the app's request grow, e.g. by a self-custody key, without a new route.
 

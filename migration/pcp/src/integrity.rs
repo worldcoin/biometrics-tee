@@ -116,18 +116,26 @@ impl Manifest {
             }
         }
         for (name, hash) in &expected {
-            match self.hashes.get(*name) {
-                None => return Err(Error::SourceIntegrity("manifest_entry_missing")),
-                Some(actual) if !actual.eq_ignore_ascii_case(hash) => {
-                    return Err(Error::SourceIntegrity("manifest_hash_mismatch"));
-                }
-                Some(_) => {}
-            }
+            self.verify_hash(name, hash)?;
         }
         if self.hashes.len() != expected.len() {
             return Err(Error::SourceIntegrity("manifest_entry_unexpected"));
         }
         Ok(())
+    }
+
+    pub fn verify_file(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
+        self.verify_hash(name, &format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    fn verify_hash(&self, name: &str, hash: &str) -> Result<(), Error> {
+        match self.hashes.get(name) {
+            None => Err(Error::SourceIntegrity("manifest_entry_missing")),
+            Some(actual) if !actual.eq_ignore_ascii_case(hash) => {
+                Err(Error::SourceIntegrity("manifest_hash_mismatch"))
+            }
+            Some(_) => Ok(()),
+        }
     }
 }
 

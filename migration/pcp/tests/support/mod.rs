@@ -6,9 +6,120 @@
 use std::io::Read;
 
 use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use di_migration_pcp::*;
 use orb_pcp_defs::v1;
 use serde_json::json;
+use zeroize::Zeroizing;
+
+pub struct NoopDecryptor;
+
+#[async_trait::async_trait]
+impl BackendKeyDecryptor for NoopDecryptor {
+    async fn decrypt_backend_key(
+        &self,
+        encrypted_private_key: &[u8],
+        _archive_role: &'static str,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        Ok(Zeroizing::new(encrypted_private_key.to_vec()))
+    }
+}
+
+pub fn parse_source(files: Files) -> Result<SourcePcp, Error> {
+    parse_encrypted_source(encrypt_source(files))
+}
+
+pub async fn parse_source_async(files: Files) -> Result<SourcePcp, Error> {
+    SourcePcp::parse(encrypt_source(files), &NoopDecryptor).await
+}
+
+pub fn parse_encrypted_source(files: Files) -> Result<SourcePcp, Error> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(SourcePcp::parse(files, &NoopDecryptor))
+}
+
+pub fn encrypt_source(mut files: Files) -> Files {
+    let keys = OutputKeys::generate();
+    for (archive, pair) in [
+        ("iris", &keys.iris),
+        ("normalized_iris", &keys.normalized_iris),
+        ("face", &keys.face),
+        ("fraud", &keys.face),
+        ("face_ir_and_thermal", &keys.tier2),
+    ] {
+        let prefix = format!("{archive}/");
+        let members: Files = files
+            .keys()
+            .filter_map(|path| {
+                path.strip_prefix(&prefix)
+                    .filter(|member| valid_archive_member(member))
+                    .map(|member| (path.clone(), member.to_owned()))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(path, member)| (member, files.remove(&path).unwrap()))
+            .collect();
+        if !members.is_empty() {
+            files.insert(format!("{archive}.tar"), seal_tar(&members, pair));
+        }
+    }
+    let backend_key = |pair: &sealedbox::Keypair| v1::BackendKey {
+        public_key: Some(STANDARD.encode(pair.public_key.as_ref())),
+        encrypted_private_key: Some(STANDARD.encode(pair.private_key.as_ref())),
+    };
+    files.insert(
+        "backend_keys.json".into(),
+        serde_json::to_vec(&v1::BackendKeys {
+            iris: Some(backend_key(&keys.iris)),
+            normalized_iris: Some(backend_key(&keys.normalized_iris)),
+            face: Some(backend_key(&keys.face)),
+            tier2: Some(backend_key(&keys.tier2)),
+        })
+        .unwrap(),
+    );
+    // Only the generated backend keys change the manifest. Inner member hashes
+    // remain hashes of plaintext, and intentional corruption must stay intact.
+    // Leave malformed manifests untouched so the parser can reject them.
+    if let Some(bytes) = files.get("hashes.json")
+        && let Ok(serde_json::Value::Object(mut manifest)) = serde_json::from_slice(bytes)
+    {
+        use sha2::{Digest, Sha256};
+
+        manifest.insert(
+            "backend_keys.json".into(),
+            json!(format!("{:x}", Sha256::digest(&files["backend_keys.json"]))),
+        );
+        files.insert("hashes.json".into(), serde_json::to_vec(&manifest).unwrap());
+    }
+    files
+}
+
+fn valid_archive_member(path: &str) -> bool {
+    !path.is_empty()
+        && path.is_ascii()
+        && !path.contains(['\\', '\0'])
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn seal_tar(files: &Files, pair: &sealedbox::Keypair) -> Vec<u8> {
+    let mut tar = tar::Builder::new(Vec::new());
+    for (path, bytes) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(path).unwrap();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append(&header, bytes.as_slice()).unwrap();
+    }
+    let plaintext = tar.into_inner().unwrap();
+    let mut ciphertext = vec![0; plaintext.len() + sealedbox::OVERHEAD_LENGTH];
+    sealedbox::encrypt(&plaintext, &pair.public_key, &mut ciphertext).unwrap();
+    ciphertext
+}
 
 /// Synthetic multiframe image IDs in their canonical form.
 pub const FRAME_A: &str = "0012a0b1c2d3e4f5a6b7c8d901000000";
@@ -77,12 +188,23 @@ pub fn source_files(version: &str) -> Files {
 /// protected values and hash the exact artifacts. Corruption tests edit only
 /// after this step, leaving the manifest unchanged.
 pub fn refresh_source_manifest(files: &mut Files) {
+    try_refresh_source_manifest(files).unwrap();
+}
+
+fn try_refresh_source_manifest(files: &mut Files) -> Result<(), ()> {
     use serde_json::Value;
     use sha2::{Digest, Sha256};
 
-    let mut info: Value = serde_json::from_slice(&files["info.json"]).unwrap();
+    let mut info: Value =
+        serde_json::from_slice(files.get("info.json").ok_or(())?).map_err(|_| ())?;
+    let version = serde_json::from_slice::<Value>(files.get("hashes.json").ok_or(())?)
+        .map_err(|_| ())?["version"]
+        .clone();
+    if version.is_null() {
+        return Err(());
+    }
     let mut manifest = json!({
-        "version": serde_json::from_slice::<Value>(&files["hashes.json"]).unwrap()["version"]
+        "version": version
     });
     for name in [
         "signup_id",
@@ -107,20 +229,29 @@ pub fn refresh_source_manifest(files: &mut Files) {
         let value = match &info[name] {
             Value::String(value) => value.clone(),
             Value::Number(value) => value.to_string(),
-            _ => panic!("unsupported synthetic metadata value"),
+            _ => return Err(()),
         };
-        let input = format!("{value}{}", info[&salt_name].as_str().unwrap());
+        let input = format!("{value}{}", info[&salt_name].as_str().ok_or(())?);
         manifest[name] = json!(format!("{:x}", Sha256::digest(input.as_bytes())));
     }
-    files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
+    files.insert(
+        "info.json".into(),
+        serde_json::to_vec(&info).map_err(|_| ())?,
+    );
     for (path, bytes) in files.iter() {
         if !matches!(path.as_str(), "info.json" | "hashes.json" | "hashes.sign") {
-            let name = path.rsplit('/').next().unwrap();
-            assert!(manifest.get(name).is_none(), "duplicate synthetic member");
+            let name = path.rsplit('/').next().ok_or(())?;
+            if manifest.get(name).is_some() {
+                return Err(());
+            }
             manifest[name] = json!(format!("{:x}", Sha256::digest(bytes)));
         }
     }
-    files.insert("hashes.json".into(), serde_json::to_vec(&manifest).unwrap());
+    files.insert(
+        "hashes.json".into(),
+        serde_json::to_vec(&manifest).map_err(|_| ())?,
+    );
+    Ok(())
 }
 
 pub fn context() -> MigrationContext {
