@@ -7,6 +7,7 @@ use std::{
 
 use di_migration_enclave_primitives::{self as enclave_primitives, MigrateRequest};
 use di_migration_primitives::{Reason, host_api::JobRequest};
+use telemetry_batteries::reexports::metrics;
 
 use crate::{
     enclave::{self, EnclaveClient},
@@ -52,12 +53,19 @@ impl JobRunner {
     /// reads as `timeout`, so it is skipped rather than spending enclave time.
     pub async fn handle(&self, job: &JobRequest) {
         if unix_now() > job.deadline {
+            metrics::counter!("migration.host.job_failures", "reason" => Reason::Timeout.as_str())
+                .increment(1);
             tracing::warn!(job_id = %job.job_id, "job passed its deadline in the queue; skipped");
             return;
         }
         let recorded = match self.migrate(job).await {
             Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
-            Err(reason) => self.job_store.mark_failed(job, reason).await,
+            Err(reason) => {
+                // Count the observed failure even if persisting the outcome fails.
+                metrics::counter!("migration.host.job_failures", "reason" => reason.as_str())
+                    .increment(1);
+                self.job_store.mark_failed(job, reason).await
+            }
         };
 
         match recorded {

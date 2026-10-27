@@ -2,6 +2,26 @@
 
 WIP
 
+The host emits `migration.host.job_failures`, tagged with the public `reason` value.
+It counts each failed attempt observed by the runner, including jobs skipped after
+their queue deadline, even if recording the outcome in DynamoDB fails. It is not
+an authoritative count of persisted job statuses or API-side timeouts.
+
+Datadog tracing (`TELEMETRY_PRESET=datadog`) does not enable metrics. Configure the
+host to send DogStatsD metrics to the node's Datadog agent:
+
+```yaml
+TELEMETRY_METRICS_BACKEND: statsd
+TELEMETRY_STATSD_HOST: "$(DATADOG_AGENT_HOST)"
+TELEMETRY_STATSD_PORT: "8125"
+```
+
+`DATADOG_AGENT_HOST` must be defined earlier in the pod's environment from
+`status.hostIP`. The agent must accept UDP traffic from pods on port 8125.
+These settings also enable the existing `migration.kms_relay.*` metrics.
+In Datadog, counts per reason can be queried with
+`sum:migration.host.job_failures{*} by {reason}.as_count()`.
+
 ## Sandboxed workers
 
 The dev and Selfie Check enclaves run their workers through [tabernaculum](https://github.com/worldcoin/tabernaculum), pinned by git revision.
