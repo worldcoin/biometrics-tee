@@ -7,6 +7,7 @@ use std::{
 
 use di_migration_enclave_primitives::{self as enclave_primitives, MigrateRequest};
 use di_migration_primitives::{Reason, host_api::JobRequest};
+use telemetry_batteries::reexports::metrics;
 
 use crate::{
     enclave::{self, EnclaveClient},
@@ -52,12 +53,19 @@ impl JobRunner {
     /// reads as `timeout`, so it is skipped rather than spending enclave time.
     pub async fn handle(&self, job: &JobRequest) {
         if unix_now() > job.deadline {
+            metrics::counter!("migration.host.job_failures", "reason" => Reason::Timeout.as_str())
+                .increment(1);
             tracing::warn!(job_id = %job.job_id, "job passed its deadline in the queue; skipped");
             return;
         }
         let recorded = match self.migrate(job).await {
             Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
-            Err(reason) => self.job_store.mark_failed(job, reason).await,
+            Err(reason) => {
+                // Count the observed failure even if persisting the outcome fails.
+                metrics::counter!("migration.host.job_failures", "reason" => reason.as_str())
+                    .increment(1);
+                self.job_store.mark_failed(job, reason).await
+            }
         };
 
         match recorded {
@@ -159,10 +167,17 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, sync::Arc};
+    use std::{
+        num::NonZeroUsize,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+    };
 
     use di_migration_enclave_primitives as enclave_primitives;
     use di_migration_primitives::Reason;
+    use telemetry_batteries::reexports::metrics;
 
     use super::{JobRunner, operation_reason};
     use crate::{
@@ -176,6 +191,75 @@ mod tests {
         di_migration_storage::schema::result_key(&job(n).job_id)
     }
 
+    struct FailureCounter {
+        reason: Reason,
+        count: Arc<AtomicU64>,
+    }
+
+    impl FailureCounter {
+        fn new(reason: Reason) -> Self {
+            Self {
+                reason,
+                count: Arc::new(AtomicU64::new(0)),
+            }
+        }
+
+        fn count(&self) -> u64 {
+            self.count.load(Ordering::Relaxed)
+        }
+    }
+
+    impl metrics::Recorder for FailureCounter {
+        fn describe_counter(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_gauge(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_histogram(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+
+        fn register_counter(
+            &self,
+            key: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Counter {
+            assert_eq!(
+                key,
+                &metrics::Key::from_parts(
+                    "migration.host.job_failures",
+                    &[("reason", self.reason.as_str())]
+                )
+            );
+            metrics::Counter::from_arc(self.count.clone())
+        }
+
+        fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+            metrics::Gauge::noop()
+        }
+
+        fn register_histogram(
+            &self,
+            _: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Histogram {
+            metrics::Histogram::noop()
+        }
+    }
+
     fn job_runner(enclave: Arc<dyn enclave::EnclaveClient>, store: &Arc<MemoryStore>) -> JobRunner {
         JobRunner::new(
             Arc::new(JobQueue::new(NonZeroUsize::new(4).expect("non-zero"))),
@@ -187,6 +271,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_migrated_blob_is_stored_and_the_job_marked_migrated() {
+        let counter = FailureCounter::new(Reason::Timeout);
+        let _recorder = metrics::set_default_local_recorder(&counter);
         let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed"));
 
         let enclave = Arc::new(StubEnclave::default());
@@ -205,6 +291,7 @@ mod tests {
             store.outcome(&job(1).job_id),
             Some(Outcome::Migrated(result_key(1)))
         );
+        assert_eq!(counter.count(), 0);
     }
 
     /// Pins each failure to the reason the app sees.
@@ -250,9 +337,12 @@ mod tests {
         ];
 
         for (enclave, store, reason) in cases {
+            let counter = FailureCounter::new(reason);
+            let _recorder = metrics::set_default_local_recorder(&counter);
             job_runner(enclave, &store).handle(&job(1)).await;
 
             assert_eq!(store.outcome(&job(1).job_id), Some(Outcome::Failed(reason)));
+            assert_eq!(counter.count(), 1);
         }
     }
 
@@ -300,6 +390,8 @@ mod tests {
     /// A job that waited past its deadline is neither run nor recorded.
     #[tokio::test]
     async fn a_job_past_its_deadline_is_skipped() {
+        let counter = FailureCounter::new(Reason::Timeout);
+        let _recorder = metrics::set_default_local_recorder(&counter);
         let mut expired = job(1);
         expired.deadline = 1;
         let store = Arc::new(MemoryStore::with_pcp(&expired, b"sealed"));
@@ -310,6 +402,7 @@ mod tests {
 
         // Running it would record an outcome either way.
         assert!(store.outcome(&expired.job_id).is_none());
+        assert_eq!(counter.count(), 1);
     }
 
     #[tokio::test]
@@ -322,6 +415,21 @@ mod tests {
 
         assert_eq!(store.outcome(&job(1).job_id), None);
         assert_eq!(store.last_error(), Some(StoreError::NotMigrating));
+    }
+
+    #[tokio::test]
+    async fn a_failure_is_counted_even_when_its_outcome_cannot_be_recorded() {
+        let counter = FailureCounter::new(Reason::Timeout);
+        let _recorder = metrics::set_default_local_recorder(&counter);
+        let store = Arc::new(MemoryStore::with_pcp(&job(1), b"sealed").resolved_elsewhere());
+
+        job_runner(Arc::new(FailingEnclave(enclave::Error::Timeout)), &store)
+            .handle(&job(1))
+            .await;
+
+        assert_eq!(store.outcome(&job(1).job_id), None);
+        assert_eq!(store.last_error(), Some(StoreError::NotMigrating));
+        assert_eq!(counter.count(), 1);
     }
 
     #[tokio::test]
