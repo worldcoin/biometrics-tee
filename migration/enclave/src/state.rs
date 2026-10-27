@@ -36,7 +36,8 @@ impl EnclaveState {
     ///
     /// # Errors
     ///
-    /// [`enclave_primitives::Error::Internal`] when the key cannot be generated or attested.
+    /// [`enclave_primitives::Error::ChannelKeyGenerationFailed`] when the channel key cannot be
+    /// generated, or [`enclave_primitives::Error::AttestationFailed`] when it cannot be attested.
     pub fn generate(
         attestor: Arc<dyn Attestor>,
         issuer_pubkey: EdDSAPublicKey,
@@ -46,7 +47,7 @@ impl EnclaveState {
         let channel = ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))
             .map_err(|error| {
                 tracing::error!(?error, "failed to generate the channel key");
-                enclave_primitives::Error::Internal
+                enclave_primitives::Error::ChannelKeyGenerationFailed
             })?;
         let attested_channel_key = AttestedKey::new(
             attestor,

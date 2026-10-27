@@ -96,37 +96,9 @@ impl JobRunner {
             .await
             .map_err(|error| {
                 let reason = match &error {
-                    enclave::Error::Operation(enclave_primitives::Error::CredentialSubMismatch) => {
-                        Reason::CredentialSubMismatch
-                    }
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::CredentialDeserializationFailed,
-                    ) => Reason::CredentialDeserializationFailed,
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::CredentialSignatureVerificationFailed,
-                    ) => Reason::CredentialSignatureVerificationFailed,
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::CredentialSignatureInvalid,
-                    ) => Reason::CredentialSignatureInvalid,
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::CredentialClaimsMismatch,
-                    ) => Reason::CredentialClaimsMismatch,
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::InvalidDevicePublicKeyEncoding,
-                    ) => Reason::InvalidDevicePublicKeyEncoding,
+                    enclave::Error::Operation(error) => operation_reason(*error),
                     enclave::Error::Timeout => Reason::Timeout,
-                    // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
-                    enclave::Error::Operation(enclave_primitives::Error::RequestNotOpened) => {
-                        Reason::EnclaveChanged
-                    }
-                    enclave::Error::Operation(
-                        enclave_primitives::Error::InvalidInput
-                        | enclave_primitives::Error::InvalidPcp
-                        | enclave_primitives::Error::FailedToBuildPcp
-                        | enclave_primitives::Error::Unknown
-                        | enclave_primitives::Error::Internal,
-                    )
-                    | enclave::Error::Transport(_) => Reason::EnclaveError,
+                    enclave::Error::Transport(_) => Reason::Transport,
                 };
                 if reason == Reason::EnclaveChanged {
                     tracing::warn!(job_id = %job.job_id, ?error, dependency = "enclave", "migration failed");
@@ -146,6 +118,38 @@ impl JobRunner {
     }
 }
 
+const fn operation_reason(error: enclave_primitives::Error) -> Reason {
+    use enclave_primitives::Error;
+
+    match error {
+        Error::InvalidInput => Reason::InvalidInput,
+        // The enclave restarted after dispatch, so the PCP is sealed to a dead key.
+        Error::RequestNotOpened => Reason::EnclaveChanged,
+        Error::MigrationTaskCancelled => Reason::MigrationTaskCancelled,
+        Error::InvalidSystemTime => Reason::InvalidSystemTime,
+        Error::PcpRecipientKeyGenerationFailed => Reason::PcpRecipientKeyGenerationFailed,
+        Error::ManifestSignerUnavailable => Reason::ManifestSignerUnavailable,
+        Error::PcpResponseSealingFailed => Reason::PcpResponseSealingFailed,
+        Error::BiometricPipelineFailed => Reason::BiometricPipelineFailed,
+        Error::IncompleteBiometricPipelineResult => Reason::IncompleteBiometricPipelineResult,
+        Error::EmbeddingShareGenerationFailed => Reason::EmbeddingShareGenerationFailed,
+        Error::PcpKeyDecryptionFailed => Reason::PcpKeyDecryptionFailed,
+        Error::AttestationFailed => Reason::AttestationFailed,
+        Error::ChannelKeyGenerationFailed => Reason::ChannelKeyGenerationFailed,
+        Error::CredentialSubMismatch => Reason::CredentialSubMismatch,
+        Error::CredentialDeserializationFailed => Reason::CredentialDeserializationFailed,
+        Error::CredentialSignatureVerificationFailed => {
+            Reason::CredentialSignatureVerificationFailed
+        }
+        Error::CredentialSignatureInvalid => Reason::CredentialSignatureInvalid,
+        Error::CredentialClaimsMismatch => Reason::CredentialClaimsMismatch,
+        Error::InvalidPcp => Reason::InvalidPcp,
+        Error::FailedToBuildPcp => Reason::FailedToBuildPcp,
+        Error::InvalidDevicePublicKeyEncoding => Reason::InvalidDevicePublicKeyEncoding,
+        Error::Unknown => Reason::Unknown,
+    }
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -160,7 +164,7 @@ mod tests {
     use di_migration_enclave_primitives as enclave_primitives;
     use di_migration_primitives::Reason;
 
-    use super::JobRunner;
+    use super::{JobRunner, operation_reason};
     use crate::{
         enclave,
         queue::JobQueue,
@@ -206,7 +210,7 @@ mod tests {
     /// Pins each failure to the reason the app sees.
     #[tokio::test]
     async fn each_failure_is_recorded_with_its_reason() {
-        let cases: [(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason); 12] = [
+        let cases: Vec<(Arc<dyn enclave::EnclaveClient>, Arc<MemoryStore>, Reason)> = vec![
             (
                 Arc::new(StubEnclave::default()),
                 Arc::new(MemoryStore::default()),
@@ -222,7 +226,7 @@ mod tests {
                     "refused".to_owned(),
                 ))),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
-                Reason::EnclaveError,
+                Reason::Transport,
             ),
             (
                 Arc::new(FailingEnclave(enclave::Error::Operation(
@@ -236,49 +240,7 @@ mod tests {
                     enclave_primitives::Error::InvalidInput,
                 ))),
                 Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
-                Reason::EnclaveError,
-            ),
-            (
-                Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_primitives::Error::Internal,
-                ))),
-                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
-                Reason::EnclaveError,
-            ),
-            (
-                Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_primitives::Error::InvalidPcp,
-                ))),
-                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
-                Reason::EnclaveError,
-            ),
-            (
-                Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_primitives::Error::FailedToBuildPcp,
-                ))),
-                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
-                Reason::EnclaveError,
-            ),
-            (
-                Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_primitives::Error::Unknown,
-                ))),
-                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
-                Reason::EnclaveError,
-            ),
-            (
-                Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_primitives::Error::CredentialSignatureInvalid,
-                ))),
-                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
-                Reason::CredentialSignatureInvalid,
-            ),
-            (
-                Arc::new(FailingEnclave(enclave::Error::Operation(
-                    enclave_primitives::Error::InvalidDevicePublicKeyEncoding,
-                ))),
-                Arc::new(MemoryStore::with_pcp(&job(1), b"sealed")),
-                Reason::InvalidDevicePublicKeyEncoding,
+                Reason::InvalidInput,
             ),
             (
                 Arc::new(StubEnclave::default()),
@@ -292,6 +254,46 @@ mod tests {
 
             assert_eq!(store.outcome(&job(1).job_id), Some(Outcome::Failed(reason)));
         }
+    }
+
+    #[test]
+    fn each_operation_failure_maps_to_its_reason() {
+        macro_rules! same_reason {
+            ($($variant:ident),+ $(,)?) => {
+                $(assert_eq!(
+                    operation_reason(enclave_primitives::Error::$variant),
+                    Reason::$variant
+                );)+
+            };
+        }
+
+        same_reason!(
+            InvalidInput,
+            MigrationTaskCancelled,
+            InvalidSystemTime,
+            PcpRecipientKeyGenerationFailed,
+            ManifestSignerUnavailable,
+            PcpResponseSealingFailed,
+            BiometricPipelineFailed,
+            IncompleteBiometricPipelineResult,
+            EmbeddingShareGenerationFailed,
+            PcpKeyDecryptionFailed,
+            AttestationFailed,
+            ChannelKeyGenerationFailed,
+            CredentialSubMismatch,
+            CredentialDeserializationFailed,
+            CredentialSignatureVerificationFailed,
+            CredentialSignatureInvalid,
+            CredentialClaimsMismatch,
+            InvalidPcp,
+            FailedToBuildPcp,
+            InvalidDevicePublicKeyEncoding,
+            Unknown,
+        );
+        assert_eq!(
+            operation_reason(enclave_primitives::Error::RequestNotOpened),
+            Reason::EnclaveChanged
+        );
     }
 
     /// A job that timed out first keeps its `failed` row; the late result is not recorded.

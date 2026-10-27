@@ -180,7 +180,7 @@ mod tests {
                 codes::ENCLAVE_UNREACHABLE,
             ),
             (
-                enclave::Error::Operation(enclave_primitives::Error::Internal),
+                enclave::Error::Operation(enclave_primitives::Error::BiometricPipelineFailed),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL_ERROR,
             ),

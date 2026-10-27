@@ -19,7 +19,7 @@ pub trait Attestor: Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`enclave_primitives::Error::Internal`] when the module rejects the request.
+    /// [`enclave_primitives::Error::AttestationFailed`] when the module rejects the request.
     fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error>;
 }
 
@@ -31,14 +31,14 @@ impl Attestor for NsmAttestor {
     fn attest_public_key(&self, public_key: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error> {
         let secure_module = SecureModule::try_global().ok_or_else(|| {
             tracing::error!("Nitro Secure Module is not initialized");
-            enclave_primitives::Error::Internal
+            enclave_primitives::Error::AttestationFailed
         })?;
 
         secure_module
             .raw_attest(None::<Vec<u8>>, None::<Vec<u8>>, Some(public_key.to_vec()))
             .map_err(|error| {
                 tracing::error!(?error, dependency = "nsm", "failed to attest public key");
-                enclave_primitives::Error::Internal
+                enclave_primitives::Error::AttestationFailed
             })
     }
 }

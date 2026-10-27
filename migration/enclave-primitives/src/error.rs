@@ -7,8 +7,28 @@ pub enum Error {
     InvalidInput,
     /// The blob was not sealed to this boot's key, e.g. it targeted an earlier boot.
     RequestNotOpened,
-    /// The enclave failed while producing a response; detail stays in its log.
-    Internal,
+    /// The blocking migration task was cancelled before it returned a result.
+    MigrationTaskCancelled,
+    /// The enclave clock was before the Unix epoch.
+    InvalidSystemTime,
+    /// The enclave could not generate and wrap the output PCP recipient keys.
+    PcpRecipientKeyGenerationFailed,
+    /// PCP manifest signing was not configured in the enclave.
+    ManifestSignerUnavailable,
+    /// The enclave could not seal the migrated PCP response.
+    PcpResponseSealingFailed,
+    /// The biometric worker reported an internal pipeline failure.
+    BiometricPipelineFailed,
+    /// The biometric worker returned a successful response with required fields missing.
+    IncompleteBiometricPipelineResult,
+    /// The enclave could not generate Deep Identifier embedding shares.
+    EmbeddingShareGenerationFailed,
+    /// The enclave could not decrypt a source PCP backend key.
+    PcpKeyDecryptionFailed,
+    /// The Nitro Secure Module could not produce an attestation.
+    AttestationFailed,
+    /// The enclave could not generate its channel key.
+    ChannelKeyGenerationFailed,
     /// The credential sub mismatch.
     CredentialSubMismatch,
     /// Failed to deserialize a World ID credential.
