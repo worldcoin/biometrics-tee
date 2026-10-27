@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-ark-babyjubjub = { version = "0.5", package = "taceo-ark-babyjubjub" }
+ark-babyjubjub = { version = "0.6", package = "taceo-ark-babyjubjub" }
 alkali = { version = "0.3", features = ["use-pkg-config"] }
 # Without the SDK's default HTTPS client: requests go through `pontifex::kms`.
 aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio"] }
