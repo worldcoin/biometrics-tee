@@ -11,7 +11,7 @@ pub struct MigrationOutput {
     pub result: MigrationResult,
 }
 
-/// The worker launched under Minijail before the async runtime started.
+/// Biometric pipeline used for migration and idle liveness checks.
 pub trait Worker: Send + Sync {
     /// Runs the complete migration pipeline, returning validated user-level rejection details.
     ///
