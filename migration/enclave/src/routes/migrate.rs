@@ -69,8 +69,8 @@ pub async fn handler(
                 enclave_primitives::Error::InvalidPcp
             })?;
         let source_pcp = parse_source_pcp(&state, files)?;
-        let pipeline_biometrics = run_pipeline(&state, &source_pcp)?;
-        let prepared_biometrics = pipeline_biometrics.as_prepared();
+        let owned_biometrics = run_pipeline(&state, &source_pcp)?;
+        let prepared_biometrics = owned_biometrics.as_prepared();
         let migrated_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| enclave_primitives::Error::Internal)?
@@ -136,7 +136,7 @@ pub async fn handler(
 fn run_pipeline(
     state: &EnclaveState,
     source_pcp: &SourcePcp,
-) -> Result<PipelineBiometrics, enclave_primitives::Error> {
+) -> Result<OwnedPreparedBiometrics, enclave_primitives::Error> {
     let output = state
         .migrate(source_pcp.pipeline_inputs())
         .map_err(|failure| {
@@ -154,7 +154,8 @@ fn run_pipeline(
     prepare_biometrics(output)
 }
 
-struct PipelineBiometrics {
+/// Owns worker iris buffers and shares so [`PreparedBiometrics`] can borrow them for PCP build.
+struct OwnedPreparedBiometrics {
     pipeline_version: String,
     face_embeddings: Vec<v1::FaceEmbedding>,
     di_embeddings: v1::DiIrisEmbeddings,
@@ -165,7 +166,7 @@ struct PipelineBiometrics {
     right_resized: di_worker_protocol::migration::NormalizedIris,
 }
 
-impl PipelineBiometrics {
+impl OwnedPreparedBiometrics {
     fn as_prepared(&self) -> PreparedBiometrics<'_> {
         PreparedBiometrics {
             biometric_pipeline_version: self.pipeline_version.clone(),
@@ -191,7 +192,7 @@ impl PipelineBiometrics {
 
 fn prepare_biometrics(
     output: crate::worker::MigrationOutput,
-) -> Result<PipelineBiometrics, enclave_primitives::Error> {
+) -> Result<OwnedPreparedBiometrics, enclave_primitives::Error> {
     let MigrationResult {
         face_embedding,
         left_iris,
@@ -218,7 +219,7 @@ fn prepare_biometrics(
         .normalized_resized
         .ok_or(enclave_primitives::Error::Internal)?;
 
-    Ok(PipelineBiometrics {
+    Ok(OwnedPreparedBiometrics {
         pipeline_version: output.pipeline_version,
         face_embeddings: vec![v1::FaceEmbedding {
             embedding: Some(face.vector),

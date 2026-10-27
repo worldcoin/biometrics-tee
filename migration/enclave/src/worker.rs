@@ -43,11 +43,16 @@ fn decode_result(bytes: &[u8], expected_id: u64) -> Result<Result<MigrationResul
 }
 
 #[cfg(target_os = "linux")]
-/// Serializes requests to the provisioned sandbox process.
+/// Serializes requests to the sandbox process launched under Minijail before the async runtime.
 pub struct SandboxWorker {
-    worker: std::sync::Mutex<tabernaculum::Worker>,
-    next_id: std::sync::atomic::AtomicU64,
+    state: std::sync::Mutex<SandboxWorkerState>,
     pipeline_version: String,
+}
+
+#[cfg(target_os = "linux")]
+struct SandboxWorkerState {
+    worker: tabernaculum::Worker,
+    next_id: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -56,8 +61,7 @@ impl SandboxWorker {
     #[must_use]
     pub const fn new(worker: tabernaculum::Worker, pipeline_version: String) -> Self {
         Self {
-            worker: std::sync::Mutex::new(worker),
-            next_id: std::sync::atomic::AtomicU64::new(1),
+            state: std::sync::Mutex::new(SandboxWorkerState { worker, next_id: 1 }),
             pipeline_version,
         }
     }
@@ -67,7 +71,6 @@ impl SandboxWorker {
 impl Worker for SandboxWorker {
     fn migrate(&self, inputs: PipelineInputs<'_>) -> Result<MigrationOutput, Failure> {
         use di_worker_protocol::{Request, migration::MigrationRequest, request::Operation};
-        use std::sync::atomic::Ordering;
         use zeroize::Zeroize;
 
         let request = MigrationRequest {
@@ -77,16 +80,15 @@ impl Worker for SandboxWorker {
         };
         di_worker_protocol::migration::check_image_limits(&request)?;
 
-        let mut worker = self
-            .worker
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner().fail());
-        let id = self.next_id.load(Ordering::Relaxed);
-        let next_id = id
+            .unwrap_or_else(|poisoned| poisoned.into_inner().worker.fail());
+        let id = state.next_id;
+        state.next_id = id
             .checked_add(1)
             .filter(|_| id != 0)
-            .unwrap_or_else(|| worker.fail());
-        self.next_id.store(next_id, Ordering::Relaxed);
+            .unwrap_or_else(|| state.worker.fail());
 
         let mut request = Request::new(id, Operation::Migration(request));
         let encoded =
@@ -96,7 +98,7 @@ impl Worker for SandboxWorker {
             request.left_iris.zeroize();
             request.right_iris.zeroize();
         }
-        let response = match worker.exchange(&encoded) {
+        let response = match state.worker.exchange(&encoded) {
             Ok(response) => zeroize::Zeroizing::new(response),
             Err(tabernaculum::ConnectionError::InvalidRequest) => {
                 tracing::warn!(
@@ -112,10 +114,10 @@ impl Worker for SandboxWorker {
                     ),
                 ));
             }
-            Err(_) => worker.fail(),
+            Err(_) => state.worker.fail(),
         };
-        let result = decode_result(&response, id).unwrap_or_else(|()| worker.fail());
-        drop(worker);
+        let result = decode_result(&response, id).unwrap_or_else(|()| state.worker.fail());
+        drop(state);
         let result = result?;
         Ok(MigrationOutput {
             pipeline_version: self.pipeline_version.clone(),
@@ -124,7 +126,14 @@ impl Worker for SandboxWorker {
     }
 
     fn check_alive(&self) {
-        tabernaculum::check_alive_if_idle(&self.worker);
+        match self.state.try_lock() {
+            Ok(state) => state.worker.check_alive(),
+            Err(std::sync::TryLockError::Poisoned(state)) => {
+                state.into_inner().worker.check_alive();
+            }
+            // The in-flight exchange detects worker failure while it owns the lock.
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
     }
 }
 

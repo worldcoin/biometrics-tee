@@ -26,7 +26,7 @@ use tabernaculum::{
 use tracing_subscriber::EnvFilter;
 
 /// The reviewed default seccomp policy, unchanged.
-static POLICY: LazyLock<Policy> = LazyLock::new(Policy::default_worker);
+static SANDBOX_POLICY: LazyLock<Policy> = LazyLock::new(Policy::default_worker);
 
 /// Receives and launches the worker while the process is single-threaded, then serves.
 pub(super) fn run() -> anyhow::Result<()> {
@@ -50,7 +50,7 @@ pub(super) fn run() -> anyhow::Result<()> {
         SandboxConfig {
             root: runtime.root.path(),
             limits: Limits::default(),
-            policy: &POLICY,
+            policy: &SANDBOX_POLICY,
         },
         ConnectionConfig {
             // Leave time inside the host's default five-minute request budget for PCP assembly.
