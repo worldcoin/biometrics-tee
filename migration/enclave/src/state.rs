@@ -8,7 +8,10 @@ use pontifex::channel::{ChannelDomain, ChannelEnclave};
 use tokio::task::JoinHandle;
 use world_id_primitives::EdDSAPublicKey;
 
-use crate::attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
+use crate::{
+    attestation::{AttestedKey, Attestor, MAX_CACHED_AGE},
+    worker::Worker,
+};
 
 /// Decimal `BabyJubJub` affine X coordinate of the credential issuer pubkey.
 pub const ISSUER_PUBKEY_X_ENV: &str = "ISSUER_PUBKEY_X";
@@ -24,6 +27,7 @@ pub struct EnclaveState {
     manifest_signer: Option<crate::kms::ManifestSigner>,
     /// Signup-service credential signer key used to verify PCP credentials.
     issuer_pubkey: EdDSAPublicKey,
+    worker: Box<dyn Worker>,
 }
 
 impl EnclaveState {
@@ -37,6 +41,7 @@ impl EnclaveState {
         attestor: Arc<dyn Attestor>,
         issuer_pubkey: EdDSAPublicKey,
         key_wrapper: crate::kms::KeyWrapper,
+        worker: Box<dyn Worker>,
     ) -> Result<Self, enclave_primitives::Error> {
         let channel = ChannelEnclave::generate(ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN))
             .map_err(|error| {
@@ -55,6 +60,7 @@ impl EnclaveState {
             key_wrapper,
             manifest_signer: None,
             issuer_pubkey,
+            worker,
         })
     }
 
@@ -68,9 +74,10 @@ impl EnclaveState {
     pub fn from_env(
         attestor: Arc<dyn Attestor>,
         key_wrapper: crate::kms::KeyWrapper,
+        worker: Box<dyn Worker>,
     ) -> anyhow::Result<Self> {
         let issuer_pubkey = issuer_pubkey_from_env()?;
-        Self::generate(attestor, issuer_pubkey, key_wrapper).map_err(|error| {
+        Self::generate(attestor, issuer_pubkey, key_wrapper, worker).map_err(|error| {
             anyhow::anyhow!("failed to generate and attest the channel key: {error:?}")
         })
     }
@@ -102,6 +109,23 @@ impl EnclaveState {
     #[must_use]
     pub const fn manifest_signer(&self) -> Option<&crate::kms::ManifestSigner> {
         self.manifest_signer.as_ref()
+    }
+
+    /// Exits the enclave if the worker died.
+    pub fn check_worker(&self) {
+        self.worker.check_alive();
+    }
+
+    /// Runs the provisioned biometric migration pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns the worker's validated rejection for invalid or rejected images.
+    pub fn migrate(
+        &self,
+        inputs: di_migration_pcp::PipelineInputs<'_>,
+    ) -> Result<crate::worker::MigrationOutput, di_worker_protocol::migration::Failure> {
+        self.worker.migrate(inputs)
     }
 
     /// The latest document attesting the channel key's commitment.

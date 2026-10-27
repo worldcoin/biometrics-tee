@@ -129,7 +129,7 @@ impl MigrationApiClient {
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
     /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
     /// Not retried here: each call creates a new migration record and must be re-signed.
-    pub async fn init_migration<S: Signer>(
+    pub async fn init_migration<S>(
         &self,
         integrity_token: &str,
         signer: &Arc<S>,
@@ -139,7 +139,7 @@ impl MigrationApiClient {
         device_public_key: &str,
     ) -> Result<InitMigrationResponse, Error>
     where
-        S: Send + Sync + 'static,
+        S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let body = serde_json::to_vec(&InitMigrationRequest {
@@ -170,14 +170,14 @@ impl MigrationApiClient {
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
     /// Signing, attestation verification, and PCP sealing run on Tokio's blocking pool, keeping
     /// the caller's executor thread responsive.
-    pub async fn migrate<S: Signer>(
+    pub async fn migrate<S>(
         &self,
         integrity_token: &str,
         signer: &Arc<S>,
         sub: &str,
     ) -> Result<MigrateResponse, Error>
     where
-        S: Send + Sync + 'static,
+        S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let mut request = self.http.post(self.url(&["v1", "migrations", sub]));
@@ -194,14 +194,14 @@ impl MigrationApiClient {
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
     /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
-    pub async fn migration_status<S: Signer>(
+    pub async fn migration_status<S>(
         &self,
         integrity_token: &str,
         signer: &Arc<S>,
         sub: &str,
     ) -> Result<MigrationStatus, Error>
     where
-        S: Send + Sync + 'static,
+        S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let mut request = self.http.get(self.url(&["v1", "migrations", sub]));
@@ -265,7 +265,7 @@ impl MigrationApiClient {
     /// Signing, attestation verification, and PCP sealing run on Tokio's blocking pool, keeping
     /// the caller's executor thread responsive.
     /// Not retried here: each call creates a new migration record and must be re-signed.
-    pub async fn start_migration<S: Signer>(
+    pub async fn start_migration<S>(
         &self,
         StartMigration {
             integrity_token,
@@ -280,7 +280,7 @@ impl MigrationApiClient {
         }: StartMigration<'_, S>,
     ) -> Result<(PcpOpener, EnclaveId), Error>
     where
-        S: Send + Sync + 'static,
+        S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let response = self

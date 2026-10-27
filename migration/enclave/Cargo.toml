@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-ark-babyjubjub = { version = "0.5", package = "taceo-ark-babyjubjub" }
+ark-babyjubjub = { version = "0.6", package = "taceo-ark-babyjubjub" }
 alkali = { version = "0.3", features = ["use-pkg-config"] }
 # Without the SDK's default HTTPS client: requests go through `pontifex::kms`.
 aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio"] }
@@ -21,12 +21,15 @@ aws-types = "1"
 base64.workspace = true
 bytes.workspace = true
 di-migration-pcp = { path = "../pcp" }
+di-migration-shares = { path = "../shares" }
 di-migration-enclave-primitives.workspace = true
+di-worker-protocol.workspace = true
 flate2.workspace = true
 hex.workspace = true
 orb-pcp.workspace = true
 orb-pcp-defs.workspace = true
 pontifex = { workspace = true, features = ["channel", "kms", "nsm", "server"] }
+rand.workspace = true
 serde_json.workspace = true
 tar.workspace = true
 thiserror.workspace = true
@@ -36,6 +39,8 @@ tracing-subscriber.workspace = true
 world-id-primitives.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+tabernaculum.workspace = true
 
 [dev-dependencies]
 aws-sdk-kms.workspace = true

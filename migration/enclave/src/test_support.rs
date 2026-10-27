@@ -1,6 +1,9 @@
 //! Attestors that stand in for the Nitro Secure Module in tests.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use aws_sdk_kms::{
     Client,
@@ -15,7 +18,7 @@ use aws_smithy_runtime_api::client::{
 use di_migration_enclave_primitives as enclave_primitives;
 use world_id_primitives::{EdDSAPrivateKey, EdDSAPublicKey};
 
-use crate::attestation::Attestor;
+use crate::{attestation::Attestor, worker::Worker};
 
 /// Returns a distinct document per call, embedding the attested key.
 #[derive(Default)]
@@ -67,6 +70,25 @@ impl Attestor for FailsAfterSuccessesAttestor {
     }
 }
 
+/// Counts liveness checks instead of supervising a process.
+#[derive(Default)]
+pub struct FakeWorker {
+    pub checks: Arc<AtomicUsize>,
+}
+
+impl Worker for FakeWorker {
+    fn migrate(
+        &self,
+        _inputs: di_migration_pcp::PipelineInputs<'_>,
+    ) -> Result<crate::worker::MigrationOutput, di_worker_protocol::migration::Failure> {
+        panic!("test did not configure a biometric migration result")
+    }
+
+    fn check_alive(&self) {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 /// Boot state attested by a [`CountingAttestor`].
 pub fn state() -> crate::state::EnclaveState {
     state_with_issuer_pubkey(EdDSAPrivateKey::from_bytes([7u8; 32]).public())
@@ -75,9 +97,21 @@ pub fn state() -> crate::state::EnclaveState {
 /// Boot state that verifies credentials against `issuer_pubkey`.
 pub fn state_with_issuer_pubkey(issuer_pubkey: EdDSAPublicKey) -> crate::state::EnclaveState {
     crate::state::EnclaveState::generate(
-        std::sync::Arc::new(CountingAttestor::default()),
+        Arc::new(CountingAttestor::default()),
         issuer_pubkey,
         test_key_wrapper(),
+        Box::new(FakeWorker::default()),
+    )
+    .expect("should generate a key")
+}
+
+/// Boot state supervising `worker`.
+pub fn state_with_worker(worker: FakeWorker) -> crate::state::EnclaveState {
+    crate::state::EnclaveState::generate(
+        Arc::new(CountingAttestor::default()),
+        EdDSAPrivateKey::from_bytes([7u8; 32]).public(),
+        test_key_wrapper(),
+        Box::new(worker),
     )
     .expect("should generate a key")
 }
