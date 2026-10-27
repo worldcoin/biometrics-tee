@@ -65,7 +65,7 @@ impl Attestor for FailsAfterSuccessesAttestor {
         if self.calls.fetch_add(1, Ordering::SeqCst) < self.successes {
             Ok(public_key.to_vec())
         } else {
-            Err(enclave_primitives::Error::Internal)
+            Err(enclave_primitives::Error::AttestationFailed)
         }
     }
 }

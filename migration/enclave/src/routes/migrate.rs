@@ -73,7 +73,7 @@ pub async fn handler(
         let prepared_biometrics = owned_biometrics.as_prepared();
         let migrated_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| enclave_primitives::Error::Internal)?
+            .map_err(|_| enclave_primitives::Error::InvalidSystemTime)?
             .as_secs();
         let context = MigrationContext::new(
             TEE_SOFTWARE_VERSION.to_owned(),
@@ -96,12 +96,12 @@ pub async fn handler(
             .block_on(BackendKeys::generate(state.key_wrapper()))
             .map_err(|error| {
                 tracing::error!(%error, "failed to generate and wrap PCP backend recipients");
-                enclave_primitives::Error::Internal
+                enclave_primitives::Error::PcpRecipientKeyGenerationFailed
             })?;
         let recipients = backend_keys.recipients(&device_public_key);
         let manifest_signer = state.manifest_signer().ok_or_else(|| {
             tracing::error!("PCP manifest signing is not configured");
-            enclave_primitives::Error::Internal
+            enclave_primitives::Error::ManifestSignerUnavailable
         })?;
         let package = di_migration_pcp::build(
             &source_pcp,
@@ -117,7 +117,7 @@ pub async fn handler(
 
         let blob = sealer.seal(&package.tier0).map_err(|error| {
             tracing::error!(?error, "failed to seal the migrated PCP");
-            enclave_primitives::Error::Internal
+            enclave_primitives::Error::PcpResponseSealingFailed
         })?;
         Ok(MigrateResponse { blob })
     })
@@ -129,7 +129,7 @@ pub async fn handler(
             std::process::exit(1);
         }
         tracing::error!(%error, "migration task was cancelled");
-        enclave_primitives::Error::Internal
+        enclave_primitives::Error::MigrationTaskCancelled
     })?
 }
 
@@ -146,7 +146,7 @@ fn run_pipeline(
                 "biometric pipeline rejected migration"
             );
             if FailureCode::try_from(failure.code) == Ok(FailureCode::Internal) {
-                enclave_primitives::Error::Internal
+                enclave_primitives::Error::BiometricPipelineFailed
             } else {
                 enclave_primitives::Error::InvalidPcp
             }
@@ -202,22 +202,25 @@ fn prepare_biometrics(
         iris_embedding_version,
         iris_inference_backend,
     } = output.result;
-    let face = face_embedding.ok_or(enclave_primitives::Error::Internal)?;
-    let left = left_iris.ok_or(enclave_primitives::Error::Internal)?;
-    let right = right_iris.ok_or(enclave_primitives::Error::Internal)?;
+    let face =
+        face_embedding.ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
+    let left = left_iris.ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
+    let right = right_iris.ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
 
     let shares = generate_shares(&left, &right, &iris_model_version, &iris_embedding_version)?;
 
-    let left_normalized = left.normalized.ok_or(enclave_primitives::Error::Internal)?;
+    let left_normalized = left
+        .normalized
+        .ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
     let left_resized = left
         .normalized_resized
-        .ok_or(enclave_primitives::Error::Internal)?;
+        .ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
     let right_normalized = right
         .normalized
-        .ok_or(enclave_primitives::Error::Internal)?;
+        .ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
     let right_resized = right
         .normalized_resized
-        .ok_or(enclave_primitives::Error::Internal)?;
+        .ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
 
     Ok(OwnedPreparedBiometrics {
         pipeline_version: output.pipeline_version,
@@ -282,7 +285,7 @@ fn generate_shares(
     .map(|shares| {
         shares.map_err(|error| {
             tracing::error!(%error, "failed to generate DI embedding shares");
-            enclave_primitives::Error::Internal
+            enclave_primitives::Error::EmbeddingShareGenerationFailed
         })
     });
     let left_shares = left_shares?;
@@ -329,7 +332,7 @@ fn parse_source_pcp(
     parsed.map_err(|error| {
         if matches!(error, di_migration_pcp::Error::BackendKeyDecryption(_)) {
             tracing::error!(%error, dependency = "kms", "source PCP key unwrap failed");
-            enclave_primitives::Error::Internal
+            enclave_primitives::Error::PcpKeyDecryptionFailed
         } else {
             tracing::warn!(%error, "migrate request PCP could not be parsed");
             enclave_primitives::Error::InvalidPcp

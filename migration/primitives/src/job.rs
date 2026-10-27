@@ -103,8 +103,40 @@ pub enum Reason {
     HostBusy,
     /// The enclave restarted, so the PCP was sealed to a key that no longer exists.
     EnclaveChanged,
-    /// The enclave rejected or failed the migration.
+    /// The host could not obtain a valid structured migration result from the enclave.
     EnclaveError,
+    /// The host could not communicate with the enclave.
+    Transport,
+    /// The enclave rejected a malformed migration request.
+    InvalidInput,
+    /// The enclave could not parse or validate the source PCP.
+    InvalidPcp,
+    /// The enclave could not build the migrated PCP.
+    FailedToBuildPcp,
+    /// The enclave returned an error introduced by a newer version.
+    Unknown,
+    /// The enclave's blocking migration task was cancelled.
+    MigrationTaskCancelled,
+    /// The enclave clock was before the Unix epoch.
+    InvalidSystemTime,
+    /// The enclave could not generate output PCP recipient keys.
+    PcpRecipientKeyGenerationFailed,
+    /// PCP manifest signing was not configured in the enclave.
+    ManifestSignerUnavailable,
+    /// The enclave could not seal the migrated PCP response.
+    PcpResponseSealingFailed,
+    /// The biometric worker reported an internal failure.
+    BiometricPipelineFailed,
+    /// The biometric worker omitted required output fields.
+    IncompleteBiometricPipelineResult,
+    /// The enclave could not generate embedding shares.
+    EmbeddingShareGenerationFailed,
+    /// The enclave could not decrypt a source PCP backend key.
+    PcpKeyDecryptionFailed,
+    /// The Nitro Secure Module could not produce an attestation.
+    AttestationFailed,
+    /// The enclave could not generate its channel key.
+    ChannelKeyGenerationFailed,
     /// The credential sub mismatch.
     CredentialSubMismatch,
     /// The credential deserialization failed.
@@ -125,10 +157,26 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, for parsing.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 27] = [
         Self::HostBusy,
         Self::EnclaveChanged,
         Self::EnclaveError,
+        Self::Transport,
+        Self::InvalidInput,
+        Self::InvalidPcp,
+        Self::FailedToBuildPcp,
+        Self::Unknown,
+        Self::MigrationTaskCancelled,
+        Self::InvalidSystemTime,
+        Self::PcpRecipientKeyGenerationFailed,
+        Self::ManifestSignerUnavailable,
+        Self::PcpResponseSealingFailed,
+        Self::BiometricPipelineFailed,
+        Self::IncompleteBiometricPipelineResult,
+        Self::EmbeddingShareGenerationFailed,
+        Self::PcpKeyDecryptionFailed,
+        Self::AttestationFailed,
+        Self::ChannelKeyGenerationFailed,
         Self::CredentialSubMismatch,
         Self::CredentialDeserializationFailed,
         Self::CredentialSignatureVerificationFailed,
@@ -146,6 +194,22 @@ impl Reason {
             Self::HostBusy => "host_busy",
             Self::EnclaveChanged => "enclave_changed",
             Self::EnclaveError => "enclave_error",
+            Self::Transport => "transport",
+            Self::InvalidInput => "invalid_input",
+            Self::InvalidPcp => "invalid_pcp",
+            Self::FailedToBuildPcp => "failed_to_build_pcp",
+            Self::Unknown => "unknown",
+            Self::MigrationTaskCancelled => "migration_task_cancelled",
+            Self::InvalidSystemTime => "invalid_system_time",
+            Self::PcpRecipientKeyGenerationFailed => "pcp_recipient_key_generation_failed",
+            Self::ManifestSignerUnavailable => "manifest_signer_unavailable",
+            Self::PcpResponseSealingFailed => "pcp_response_sealing_failed",
+            Self::BiometricPipelineFailed => "biometric_pipeline_failed",
+            Self::IncompleteBiometricPipelineResult => "incomplete_biometric_pipeline_result",
+            Self::EmbeddingShareGenerationFailed => "embedding_share_generation_failed",
+            Self::PcpKeyDecryptionFailed => "pcp_key_decryption_failed",
+            Self::AttestationFailed => "attestation_failed",
+            Self::ChannelKeyGenerationFailed => "channel_key_generation_failed",
             Self::CredentialSubMismatch => "credential_sub_mismatch",
             Self::CredentialDeserializationFailed => "credential_deserialization_failed",
             Self::CredentialSignatureVerificationFailed => {
@@ -256,6 +320,40 @@ mod tests {
             (Reason::HostBusy, "host_busy"),
             (Reason::EnclaveChanged, "enclave_changed"),
             (Reason::EnclaveError, "enclave_error"),
+            (Reason::Transport, "transport"),
+            (Reason::InvalidInput, "invalid_input"),
+            (Reason::InvalidPcp, "invalid_pcp"),
+            (Reason::FailedToBuildPcp, "failed_to_build_pcp"),
+            (Reason::Unknown, "unknown"),
+            (Reason::MigrationTaskCancelled, "migration_task_cancelled"),
+            (Reason::InvalidSystemTime, "invalid_system_time"),
+            (
+                Reason::PcpRecipientKeyGenerationFailed,
+                "pcp_recipient_key_generation_failed",
+            ),
+            (
+                Reason::ManifestSignerUnavailable,
+                "manifest_signer_unavailable",
+            ),
+            (
+                Reason::PcpResponseSealingFailed,
+                "pcp_response_sealing_failed",
+            ),
+            (Reason::BiometricPipelineFailed, "biometric_pipeline_failed"),
+            (
+                Reason::IncompleteBiometricPipelineResult,
+                "incomplete_biometric_pipeline_result",
+            ),
+            (
+                Reason::EmbeddingShareGenerationFailed,
+                "embedding_share_generation_failed",
+            ),
+            (Reason::PcpKeyDecryptionFailed, "pcp_key_decryption_failed"),
+            (Reason::AttestationFailed, "attestation_failed"),
+            (
+                Reason::ChannelKeyGenerationFailed,
+                "channel_key_generation_failed",
+            ),
             (Reason::CredentialSubMismatch, "credential_sub_mismatch"),
             (
                 Reason::CredentialDeserializationFailed,
