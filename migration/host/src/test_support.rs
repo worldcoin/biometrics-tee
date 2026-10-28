@@ -427,7 +427,6 @@ pub fn job(n: u64) -> JobRequest {
         job_id,
         sub: "sub".to_owned(),
         attested_key_thumbprint: "device-key".to_owned(),
-        device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
         enclave_id: crate::enclave::enclave_id(&StubEnclave::default().public_key),
         deadline: u64::MAX,
     }

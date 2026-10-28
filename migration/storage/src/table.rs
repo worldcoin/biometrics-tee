@@ -176,8 +176,6 @@ pub struct NewJob {
     pub sub: String,
     /// The app's attested key thumbprint; later calls must use the same key.
     pub attested_key_thumbprint: String,
-    /// Standard-Base64, 32-byte device public key used to encrypt the output PCP.
-    pub device_public_key: String,
     /// The host the job is pinned to.
     pub host_ip: IpAddr,
     /// The enclave boot the app will seal the PCP to.
@@ -202,8 +200,6 @@ pub struct JobRecord {
     pub reason: Option<Reason>,
     /// The app's attested key thumbprint.
     pub attested_key_thumbprint: String,
-    /// Standard-Base64, 32-byte device public key used to encrypt the output PCP.
-    pub device_public_key: String,
     /// The host the job is pinned to.
     pub host_ip: IpAddr,
     /// The enclave boot the PCP is sealed to.
@@ -314,10 +310,6 @@ impl JobTable {
                 attributes::DEVICE_KEY_THUMBPRINT,
                 string(&job.attested_key_thumbprint),
             )
-            .item(
-                attributes::DEVICE_PUBLIC_KEY,
-                string(&job.device_public_key),
-            )
             .item(attributes::HOST_IP, string(&job.host_ip.to_string()))
             .item(attributes::ENCLAVE_ID, string(job.enclave_id.as_str()))
             .item(attributes::CREATED_AT, number(job.created_at))
@@ -362,7 +354,6 @@ impl JobTable {
                 .map(|reason| reason.parse().map_err(|_| malformed(attributes::REASON)))
                 .transpose()?,
             attested_key_thumbprint: text(&row, attributes::DEVICE_KEY_THUMBPRINT)?.to_owned(),
-            device_public_key: text(&row, attributes::DEVICE_PUBLIC_KEY)?.to_owned(),
             host_ip: text(&row, attributes::HOST_IP)?
                 .parse()
                 .map_err(|_| malformed(attributes::HOST_IP))?,

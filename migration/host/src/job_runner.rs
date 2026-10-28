@@ -116,7 +116,6 @@ impl JobRunner {
             .migrate(MigrateRequest {
                 blob,
                 sub: job.sub.clone(),
-                device_public_key: job.device_public_key.clone(),
             })
             .await;
         let (pcp, debug_report) = match migration {
@@ -246,7 +245,6 @@ mod tests {
 
         let migrations = enclave.migrations.lock().expect("migrations lock");
         assert_eq!(migrations.len(), 1);
-        assert_eq!(migrations[0].device_public_key, job(1).device_public_key);
         drop(migrations);
 
         assert_eq!(

@@ -30,8 +30,6 @@ pub struct JobRequest {
     pub sub: String,
     /// The app's attested key thumbprint.
     pub attested_key_thumbprint: String,
-    /// Standard-Base64, 32-byte device public key used to encrypt the output PCP.
-    pub device_public_key: String,
     /// The boot the PCP was sealed to; a restarted enclave refuses the job.
     pub enclave_id: EnclaveId,
     /// Unix seconds after which the job reads as `timeout`; the host skips it then.
@@ -118,7 +116,6 @@ mod tests {
             object_key: "pcp/3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a".to_owned(),
             sub: "sub".to_owned(),
             attested_key_thumbprint: "key".to_owned(),
-            device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
             enclave_id: EnclaveId::from_commitment([1; 32]),
             deadline: 1_800_000_600,
         };
@@ -130,7 +127,6 @@ mod tests {
                 "object_key": "pcp/3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a",
                 "sub": "sub",
                 "attested_key_thumbprint": "key",
-                "device_public_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
                 "enclave_id": "01".repeat(32),
                 "deadline": 1_800_000_600,
             })

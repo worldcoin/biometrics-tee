@@ -411,7 +411,7 @@ mod tests {
         }
         request
             .body(Body::from(
-                serde_json::json!({"sub": sub, "proof": proof, "challenge_id": CHALLENGE_ID, "device_public_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="})
+                serde_json::json!({"sub": sub, "proof": proof, "challenge_id": CHALLENGE_ID})
                     .to_string(),
             ))
             .unwrap()
@@ -456,10 +456,7 @@ mod tests {
         assert_eq!(writes.len(), 1, "one transaction: job row and lock");
         let job = &writes[0]["TransactItems"][0]["Put"]["Item"];
         assert_eq!(job["attested_key_thumbprint"]["S"], "device-key");
-        assert_eq!(
-            job["device_public_key"]["S"],
-            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
-        );
+        assert!(job.get("device_public_key").is_none());
         assert_eq!(job["host_ip"]["S"], "127.0.0.1");
         assert_eq!(job["enclave_id"]["S"], enclave_id().as_str());
         let lock = &writes[0]["TransactItems"][1]["Put"]["Item"];
@@ -499,38 +496,6 @@ mod tests {
 
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert_eq!(error_code(response).await, "invalid_device_key");
-        }
-    }
-
-    #[tokio::test]
-    async fn init_rejects_malformed_device_public_keys() {
-        for key in [
-            "".to_owned(),
-            "!".repeat(44),
-            "YQ==".to_owned(),
-            "Bw==".repeat(256),
-            "Bw".repeat(22),
-        ] {
-            let request = Request::post("/v1/init-migration")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(DEVICE_KEY_THUMBPRINT, "device-key")
-                .body(Body::from(
-                    serde_json::json!({
-                        "sub": "test-sub",
-                        "proof": "YQ==",
-                        "challenge_id": CHALLENGE_ID,
-                        "device_public_key": key,
-                    })
-                    .to_string(),
-                ))
-                .unwrap();
-            let response = routes::router(unavailable_state())
-                .oneshot(request)
-                .await
-                .unwrap();
-
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-            assert_eq!(error_code(response).await, "invalid_device_public_key");
         }
     }
 
@@ -697,7 +662,6 @@ mod tests {
                     "test-sub",
                     "0xa100ff00deadbeef",
                     CHALLENGE_ID,
-                    "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
                 )
                 .await
                 .unwrap();
@@ -857,7 +821,6 @@ mod tests {
             "id": {"S": format!("job#{JOB_ID}")},
             "status": {"S": status},
             "attested_key_thumbprint": {"S": "device-key"},
-            "device_public_key": {"S": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="},
             "host_ip": {"S": "127.0.0.1"},
             "enclave_id": {"S": enclave_id().as_str()},
             "created_at": {"N": created_at.to_string()},
@@ -1007,10 +970,7 @@ mod tests {
         assert_eq!(seen[0]["object_key"], format!("pcp/{JOB_ID}"));
         assert_eq!(seen[0]["sub"], "test-sub");
         assert_eq!(seen[0]["attested_key_thumbprint"], "device-key");
-        assert_eq!(
-            seen[0]["device_public_key"],
-            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
-        );
+        assert!(seen[0].get("device_public_key").is_none());
         assert_eq!(seen[0]["enclave_id"], enclave_id().as_str());
     }
 

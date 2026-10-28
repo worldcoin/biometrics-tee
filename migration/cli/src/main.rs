@@ -76,6 +76,10 @@ enum Command {
         /// Self-custody credential to seal the PCP with.
         #[arg(long, env = "CREDENTIAL")]
         credential: String,
+
+        /// Standard-Base64, 32-byte Curve25519 recipient key sealed with the PCP.
+        #[arg(long, env = "DEVICE_PUBLIC_KEY")]
+        device_public_key: String,
     },
 }
 
@@ -109,10 +113,6 @@ struct InitArgs {
     /// Challenge id the ownership proof was built for.
     #[arg(long, env = "CHALLENGE_ID")]
     challenge_id: String,
-
-    /// Standard-Base64, 32-byte Curve25519 device public key for the output PCP.
-    #[arg(long, env = "DEVICE_PUBLIC_KEY")]
-    device_public_key: String,
 }
 
 #[tokio::main]
@@ -157,6 +157,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             pcrs,
             insecure_skip_measurements,
             credential,
+            device_public_key,
         } => {
             let client = client(&cli.api_url, init.attested_key_thumbprint.as_deref())?;
             let verifier = match pcrs {
@@ -169,7 +170,15 @@ async fn run(cli: Cli) -> Result<(), String> {
             let pcp = std::fs::read(&pcp)
                 .map_err(|error| format!("failed to read {}: {error}", pcp.display()))?;
 
-            let opener = start(&client, &init, &verifier, &pcp, &credential).await?;
+            let opener = start(
+                &client,
+                &init,
+                &verifier,
+                &pcp,
+                &credential,
+                &device_public_key,
+            )
+            .await?;
             let download_url = wait(&client, &init).await?;
             let blob = client
                 .download_pcp(&download_url)
@@ -196,7 +205,6 @@ async fn init_migration(
             &init.sub,
             &init.proof,
             &init.challenge_id,
-            &init.device_public_key,
         )
         .await
         .map_err(|error| format!("init-migration failed: {error}"))
@@ -216,11 +224,12 @@ async fn start(
     verifier: &EnclaveVerifier,
     pcp: &[u8],
     credential: &str,
+    device_public_key: &str,
 ) -> Result<PcpOpener, String> {
     let response = init_migration(client, init).await?;
     let (blob, opener) = verifier
         .attested_channel(&response)
-        .and_then(|channel| channel.seal(pcp, credential))
+        .and_then(|channel| channel.seal(pcp, credential, device_public_key))
         .map_err(|error| error.to_string())?;
     eprintln!("enclave {} verified", response.enclave_id.as_str());
 
@@ -310,7 +319,27 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::read_pcrs;
+    use clap::Parser;
+
+    use super::{Cli, Command, read_pcrs};
+
+    #[test]
+    fn init_does_not_require_a_recipient_key() {
+        let cli = Cli::try_parse_from([
+            "migration-cli",
+            "init-migration",
+            "--integrity-token",
+            "token",
+            "--sub",
+            "sub",
+            "--proof",
+            "proof",
+            "--challenge-id",
+            "challenge",
+        ])
+        .expect("init needs no recipient key");
+        assert!(matches!(cli.command, Command::InitMigration(_)));
+    }
 
     fn pcrs_file(json: &str) -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().expect("temp file");

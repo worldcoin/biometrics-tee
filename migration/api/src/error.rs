@@ -87,16 +87,6 @@ impl ApiError {
         )
     }
 
-    /// The output PCP recipient is not standard Base64 encoding of a 32-byte key.
-    pub const fn invalid_device_public_key() -> Self {
-        Self::new(
-            StatusCode::BAD_REQUEST,
-            codes::INVALID_DEVICE_PUBLIC_KEY,
-            "The device public key is invalid",
-            false,
-        )
-    }
-
     /// No host has room; an expected limit, so not a 5xx.
     pub const fn at_capacity(retry_after_secs: u64) -> Self {
         let mut error = Self::new(

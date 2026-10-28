@@ -32,6 +32,11 @@ Report lookup or signing failures also preserve the known migration status and
 any PCP download URL. The response omits the report URL and expiry, logs a warning,
 and increments `migration.api.debug_report_failures{reason:storage}`.
 
+Migration clients seal the recipient `device_public_key` with the PCP and credential
+in payload version 2. The key is absent from the init request and job metadata;
+only the enclave reads it, for PCP and report encryption. Upgrade the API, hosts,
+enclaves, and clients together: legacy payloads without a bound key are rejected.
+
 ## Sandboxed workers
 
 The dev and Selfie Check enclaves run their workers through [tabernaculum](https://github.com/worldcoin/tabernaculum), pinned by git revision.
