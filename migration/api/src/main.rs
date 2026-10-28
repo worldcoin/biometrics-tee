@@ -895,11 +895,6 @@ mod tests {
         .await
     }
 
-    /// S3 answering every `HEAD` with `status`.
-    async fn s3(status: StatusCode) -> SocketAddr {
-        serve(Router::new().fallback(move || async move { status })).await
-    }
-
     fn bucket(endpoint: SocketAddr) -> PcpBucket {
         let config = aws_sdk_s3::Config::builder()
             .region(aws_sdk_s3::config::Region::new("us-east-1"))
@@ -1272,7 +1267,7 @@ mod tests {
             let (mut state, _) = migration_state(Some(row), StatusCode::OK, host).await;
             state.bucket = bucket(
                 serve(Router::new().route(
-                    &format!("/test-bucket/debug-report/{JOB_ID}"),
+                    &format!("/test-bucket/result/debug-report/{JOB_ID}"),
                     head(|| async { StatusCode::OK }),
                 ))
                 .await,
@@ -1293,7 +1288,7 @@ mod tests {
             assert_eq!(body["status"], status);
             let url = body["debug_report_url"].as_str().unwrap();
             assert!(
-                url.contains(&format!("/test-bucket/debug-report/{JOB_ID}")),
+                url.contains(&format!("/test-bucket/result/debug-report/{JOB_ID}")),
                 "{url}"
             );
             assert!(body["debug_report_expires_at"].as_u64().unwrap() >= now() + 299);

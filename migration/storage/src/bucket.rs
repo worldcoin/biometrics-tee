@@ -25,7 +25,7 @@ const OBJECT_TIMEOUT: Duration = Duration::from_secs(60);
 /// S3 answers a conditional write with this status when the object already exists.
 const PRECONDITION_FAILED: u16 = 412;
 
-/// Sealed PCPs under `pcp/`, migrated PCPs under `result/`, and reports under `debug-report/`.
+/// Sealed PCPs under `pcp/`, migrated PCPs under `result/`, and reports under `result/debug-report/`.
 #[derive(Debug, Clone)]
 pub struct PcpBucket {
     client: Client,
@@ -349,7 +349,9 @@ mod tests {
         );
         assert!(upload.contains("X-Amz-Signature="), "{upload}");
         assert!(
-            debug_report.starts_with(&format!("http://127.0.0.1:9/pcp-bucket/debug-report/{ID}?")),
+            debug_report.starts_with(&format!(
+                "http://127.0.0.1:9/pcp-bucket/result/debug-report/{ID}?"
+            )),
             "{debug_report}"
         );
     }
@@ -358,7 +360,7 @@ mod tests {
     async fn debug_reports_have_their_own_key_and_only_not_found_means_absent() {
         for status in [StatusCode::OK, StatusCode::NOT_FOUND, StatusCode::FORBIDDEN] {
             let address = serve(Router::new().route(
-                &format!("/pcp-bucket/debug-report/{ID}"),
+                &format!("/pcp-bucket/result/debug-report/{ID}"),
                 axum::routing::head(move || async move { status }),
             ))
             .await;
@@ -379,7 +381,7 @@ mod tests {
             StatusCode::FORBIDDEN,
         ] {
             let address = serve(Router::new().route(
-                &format!("/pcp-bucket/debug-report/{ID}"),
+                &format!("/pcp-bucket/result/debug-report/{ID}"),
                 put(
                     move |headers: axum::http::HeaderMap, body: axum::body::Bytes| async move {
                         assert_eq!(headers["if-none-match"], "*");
@@ -395,7 +397,7 @@ mod tests {
             if status == StatusCode::FORBIDDEN {
                 assert!(result.is_err());
             } else {
-                assert_eq!(result.unwrap(), format!("debug-report/{ID}"));
+                assert_eq!(result.unwrap(), format!("result/debug-report/{ID}"));
             }
         }
     }

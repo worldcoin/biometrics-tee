@@ -61,7 +61,7 @@ pub fn result_key(job_id: &JobId) -> String {
 /// S3 key of the job's encrypted debug report, independent of its migration result.
 #[must_use]
 pub fn debug_report_key(job_id: &JobId) -> String {
-    format!("debug-report/{job_id}")
+    format!("result/debug-report/{job_id}")
 }
 
 #[cfg(test)]
@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(row_id(&id), format!("job#{id}"));
         assert_eq!(pcp_key(&id), format!("pcp/{id}"));
         assert_eq!(result_key(&id), format!("result/{id}"));
-        assert_eq!(debug_report_key(&id), format!("debug-report/{id}"));
+        assert_eq!(debug_report_key(&id), format!("result/debug-report/{id}"));
     }
 
     /// Pins the hash: both services must derive the same lock for one account.
