@@ -25,6 +25,9 @@ use tabernaculum::{
 };
 use tracing_subscriber::EnvFilter;
 
+/// Worker's virtual address-space limit: 8 GiB.
+const WORKER_ADDRESS_SPACE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
 /// The reviewed default seccomp policy, unchanged.
 static SANDBOX_POLICY: LazyLock<Policy> = LazyLock::new(Policy::default_worker);
 
@@ -49,7 +52,10 @@ pub(super) fn run() -> anyhow::Result<()> {
         &runtime.binary,
         SandboxConfig {
             root: runtime.root.path(),
-            limits: Limits::default(),
+            limits: Limits {
+                address_space_bytes: WORKER_ADDRESS_SPACE_BYTES,
+                max_threads: 32,
+            },
             policy: &SANDBOX_POLICY,
         },
         ConnectionConfig {
