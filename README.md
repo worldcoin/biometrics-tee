@@ -24,6 +24,10 @@ sent immediately; the exporter has no periodic flush.
 In Datadog, counts per reason can be queried with
 `sum:migration.host.job_failures{*} by {reason}.as_count()`.
 
+Debug-report upload failures preserve the primary migration outcome. They emit
+`migration.host.debug_report_failures{reason:storage}` and a warning with the job
+ID and storage error; the report contents are never logged.
+
 ## Sandboxed workers
 
 The dev and Selfie Check enclaves run their workers through [tabernaculum](https://github.com/worldcoin/tabernaculum), pinned by git revision.

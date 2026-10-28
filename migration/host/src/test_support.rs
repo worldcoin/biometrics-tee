@@ -220,6 +220,7 @@ struct Memory {
 pub struct MemoryStore {
     memory: Mutex<Memory>,
     failing_writes: bool,
+    failing_debug_report_writes: bool,
     resolved_elsewhere: bool,
 }
 
@@ -240,6 +241,12 @@ impl MemoryStore {
     /// Fails every result write.
     pub const fn failing_writes(mut self) -> Self {
         self.failing_writes = true;
+        self
+    }
+
+    /// Fails diagnostic uploads while keeping PCP storage healthy.
+    pub const fn failing_debug_report_writes(mut self) -> Self {
+        self.failing_debug_report_writes = true;
         self
     }
 
@@ -306,7 +313,7 @@ impl BlobStore for MemoryStore {
     }
 
     async fn put_debug_report(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError> {
-        if self.failing_writes {
+        if self.failing_writes || self.failing_debug_report_writes {
             return Err(unreachable());
         }
         self.lock().debug_reports.insert(job_id.clone(), blob);

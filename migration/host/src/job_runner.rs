@@ -138,10 +138,14 @@ impl JobRunner {
                 tracing::error!(job_id = %job.job_id, diagnostic_bytes = report.len(), "enclave returned an invalid diagnostic response");
                 return Err((Reason::InvalidDebugReport, None));
             }
-            Some(self.blob_store.put_debug_report(&job.job_id, report).await.map_err(|error| {
-                tracing::error!(job_id = %job.job_id, %error, dependency = "s3", "failed to write the encrypted diagnostic");
-                (Reason::S3Error, None)
-            })?)
+            match self.blob_store.put_debug_report(&job.job_id, report).await {
+                Ok(key) => Some(key),
+                Err(error) => {
+                    tracing::warn!(job_id = %job.job_id, %error, dependency = "s3", operation = "put_debug_report", "failed to write the encrypted diagnostic; preserving migration outcome");
+                    metrics::counter!("migration.host.debug_report_failures", "reason" => "storage").increment(1);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -261,7 +265,7 @@ mod tests {
         for fail_upload in [false, true] {
             let store = MemoryStore::with_pcp(&job(1), b"sealed");
             let store = Arc::new(if fail_upload {
-                store.failing_writes()
+                store.failing_debug_report_writes()
             } else {
                 store
             });
@@ -272,14 +276,9 @@ mod tests {
                 },
             ));
             job_runner(Arc::new(enclave), &store).handle(&job(1)).await;
-            let expected = if fail_upload {
-                Reason::S3Error
-            } else {
-                Reason::CredentialSignatureInvalid
-            };
             assert_eq!(
                 store.outcome(&job(1).job_id),
-                Some(Outcome::Failed(expected))
+                Some(Outcome::Failed(Reason::CredentialSignatureInvalid))
             );
             if fail_upload {
                 assert!(store.error_key(&job(1).job_id).is_none());
@@ -316,6 +315,28 @@ mod tests {
         );
         assert_eq!(store.result(&job(1).job_id), Some(b"migrated".to_vec()));
         assert_eq!(store.debug_report(&job(1).job_id), Some(vec![7; 96]));
+    }
+
+    #[tokio::test]
+    async fn a_report_upload_failure_does_not_discard_a_successful_pcp() {
+        let store =
+            Arc::new(MemoryStore::with_pcp(&job(1), b"sealed").failing_debug_report_writes());
+        let enclave = StubEnclave {
+            response: Some(enclave_primitives::MigrateResponse {
+                pcp: b"migrated".to_vec(),
+                debug_report: Some(vec![7; 96]),
+            }),
+            ..StubEnclave::default()
+        };
+
+        job_runner(Arc::new(enclave), &store).handle(&job(1)).await;
+
+        assert_eq!(
+            store.outcome(&job(1).job_id),
+            Some(Outcome::Migrated(result_key(1)))
+        );
+        assert_eq!(store.result(&job(1).job_id), Some(b"migrated".to_vec()));
+        assert!(store.debug_report(&job(1).job_id).is_none());
     }
 
     #[tokio::test]
