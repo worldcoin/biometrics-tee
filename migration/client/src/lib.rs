@@ -49,6 +49,8 @@ pub enum Error {
     Api { status: StatusCode, code: String },
     #[error("failed to decode the migration API response: {0}")]
     Decode(#[source] reqwest::Error),
+    #[error("the encrypted debug report exceeds the {limit} byte limit")]
+    DebugReportTooLarge { limit: usize },
     #[error(transparent)]
     Sealing(#[from] SealingError),
 }
@@ -238,15 +240,36 @@ impl MigrationApiClient {
         Ok(blob.to_vec())
     }
 
-    /// Downloads and opens a migration's encrypted debug report using the personal-custody
-    /// private key. Obtain `debug_report_url` through the signed migration status request.
-    pub async fn download_debug_report(
-        &self,
-        debug_report_url: &str,
-        device_private_key: &[u8; 32],
-    ) -> Result<String, Error> {
-        let blob = self.download_pcp(debug_report_url).await?;
-        sealing::open_debug_report(&blob, device_private_key).map_err(Error::Sealing)
+    /// Downloads encrypted report bytes from the signed status request's `debug_report_url`.
+    /// The calling application is responsible for decryption.
+    pub async fn download_debug_report(&self, debug_report_url: &str) -> Result<Vec<u8>, Error> {
+        use di_migration_enclave_primitives::MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES;
+
+        let mut response = self
+            .http
+            .get(debug_report_url)
+            .send()
+            .await
+            .map_err(Error::Transport)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::UnexpectedStatus { status });
+        }
+        let limit = MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES;
+        if response
+            .content_length()
+            .is_some_and(|size| size > limit as u64)
+        {
+            return Err(Error::DebugReportTooLarge { limit });
+        }
+        let mut blob = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(Error::Transport)? {
+            if chunk.len() > limit - blob.len() {
+                return Err(Error::DebugReportTooLarge { limit });
+            }
+            blob.extend_from_slice(&chunk);
+        }
+        Ok(blob)
     }
 
     /// Uploads a sealed PCP to a presigned URL returned by [`Self::init_migration`].

@@ -37,6 +37,9 @@ in payload version 2. The key is absent from the init request and job metadata;
 only the enclave reads it, for PCP and report encryption. Upgrade the API, hosts,
 enclaves, and clients together: legacy payloads without a bound key are rejected.
 
+The Rust client downloads debug reports as encrypted bytes; the calling application
+handles report decryption.
+
 ## Sandboxed workers
 
 The dev and Selfie Check enclaves run their workers through [tabernaculum](https://github.com/worldcoin/tabernaculum), pinned by git revision.
