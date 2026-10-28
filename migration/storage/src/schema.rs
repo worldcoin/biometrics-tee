@@ -11,7 +11,7 @@ pub mod attributes {
     pub const STATUS: &str = "status";
     /// One of [`di_migration_primitives::Reason`], set on `failed`.
     pub const REASON: &str = "reason";
-    /// S3 key of the migrated PCP, set on `migrated`.
+    /// S3 key of the migrated PCP, or encrypted diagnostic on `failed`.
     pub const RESULT_KEY: &str = "result_key";
     /// The app's attested key thumbprint.
     pub const DEVICE_KEY_THUMBPRINT: &str = "attested_key_thumbprint";
@@ -58,11 +58,17 @@ pub fn result_key(job_id: &JobId) -> String {
     format!("result/{job_id}")
 }
 
+/// S3 key of the job's encrypted debug report, independent of its migration result.
+#[must_use]
+pub fn debug_report_key(job_id: &JobId) -> String {
+    format!("result/debug-report/{job_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use di_migration_primitives::JobId;
 
-    use super::{lock_id, pcp_key, result_key, row_id};
+    use super::{debug_report_key, lock_id, pcp_key, result_key, row_id};
 
     #[test]
     fn keys_follow_the_shared_layout() {
@@ -73,6 +79,7 @@ mod tests {
         assert_eq!(row_id(&id), format!("job#{id}"));
         assert_eq!(pcp_key(&id), format!("pcp/{id}"));
         assert_eq!(result_key(&id), format!("result/{id}"));
+        assert_eq!(debug_report_key(&id), format!("result/debug-report/{id}"));
     }
 
     /// Pins the hash: both services must derive the same lock for one account.

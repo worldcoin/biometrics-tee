@@ -241,6 +241,17 @@ impl MigrationApiClient {
         Ok(blob.to_vec())
     }
 
+    /// Downloads and opens a migration's encrypted debug report using the personal-custody
+    /// private key. Obtain `debug_report_url` through the signed migration status request.
+    pub async fn download_debug_report(
+        &self,
+        debug_report_url: &str,
+        device_private_key: &[u8; 32],
+    ) -> Result<String, Error> {
+        let blob = self.download_pcp(debug_report_url).await?;
+        sealing::open_debug_report(&blob, device_private_key).map_err(Error::Sealing)
+    }
+
     /// Uploads a sealed PCP to a presigned URL returned by [`Self::init_migration`].
     pub async fn upload_pcp(&self, upload_url: &str, pcp: Vec<u8>) -> Result<(), Error> {
         let response = self

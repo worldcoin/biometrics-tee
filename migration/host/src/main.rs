@@ -22,8 +22,12 @@ const AWS_CONFIG_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let mut telemetry_config = telemetry_batteries::TelemetryConfig::from_env()
+        .map_err(|error| anyhow::anyhow!("failed to load telemetry configuration: {error:?}"))?;
+    // The StatsD exporter has no timed flush; sparse job failures must be sent immediately.
+    telemetry_config.metrics.statsd.buffer_size = 0;
     // Keep the guard alive until the server stops so buffered spans are flushed.
-    let _telemetry = telemetry_batteries::init()
+    let _telemetry = telemetry_batteries::init_with_config(telemetry_config)
         .map_err(|error| anyhow::anyhow!("failed to initialize telemetry: {error:?}"))?;
 
     let config = Config::parse();

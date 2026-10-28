@@ -29,6 +29,7 @@ use crate::{
 pub struct StubEnclave {
     pub public_key: Vec<u8>,
     pub migrations: Mutex<Vec<MigrateRequest>>,
+    pub response: Option<MigrateResponse>,
 }
 
 impl Default for StubEnclave {
@@ -36,6 +37,7 @@ impl Default for StubEnclave {
         Self {
             public_key: vec![9u8; 1216],
             migrations: Mutex::new(Vec::new()),
+            response: None,
         }
     }
 }
@@ -59,7 +61,10 @@ impl EnclaveClient for StubEnclave {
             .lock()
             .expect("migrations lock")
             .push(request);
-        Ok(MigrateResponse { blob })
+        Ok(self.response.clone().unwrap_or(MigrateResponse {
+            pcp: blob,
+            debug_report: None,
+        }))
     }
 }
 
@@ -125,6 +130,10 @@ impl BlobStore for HealthyStore {
     async fn put_result(&self, _: &JobId, _: Vec<u8>) -> Result<String, StoreError> {
         unimplemented!("not exercised by these tests")
     }
+
+    async fn put_debug_report(&self, _: &JobId, _: Vec<u8>) -> Result<String, StoreError> {
+        unimplemented!("not exercised by these tests")
+    }
 }
 
 #[async_trait]
@@ -137,7 +146,12 @@ impl JobStore for HealthyStore {
         unimplemented!("not exercised by these tests")
     }
 
-    async fn mark_failed(&self, _: &JobRequest, _: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(
+        &self,
+        _: &JobRequest,
+        _: Reason,
+        _: Option<&str>,
+    ) -> Result<(), StoreError> {
         unimplemented!("not exercised by these tests")
     }
 }
@@ -195,7 +209,9 @@ pub enum Outcome {
 struct Memory {
     pcps: HashMap<String, Vec<u8>>,
     results: HashMap<JobId, Vec<u8>>,
+    debug_reports: HashMap<JobId, Vec<u8>>,
     outcomes: HashMap<JobId, Outcome>,
+    error_keys: HashMap<JobId, String>,
     last_error: Option<StoreError>,
 }
 
@@ -204,6 +220,7 @@ struct Memory {
 pub struct MemoryStore {
     memory: Mutex<Memory>,
     failing_writes: bool,
+    failing_debug_report_writes: bool,
     resolved_elsewhere: bool,
 }
 
@@ -227,6 +244,12 @@ impl MemoryStore {
         self
     }
 
+    /// Fails diagnostic uploads while keeping PCP storage healthy.
+    pub const fn failing_debug_report_writes(mut self) -> Self {
+        self.failing_debug_report_writes = true;
+        self
+    }
+
     /// Every row is already resolved, as if it timed out first.
     pub const fn resolved_elsewhere(mut self) -> Self {
         self.resolved_elsewhere = true;
@@ -235,6 +258,14 @@ impl MemoryStore {
 
     pub fn result(&self, job_id: &JobId) -> Option<Vec<u8>> {
         self.lock().results.get(job_id).cloned()
+    }
+
+    pub fn debug_report(&self, job_id: &JobId) -> Option<Vec<u8>> {
+        self.lock().debug_reports.get(job_id).cloned()
+    }
+
+    pub fn error_key(&self, job_id: &JobId) -> Option<String> {
+        self.lock().error_keys.get(job_id).cloned()
     }
 
     pub fn outcome(&self, job_id: &JobId) -> Option<Outcome> {
@@ -280,6 +311,14 @@ impl BlobStore for MemoryStore {
         self.lock().results.insert(job_id.clone(), blob);
         Ok(di_migration_storage::schema::result_key(job_id))
     }
+
+    async fn put_debug_report(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError> {
+        if self.failing_writes || self.failing_debug_report_writes {
+            return Err(unreachable());
+        }
+        self.lock().debug_reports.insert(job_id.clone(), blob);
+        Ok(di_migration_storage::schema::debug_report_key(job_id))
+    }
 }
 
 #[async_trait]
@@ -292,8 +331,19 @@ impl JobStore for MemoryStore {
         self.record(&job.job_id, Outcome::Migrated(result_key.to_owned()))
     }
 
-    async fn mark_failed(&self, job: &JobRequest, reason: Reason) -> Result<(), StoreError> {
-        self.record(&job.job_id, Outcome::Failed(reason))
+    async fn mark_failed(
+        &self,
+        job: &JobRequest,
+        reason: Reason,
+        result_key: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.record(&job.job_id, Outcome::Failed(reason))?;
+        if let Some(key) = result_key {
+            self.lock()
+                .error_keys
+                .insert(job.job_id.clone(), key.to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -320,6 +370,10 @@ impl BlobStore for FailingStore {
     async fn put_result(&self, _: &JobId, _: Vec<u8>) -> Result<String, StoreError> {
         Err(unreachable())
     }
+
+    async fn put_debug_report(&self, _: &JobId, _: Vec<u8>) -> Result<String, StoreError> {
+        Err(unreachable())
+    }
 }
 
 #[async_trait]
@@ -332,7 +386,12 @@ impl JobStore for FailingStore {
         Err(unreachable())
     }
 
-    async fn mark_failed(&self, _: &JobRequest, _: Reason) -> Result<(), StoreError> {
+    async fn mark_failed(
+        &self,
+        _: &JobRequest,
+        _: Reason,
+        _: Option<&str>,
+    ) -> Result<(), StoreError> {
         Err(unreachable())
     }
 }

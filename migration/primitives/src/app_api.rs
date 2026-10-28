@@ -66,6 +66,14 @@ pub struct MigrationStatus {
     /// Unix seconds `download_url` stops working; poll again for a fresh one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_expires_at: Option<u64>,
+    /// Presigned URL of the job's debug report, when present, regardless of migration status.
+    /// The report is sealed to the personal-custody key.
+    /// Issued only to the stored attested key thumbprint; possession authorizes S3 download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_report_url: Option<String>,
+    /// Unix seconds `debug_report_url` expires; poll again for a fresh URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_report_expires_at: Option<u64>,
 }
 
 /// Machine-readable error codes. A migrate whose dispatch failed answers with the [`Reason`]

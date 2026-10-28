@@ -65,7 +65,11 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _telemetry = telemetry_batteries::init()
+    let mut telemetry_config = telemetry_batteries::TelemetryConfig::from_env()
+        .map_err(|error| anyhow::anyhow!("failed to load telemetry configuration: {error:?}"))?;
+    // The StatsD exporter has no timed flush; sparse job events must be sent immediately.
+    telemetry_config.metrics.statsd.buffer_size = 0;
+    let _telemetry = telemetry_batteries::init_with_config(telemetry_config)
         .map_err(|error| anyhow::anyhow!("failed to initialize telemetry: {error:?}"))?;
     let config = config::Config::from_env()?;
     let aws_config = tokio::time::timeout(
@@ -197,7 +201,7 @@ mod tests {
         Json, Router,
         body::Body,
         http::{Request, StatusCode, header},
-        routing::{get, post},
+        routing::{get, head, post},
     };
     use di_migration_primitives::{
         EnclaveId,
@@ -895,11 +899,6 @@ mod tests {
         .await
     }
 
-    /// S3 answering every `HEAD` with `status`.
-    async fn s3(status: StatusCode) -> SocketAddr {
-        serve(Router::new().fallback(move || async move { status })).await
-    }
-
     fn bucket(endpoint: SocketAddr) -> PcpBucket {
         let config = aws_sdk_s3::Config::builder()
             .region(aws_sdk_s3::config::Region::new("us-east-1"))
@@ -954,7 +953,13 @@ mod tests {
                 "http://{}",
                 job_dynamodb(Arc::clone(&table)).await
             )),
-            bucket: bucket(s3(uploaded).await),
+            bucket: bucket(
+                serve(Router::new().route(
+                    &format!("/test-bucket/pcp/{JOB_ID}"),
+                    head(move || async move { uploaded }),
+                ))
+                .await,
+            ),
             host_port: host.port(),
             ..unavailable_state()
         };
@@ -1244,6 +1249,117 @@ mod tests {
             "{url}"
         );
         assert!(body["download_expires_at"].as_u64().unwrap() >= now() + 299);
+        assert!(body.get("debug_report_url").is_none());
+        assert!(body.get("debug_report_expires_at").is_none());
+    }
+
+    #[tokio::test]
+    async fn only_the_stored_attested_key_thumbprint_gets_a_debug_report_url() {
+        let host: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        for status in ["created", "migrating", "migrated", "failed"] {
+            let mut row = job_row(
+                status,
+                now(),
+                &[(
+                    "attested_key_thumbprint",
+                    serde_json::json!({"S": "result-owner"}),
+                )],
+            );
+            if status == "failed" {
+                row["reason"] = serde_json::json!({"S": "enclave_error"});
+            }
+            let (mut state, _) = migration_state(Some(row), StatusCode::OK, host).await;
+            state.bucket = bucket(
+                serve(Router::new().route(
+                    &format!("/test-bucket/result/debug-report/{JOB_ID}"),
+                    head(|| async { StatusCode::OK }),
+                ))
+                .await,
+            );
+
+            let denied = routes::router(state.clone())
+                .oneshot(migrations_request("GET", "another-device"))
+                .await
+                .unwrap();
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+            let response = routes::router(state)
+                .oneshot(migrations_request("GET", "result-owner"))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json(response).await;
+            assert_eq!(body["status"], status);
+            let url = body["debug_report_url"].as_str().unwrap();
+            assert!(
+                url.contains(&format!("/test-bucket/result/debug-report/{JOB_ID}")),
+                "{url}"
+            );
+            assert!(body["debug_report_expires_at"].as_u64().unwrap() >= now() + 299);
+            if status == "migrated" {
+                let download = body["download_url"].as_str().unwrap();
+                assert!(download.contains(&format!("/test-bucket/result/{JOB_ID}")));
+                assert_ne!(download, url);
+            } else {
+                assert!(body.get("download_url").is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn report_lookup_errors_and_timeouts_preserve_migration_status() {
+        for (status, stall) in [
+            ("created", false),
+            ("migrating", false),
+            ("migrated", false),
+            ("failed", false),
+            ("migrated", true),
+        ] {
+            let mut row = job_row(status, now(), &[]);
+            if status == "failed" {
+                row["reason"] = serde_json::json!({"S": "enclave_error"});
+            }
+            let (mut state, _) =
+                migration_state(Some(row), StatusCode::OK, "127.0.0.1:9".parse().unwrap()).await;
+            state.bucket = bucket(
+                serve(Router::new().route(
+                    &format!("/test-bucket/result/debug-report/{JOB_ID}"),
+                    head(move || async move {
+                        if stall {
+                            std::future::pending::<()>().await;
+                        }
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }),
+                ))
+                .await,
+            );
+
+            let requested_at = now();
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                routes::router(state).oneshot(migrations_request("GET", "device-key")),
+            )
+            .await
+            .expect("report lookup must remain bounded")
+            .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json(response).await;
+            assert_eq!(body["status"], status);
+            assert!(body.get("debug_report_url").is_none());
+            assert!(body.get("debug_report_expires_at").is_none());
+            if status == "migrated" {
+                let download = body["download_url"].as_str().unwrap();
+                assert!(download.contains(&format!("/test-bucket/result/{JOB_ID}")));
+                assert!(body["download_expires_at"].as_u64().unwrap() >= requested_at + 299);
+            } else {
+                assert!(body.get("download_url").is_none());
+                assert!(body.get("download_expires_at").is_none());
+            }
+            if status == "failed" {
+                assert_eq!(body["reason"], "enclave_error");
+            }
+        }
     }
 
     #[tokio::test]

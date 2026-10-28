@@ -83,13 +83,29 @@ impl std::fmt::Debug for Failure {
             .field("code", &crate::enum_debug::<FailureCode>(self.code))
             .field("image", &crate::enum_debug::<ImageRole>(self.image))
             .field("invalid_request_reason", &self.invalid_request_reason)
-            .finish()
+            // `debug_report` can contain biometric diagnostics and must never enter logs.
+            .finish_non_exhaustive()
     }
 }
 
 impl std::fmt::Debug for MigrationRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MigrationRequest").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for MigrationResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MigrationResult")
+            .field("face_embedding", &self.face_embedding)
+            .field("left_iris", &self.left_iris)
+            .field("right_iris", &self.right_iris)
+            .field("iris_code_version", &self.iris_code_version)
+            .field("iris_model_version", &self.iris_model_version)
+            .field("iris_embedding_version", &self.iris_embedding_version)
+            .field("iris_inference_backend", &self.iris_inference_backend)
+            // `debug_report` can contain biometric diagnostics and must never enter logs.
+            .finish_non_exhaustive()
     }
 }
 

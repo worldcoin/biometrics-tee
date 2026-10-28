@@ -3,8 +3,12 @@
 
 use std::{sync::Arc, time::Duration};
 
+use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use di_migration_enclave_primitives::{MIGRATION_CHANNEL_DOMAIN, pcp_payload};
+use di_migration_enclave_primitives::{
+    MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES, MIGRATION_CHANNEL_DOMAIN,
+    MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES, pcp_payload,
+};
 use di_migration_primitives::{EnclaveId, app_api::InitMigrationResponse};
 use pontifex::{
     PcrConfig, Verifier,
@@ -29,6 +33,10 @@ pub enum SealingError {
     Seal(#[source] ChannelError),
     #[error("failed to open the migrated PCP: {0}")]
     Open(#[source] ChannelError),
+    #[error("failed to open the encrypted migration diagnostic")]
+    OpenDiagnostic(#[source] alkali::AlkaliError),
+    #[error("the encrypted migration diagnostic has an invalid size or encoding")]
+    InvalidDiagnostic,
 }
 
 /// Checks enclave attestations against the PCRs of the enclave builds the app trusts.
@@ -125,6 +133,30 @@ impl PcpOpener {
     }
 }
 
+/// Opens a debug report downloaded from `MigrationStatus::debug_report_url` using the personal-custody
+/// private key corresponding to the init request's `device_public_key`.
+///
+/// # Errors
+/// Rejects malformed ciphertext, a different key, or non-UTF-8 plaintext.
+pub fn open_debug_report(
+    blob: &[u8],
+    device_private_key: &[u8; 32],
+) -> Result<String, SealingError> {
+    if blob.len() < MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
+        || blob.len() > MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES
+    {
+        return Err(SealingError::InvalidDiagnostic);
+    }
+    let mut private_key =
+        sealedbox::PrivateKey::new_empty().map_err(SealingError::OpenDiagnostic)?;
+    private_key.copy_from_slice(device_private_key);
+    let pair =
+        sealedbox::Keypair::from_private_key(&private_key).map_err(SealingError::OpenDiagnostic)?;
+    let mut plaintext = vec![0; blob.len() - sealedbox::OVERHEAD_LENGTH];
+    sealedbox::decrypt(blob, &pair, &mut plaintext).map_err(SealingError::OpenDiagnostic)?;
+    String::from_utf8(plaintext).map_err(|_| SealingError::InvalidDiagnostic)
+}
+
 fn decode(value: &str, field: &'static str) -> Result<Vec<u8>, SealingError> {
     STANDARD
         .decode(value)
@@ -159,6 +191,27 @@ mod tests {
         let (plaintext, sealer) = enclave.open(blob).expect("sealed to this enclave");
         let pcp = pcp_payload::decode(&plaintext).expect("a PCP payload");
         sealer.seal(&pcp.pcp).expect("should seal")
+    }
+
+    #[test]
+    fn migration_diagnostics_are_sealed_to_the_device_private_key() {
+        use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
+        let pair = sealedbox::Keypair::generate().unwrap();
+        let mut key = zeroize::Zeroizing::new([0; 32]);
+        key.copy_from_slice(pair.private_key.as_ref());
+        let message = br#"{"stage":"iris","error":"rejected"}"#;
+        let mut blob = vec![0; message.len() + sealedbox::OVERHEAD_LENGTH];
+        sealedbox::encrypt(message, &pair.public_key, &mut blob).unwrap();
+        assert_eq!(
+            super::open_debug_report(&blob, &key).unwrap().as_bytes(),
+            message
+        );
+        assert!(super::open_debug_report(&blob, &[3; 32]).is_err());
+        blob[0] ^= 1;
+        assert!(super::open_debug_report(&blob, &key).is_err());
+        for malformed in [&[][..], &[0; 8192][..]] {
+            assert!(super::open_debug_report(malformed, &key).is_err());
+        }
     }
 
     #[test]

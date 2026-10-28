@@ -21,6 +21,8 @@ pub enum Error {
     Transport(String),
     /// The enclave returned a structured operation error.
     Operation(enclave_primitives::Error),
+    /// Migration failure with an optional encrypted debug report.
+    Migration(enclave_primitives::MigrateError),
     /// The enclave did not answer within the request deadline.
     Timeout,
 }
@@ -57,31 +59,42 @@ impl PontifexEnclaveClient {
     }
 
     /// Sends `request` under `deadline`, flattening the timeout, transport and operation layers.
-    async fn call<R, T>(&self, request: R, deadline: Duration) -> Result<T, Error>
+    async fn call<R, T, E>(
+        &self,
+        request: R,
+        deadline: Duration,
+        map_error: fn(E) -> Error,
+    ) -> Result<T, Error>
     where
-        R: Request<Response = Result<T, enclave_primitives::Error>> + Sync,
+        R: Request<Response = Result<T, E>> + Sync,
     {
         timeout(deadline, pontifex::client::send(self.connection, &request))
             .await
             .map_err(|_| Error::Timeout)?
             .map_err(|error| Error::Transport(error.to_string()))?
-            .map_err(Error::Operation)
+            .map_err(map_error)
     }
 }
 
 #[async_trait]
 impl EnclaveClient for PontifexEnclaveClient {
     async fn health(&self) -> Result<(), Error> {
-        self.call(HealthRequest, CONTROL_REQUEST_TIMEOUT).await
-    }
-
-    async fn encryption_key(&self) -> Result<KeyAttestation, Error> {
-        self.call(GetEncryptionKeyRequest, CONTROL_REQUEST_TIMEOUT)
+        self.call(HealthRequest, CONTROL_REQUEST_TIMEOUT, Error::Operation)
             .await
     }
 
+    async fn encryption_key(&self) -> Result<KeyAttestation, Error> {
+        self.call(
+            GetEncryptionKeyRequest,
+            CONTROL_REQUEST_TIMEOUT,
+            Error::Operation,
+        )
+        .await
+    }
+
     async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse, Error> {
-        self.call(request, self.migrate_timeout).await
+        self.call(request, self.migrate_timeout, Error::Migration)
+            .await
     }
 }
 

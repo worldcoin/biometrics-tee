@@ -19,8 +19,18 @@ TELEMETRY_STATSD_PORT: "8125"
 `DATADOG_AGENT_HOST` must be defined earlier in the pod's environment from
 `status.hostIP`. The agent must accept UDP traffic from pods on port 8125.
 These settings also enable the existing `migration.kms_relay.*` metrics.
+The host and API disable the exporter's UDP buffering so low-volume metrics are
+sent immediately; the exporter has no periodic flush.
 In Datadog, counts per reason can be queried with
 `sum:migration.host.job_failures{*} by {reason}.as_count()`.
+
+Debug-report upload failures preserve the primary migration outcome. They emit
+`migration.host.debug_report_failures{reason:storage}` and a warning with the job
+ID and storage error; the report contents are never logged.
+
+Report lookup or signing failures also preserve the known migration status and
+any PCP download URL. The response omits the report URL and expiry, logs a warning,
+and increments `migration.api.debug_report_failures{reason:storage}`.
 
 ## Sandboxed workers
 

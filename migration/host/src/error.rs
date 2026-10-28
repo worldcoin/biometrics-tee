@@ -114,6 +114,9 @@ impl ApiError {
                 true,
             )
             .with_detail(detail.clone()),
+            enclave::Error::Migration(error) => {
+                return Self::enclave(&enclave::Error::Operation(error.error));
+            }
             enclave::Error::Operation(operation) => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::INTERNAL_ERROR,

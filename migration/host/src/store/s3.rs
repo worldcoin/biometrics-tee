@@ -36,4 +36,8 @@ impl BlobStore for S3BlobStore {
     async fn put_result(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError> {
         self.bucket.put_result(job_id, blob).await
     }
+
+    async fn put_debug_report(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError> {
+        self.bucket.put_debug_report(job_id, blob).await
+    }
 }
