@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+description = "Sealed request and response payload types for TEE-backed selfie enrollment."
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
 selfie-enrollment-api-types.workspace = true

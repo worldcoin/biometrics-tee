@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+description = "Defining types for Websocket messaging with host api for selfie enrollment"
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde.workspace = true

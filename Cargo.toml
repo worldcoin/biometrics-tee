@@ -89,14 +89,14 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-selfie-enrollment-api-types = { path = "selfie-enrollment/api-types" }
-selfie-enrollment-sealed-types = { path = "selfie-enrollment/sealed-types" }
+selfie-enrollment-api-types = { version = "0.1.0", path = "selfie-enrollment/api-types" }
+selfie-enrollment-sealed-types = { version = "0.1.0", path = "selfie-enrollment/sealed-types" }
 selfie-enrollment-enclave-types = { path = "selfie-enrollment/enclave-types" }
 
 selfie-enrollment-enclave = { path = "selfie-enrollment/enclave" }
 biometric-engines-protocol = "0.1.0"
 rand = "0.8"
 
-selfie-enrollment-client = { path = "selfie-enrollment/client" }
+selfie-enrollment-client = { version = "0.1.0", path = "selfie-enrollment/client" }
 
 selfie-enrollment-host = { path = "selfie-enrollment/host" }

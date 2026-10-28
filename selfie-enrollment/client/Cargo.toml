@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+description = "Native and browser client for attested TEE-backed selfie enrollment."
+homepage.workspace = true
+repository.workspace = true
 
 [features]
 default = ["js-export"]
