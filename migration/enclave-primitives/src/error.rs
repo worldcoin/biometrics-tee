@@ -9,6 +9,8 @@ pub enum Error {
     RequestNotOpened,
     /// The blocking migration task was cancelled before it returned a result.
     MigrationTaskCancelled,
+    /// The enclave could not seal a migration diagnostic to the device key.
+    MigrationDiagnosticSealingFailed,
     /// The enclave clock was before the Unix epoch.
     InvalidSystemTime,
     /// The enclave could not generate and wrap the output PCP recipient keys.
@@ -19,6 +21,14 @@ pub enum Error {
     PcpResponseSealingFailed,
     /// The biometric worker reported an internal pipeline failure.
     BiometricPipelineFailed,
+    /// The biometric worker rejected an invalid pipeline request.
+    BiometricInvalidRequest,
+    /// The biometric worker could not decode an input image.
+    BiometricInvalidImage,
+    /// The biometric worker rejected an image quality check.
+    BiometricQualityRejected,
+    /// The biometric worker detected a spoof or presentation attack.
+    BiometricSpoofDetected,
     /// The biometric worker returned a successful response with required fields missing.
     IncompleteBiometricPipelineResult,
     /// The enclave could not generate Deep Identifier embedding shares.
@@ -45,7 +55,7 @@ pub enum Error {
     FailedToBuildPcp,
     /// The device public key was not valid standard Base64.
     InvalidDevicePublicKeyEncoding,
-    /// An error introduced by a newer enclave; the host must still record a failure.
+    /// An unrecognized worker failure or an error introduced by a newer enclave.
     #[serde(other)]
     Unknown,
 }

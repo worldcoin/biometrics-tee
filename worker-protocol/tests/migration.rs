@@ -55,6 +55,7 @@ fn result(left: EyeResult) -> MigrationResult {
         iris_model_version: "deep-identifier-1.0.0".into(),
         iris_embedding_version: "1".into(),
         iris_inference_backend: "iris-engine".into(),
+        debug_report: Some(r#"{"pipeline":"sensitive-debug-report"}"#.into()),
     }
 }
 
@@ -200,7 +201,12 @@ fn results_require_every_part_with_exact_shapes() {
 #[test]
 fn failures_require_a_known_code_an_image_and_matching_reason() {
     let mut valid = vec![Failure::new(FailureCode::Internal)];
-    for role in [ImageRole::Face, ImageRole::LeftIris, ImageRole::RightIris] {
+    for role in [
+        ImageRole::Face,
+        ImageRole::LeftIris,
+        ImageRole::RightIris,
+        ImageRole::IrisPair,
+    ] {
         for code in [
             FailureCode::InvalidImage,
             FailureCode::QualityRejected,
@@ -274,13 +280,18 @@ fn debug_never_exposes_images_codes_or_embeddings() {
         "0.5",
         "face-vector",
         "200, 200",
+        "sensitive-debug-report",
     ] {
         assert!(!debug.contains(secret), "{secret}");
     }
 
     let debug = format!(
         "{:?}",
-        Failure::new(FailureCode::SpoofDetected).at_image(ImageRole::Face)
+        Failure {
+            debug_report: Some("sensitive-failure-report".into()),
+            ..Failure::new(FailureCode::SpoofDetected).at_image(ImageRole::Face)
+        }
     );
     assert!(debug.contains("SpoofDetected") && debug.contains("Face"));
+    assert!(!debug.contains("sensitive-failure-report"));
 }

@@ -4,6 +4,7 @@ fn main() -> std::io::Result<()> {
     prost_build::Config::new()
         .skip_debug([
             "MigrationRequest",
+            "MigrationResult",
             "FaceEmbedding",
             "EyeResult",
             "NormalizedIris",

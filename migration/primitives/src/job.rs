@@ -105,6 +105,8 @@ pub enum Reason {
     EnclaveChanged,
     /// The host could not obtain a valid structured migration result from the enclave.
     EnclaveError,
+    /// The enclave returned an encrypted debug report outside the allowed size limits.
+    InvalidDebugReport,
     /// The host could not communicate with the enclave.
     Transport,
     /// The enclave rejected a malformed migration request.
@@ -113,10 +115,12 @@ pub enum Reason {
     InvalidPcp,
     /// The enclave could not build the migrated PCP.
     FailedToBuildPcp,
-    /// The enclave returned an error introduced by a newer version.
+    /// The worker or enclave returned an unrecognized failure.
     Unknown,
     /// The enclave's blocking migration task was cancelled.
     MigrationTaskCancelled,
+    /// The enclave could not seal a migration diagnostic.
+    MigrationDiagnosticSealingFailed,
     /// The enclave clock was before the Unix epoch.
     InvalidSystemTime,
     /// The enclave could not generate output PCP recipient keys.
@@ -127,6 +131,14 @@ pub enum Reason {
     PcpResponseSealingFailed,
     /// The biometric worker reported an internal failure.
     BiometricPipelineFailed,
+    /// The biometric worker rejected an invalid pipeline request.
+    BiometricInvalidRequest,
+    /// The biometric worker could not decode an input image.
+    BiometricInvalidImage,
+    /// The biometric worker rejected an image quality check.
+    BiometricQualityRejected,
+    /// The biometric worker detected a spoof or presentation attack.
+    BiometricSpoofDetected,
     /// The biometric worker omitted required output fields.
     IncompleteBiometricPipelineResult,
     /// The enclave could not generate embedding shares.
@@ -157,21 +169,27 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, for parsing.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 33] = [
         Self::HostBusy,
         Self::EnclaveChanged,
         Self::EnclaveError,
+        Self::InvalidDebugReport,
         Self::Transport,
         Self::InvalidInput,
         Self::InvalidPcp,
         Self::FailedToBuildPcp,
         Self::Unknown,
         Self::MigrationTaskCancelled,
+        Self::MigrationDiagnosticSealingFailed,
         Self::InvalidSystemTime,
         Self::PcpRecipientKeyGenerationFailed,
         Self::ManifestSignerUnavailable,
         Self::PcpResponseSealingFailed,
         Self::BiometricPipelineFailed,
+        Self::BiometricInvalidRequest,
+        Self::BiometricInvalidImage,
+        Self::BiometricQualityRejected,
+        Self::BiometricSpoofDetected,
         Self::IncompleteBiometricPipelineResult,
         Self::EmbeddingShareGenerationFailed,
         Self::PcpKeyDecryptionFailed,
@@ -194,17 +212,23 @@ impl Reason {
             Self::HostBusy => "host_busy",
             Self::EnclaveChanged => "enclave_changed",
             Self::EnclaveError => "enclave_error",
+            Self::InvalidDebugReport => "invalid_debug_report",
             Self::Transport => "transport",
             Self::InvalidInput => "invalid_input",
             Self::InvalidPcp => "invalid_pcp",
             Self::FailedToBuildPcp => "failed_to_build_pcp",
             Self::Unknown => "unknown",
             Self::MigrationTaskCancelled => "migration_task_cancelled",
+            Self::MigrationDiagnosticSealingFailed => "migration_diagnostic_sealing_failed",
             Self::InvalidSystemTime => "invalid_system_time",
             Self::PcpRecipientKeyGenerationFailed => "pcp_recipient_key_generation_failed",
             Self::ManifestSignerUnavailable => "manifest_signer_unavailable",
             Self::PcpResponseSealingFailed => "pcp_response_sealing_failed",
             Self::BiometricPipelineFailed => "biometric_pipeline_failed",
+            Self::BiometricInvalidRequest => "biometric_invalid_request",
+            Self::BiometricInvalidImage => "biometric_invalid_image",
+            Self::BiometricQualityRejected => "biometric_quality_rejected",
+            Self::BiometricSpoofDetected => "biometric_spoof_detected",
             Self::IncompleteBiometricPipelineResult => "incomplete_biometric_pipeline_result",
             Self::EmbeddingShareGenerationFailed => "embedding_share_generation_failed",
             Self::PcpKeyDecryptionFailed => "pcp_key_decryption_failed",
@@ -320,12 +344,17 @@ mod tests {
             (Reason::HostBusy, "host_busy"),
             (Reason::EnclaveChanged, "enclave_changed"),
             (Reason::EnclaveError, "enclave_error"),
+            (Reason::InvalidDebugReport, "invalid_debug_report"),
             (Reason::Transport, "transport"),
             (Reason::InvalidInput, "invalid_input"),
             (Reason::InvalidPcp, "invalid_pcp"),
             (Reason::FailedToBuildPcp, "failed_to_build_pcp"),
             (Reason::Unknown, "unknown"),
             (Reason::MigrationTaskCancelled, "migration_task_cancelled"),
+            (
+                Reason::MigrationDiagnosticSealingFailed,
+                "migration_diagnostic_sealing_failed",
+            ),
             (Reason::InvalidSystemTime, "invalid_system_time"),
             (
                 Reason::PcpRecipientKeyGenerationFailed,
@@ -340,6 +369,13 @@ mod tests {
                 "pcp_response_sealing_failed",
             ),
             (Reason::BiometricPipelineFailed, "biometric_pipeline_failed"),
+            (Reason::BiometricInvalidRequest, "biometric_invalid_request"),
+            (Reason::BiometricInvalidImage, "biometric_invalid_image"),
+            (
+                Reason::BiometricQualityRejected,
+                "biometric_quality_rejected",
+            ),
+            (Reason::BiometricSpoofDetected, "biometric_spoof_detected"),
             (
                 Reason::IncompleteBiometricPipelineResult,
                 "incomplete_biometric_pipeline_result",

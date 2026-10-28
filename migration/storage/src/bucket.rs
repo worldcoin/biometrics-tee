@@ -12,7 +12,7 @@ use tokio::time::timeout;
 use crate::{
     StorageError,
     error::failed,
-    schema::{pcp_key, result_key},
+    schema::{debug_report_key, pcp_key, result_key},
 };
 use di_migration_primitives::JobId;
 
@@ -25,7 +25,7 @@ const OBJECT_TIMEOUT: Duration = Duration::from_secs(60);
 /// S3 answers a conditional write with this status when the object already exists.
 const PRECONDITION_FAILED: u16 = 412;
 
-/// The bucket holding sealed PCPs under `pcp/` and migrated results under `result/`.
+/// Sealed PCPs under `pcp/`, migrated PCPs under `result/`, and reports under `debug-report/`.
 #[derive(Debug, Clone)]
 pub struct PcpBucket {
     client: Client,
@@ -93,6 +93,23 @@ impl PcpBucket {
         job_id: &JobId,
         ttl: Duration,
     ) -> Result<String, StorageError> {
+        self.presign_get(&result_key(job_id), ttl).await
+    }
+
+    /// A URL for the encrypted debug report. Signing makes no network call.
+    ///
+    /// # Errors
+    ///
+    /// `ttl` is not a valid presigning expiry.
+    pub async fn presign_debug_report(
+        &self,
+        job_id: &JobId,
+        ttl: Duration,
+    ) -> Result<String, StorageError> {
+        self.presign_get(&debug_report_key(job_id), ttl).await
+    }
+
+    async fn presign_get(&self, key: &str, ttl: Duration) -> Result<String, StorageError> {
         const OPERATION: &str = "S3 presign GetObject";
         let config =
             PresigningConfig::expires_in(ttl).map_err(|error| failed(OPERATION, &error))?;
@@ -100,7 +117,7 @@ impl PcpBucket {
             .client
             .get_object()
             .bucket(&self.bucket)
-            .key(result_key(job_id))
+            .key(key)
             .presigned(config)
             .await
             .map_err(|error| failed(OPERATION, &error))?
@@ -114,13 +131,26 @@ impl PcpBucket {
     ///
     /// `HeadObject` timed out or failed for any reason other than a missing object.
     pub async fn pcp_exists(&self, job_id: &JobId) -> Result<bool, StorageError> {
+        self.object_exists(&pcp_key(job_id)).await
+    }
+
+    /// Whether the job has an encrypted debug report, regardless of migration status.
+    ///
+    /// # Errors
+    ///
+    /// `HeadObject` timed out or failed for any reason other than a missing object.
+    pub async fn debug_report_exists(&self, job_id: &JobId) -> Result<bool, StorageError> {
+        self.object_exists(&debug_report_key(job_id)).await
+    }
+
+    async fn object_exists(&self, key: &str) -> Result<bool, StorageError> {
         const OPERATION: &str = "S3 HeadObject";
         let result = timeout(
             READINESS_TIMEOUT,
             self.client
                 .head_object()
                 .bucket(&self.bucket)
-                .key(pcp_key(job_id))
+                .key(key)
                 .send(),
         )
         .await
@@ -195,8 +225,24 @@ impl PcpBucket {
     ///
     /// `PutObject` timed out or failed for any reason other than an existing result.
     pub async fn put_result(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StorageError> {
+        self.put_once(result_key(job_id), blob).await
+    }
+
+    /// Writes the encrypted debug report once, keeping any existing report. Returns its key.
+    ///
+    /// # Errors
+    ///
+    /// `PutObject` timed out or failed for any reason other than an existing report.
+    pub async fn put_debug_report(
+        &self,
+        job_id: &JobId,
+        blob: Vec<u8>,
+    ) -> Result<String, StorageError> {
+        self.put_once(debug_report_key(job_id), blob).await
+    }
+
+    async fn put_once(&self, key: String, blob: Vec<u8>) -> Result<String, StorageError> {
         const OPERATION: &str = "S3 PutObject";
-        let key = result_key(job_id);
         let result = timeout(
             OBJECT_TIMEOUT,
             self.client
@@ -288,6 +334,10 @@ mod tests {
             .presign_download(&id(), ttl)
             .await
             .expect("should sign");
+        let debug_report = bucket
+            .presign_debug_report(&id(), ttl)
+            .await
+            .expect("should sign");
 
         assert!(
             upload.starts_with(&format!("http://127.0.0.1:9/pcp-bucket/pcp/{ID}?")),
@@ -298,6 +348,56 @@ mod tests {
             "{download}"
         );
         assert!(upload.contains("X-Amz-Signature="), "{upload}");
+        assert!(
+            debug_report.starts_with(&format!("http://127.0.0.1:9/pcp-bucket/debug-report/{ID}?")),
+            "{debug_report}"
+        );
+    }
+
+    #[tokio::test]
+    async fn debug_reports_have_their_own_key_and_only_not_found_means_absent() {
+        for status in [StatusCode::OK, StatusCode::NOT_FOUND, StatusCode::FORBIDDEN] {
+            let address = serve(Router::new().route(
+                &format!("/pcp-bucket/debug-report/{ID}"),
+                axum::routing::head(move || async move { status }),
+            ))
+            .await;
+            let exists = bucket(&address).debug_report_exists(&id()).await;
+            match status {
+                StatusCode::OK => assert_eq!(exists, Ok(true)),
+                StatusCode::NOT_FOUND => assert_eq!(exists, Ok(false)),
+                _ => assert!(exists.is_err()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn debug_reports_are_written_separately_and_existing_reports_are_kept() {
+        for status in [
+            StatusCode::OK,
+            StatusCode::PRECONDITION_FAILED,
+            StatusCode::FORBIDDEN,
+        ] {
+            let address = serve(Router::new().route(
+                &format!("/pcp-bucket/debug-report/{ID}"),
+                put(
+                    move |headers: axum::http::HeaderMap, body: axum::body::Bytes| async move {
+                        assert_eq!(headers["if-none-match"], "*");
+                        assert_eq!(body.as_ref(), b"encrypted report");
+                        status
+                    },
+                ),
+            ))
+            .await;
+            let result = bucket(&address)
+                .put_debug_report(&id(), b"encrypted report".to_vec())
+                .await;
+            if status == StatusCode::FORBIDDEN {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap(), format!("debug-report/{ID}"));
+            }
+        }
     }
 
     #[tokio::test]

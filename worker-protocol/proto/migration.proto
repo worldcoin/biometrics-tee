@@ -30,6 +30,9 @@ message MigrationResult {
   string iris_model_version = 5;
   string iris_embedding_version = 6;
   string iris_inference_backend = 7;
+  // Optional JSON report for debugging the biometric pipeline. This can contain sensitive
+  // biometric diagnostics and must remain inside the enclave trust boundary until encrypted.
+  optional string debug_report = 8;
 }
 
 // Same fields as the PCP's `face_embeddings.json` entries.
@@ -69,7 +72,7 @@ message NormalizedIris {
 /*
  * Failure information in case of request processing failures.
  *
- * Failures carry the outcome class only, never scores or thresholds.
+ * Failures carry a stable outcome class and may include a sensitive JSON debug report.
  */
 message Failure {
   FailureCode code = 1;
@@ -77,6 +80,8 @@ message Failure {
   ImageRole image = 2;
   // Required exactly when code is INVALID_REQUEST.
   InvalidRequestReason invalid_request_reason = 3;
+  // Optional JSON report for debugging the failing pipeline stage.
+  optional string debug_report = 4;
 }
 
 enum FailureCode {
@@ -96,6 +101,7 @@ enum ImageRole {
   IMAGE_ROLE_FACE = 1;
   IMAGE_ROLE_LEFT_IRIS = 2;
   IMAGE_ROLE_RIGHT_IRIS = 3;
+  IMAGE_ROLE_IRIS_PAIR = 4;
 }
 
 message InvalidRequestReason {

@@ -197,7 +197,7 @@ mod tests {
         Json, Router,
         body::Body,
         http::{Request, StatusCode, header},
-        routing::{get, post},
+        routing::{get, head, post},
     };
     use di_migration_primitives::{
         EnclaveId,
@@ -954,7 +954,13 @@ mod tests {
                 "http://{}",
                 job_dynamodb(Arc::clone(&table)).await
             )),
-            bucket: bucket(s3(uploaded).await),
+            bucket: bucket(
+                serve(Router::new().route(
+                    &format!("/test-bucket/pcp/{JOB_ID}"),
+                    head(move || async move { uploaded }),
+                ))
+                .await,
+            ),
             host_port: host.port(),
             ..unavailable_state()
         };
@@ -1244,6 +1250,61 @@ mod tests {
             "{url}"
         );
         assert!(body["download_expires_at"].as_u64().unwrap() >= now() + 299);
+        assert!(body.get("debug_report_url").is_none());
+        assert!(body.get("debug_report_expires_at").is_none());
+    }
+
+    #[tokio::test]
+    async fn only_the_stored_attested_key_thumbprint_gets_a_debug_report_url() {
+        let host: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        for status in ["created", "migrating", "migrated", "failed"] {
+            let mut row = job_row(
+                status,
+                now(),
+                &[(
+                    "attested_key_thumbprint",
+                    serde_json::json!({"S": "result-owner"}),
+                )],
+            );
+            if status == "failed" {
+                row["reason"] = serde_json::json!({"S": "enclave_error"});
+            }
+            let (mut state, _) = migration_state(Some(row), StatusCode::OK, host).await;
+            state.bucket = bucket(
+                serve(Router::new().route(
+                    &format!("/test-bucket/debug-report/{JOB_ID}"),
+                    head(|| async { StatusCode::OK }),
+                ))
+                .await,
+            );
+
+            let denied = routes::router(state.clone())
+                .oneshot(migrations_request("GET", "another-device"))
+                .await
+                .unwrap();
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+            let response = routes::router(state)
+                .oneshot(migrations_request("GET", "result-owner"))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json(response).await;
+            assert_eq!(body["status"], status);
+            let url = body["debug_report_url"].as_str().unwrap();
+            assert!(
+                url.contains(&format!("/test-bucket/debug-report/{JOB_ID}")),
+                "{url}"
+            );
+            assert!(body["debug_report_expires_at"].as_u64().unwrap() >= now() + 299);
+            if status == "migrated" {
+                let download = body["download_url"].as_str().unwrap();
+                assert!(download.contains(&format!("/test-bucket/result/{JOB_ID}")));
+                assert_ne!(download, url);
+            } else {
+                assert!(body.get("download_url").is_none());
+            }
+        }
     }
 
     #[tokio::test]

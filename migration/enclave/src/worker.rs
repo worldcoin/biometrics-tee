@@ -2,6 +2,7 @@
 
 use di_migration_pcp::PipelineInputs;
 use di_worker_protocol::migration::{Failure, MigrationResult};
+use zeroize::Zeroizing;
 
 /// Successful output of one execution of the provisioned biometric pipeline.
 pub struct MigrationOutput {
@@ -9,6 +10,8 @@ pub struct MigrationOutput {
     pub pipeline_version: String,
     /// Validated biometric pipeline result.
     pub result: MigrationResult,
+    /// Optional worker JSON report, zeroized when it leaves scope.
+    pub debug_report: Option<Zeroizing<String>>,
 }
 
 /// Biometric pipeline used for migration and idle liveness checks.
@@ -118,10 +121,12 @@ impl Worker for SandboxWorker {
         };
         let result = decode_result(&response, id).unwrap_or_else(|()| state.worker.fail());
         drop(state);
-        let result = result?;
+        let mut result = result?;
+        let debug_report = result.debug_report.take().map(Zeroizing::new);
         Ok(MigrationOutput {
             pipeline_version: self.pipeline_version.clone(),
             result,
+            debug_report,
         })
     }
 
@@ -148,7 +153,7 @@ mod tests {
         let failure = migration::Failure::new(migration::FailureCode::Internal);
         let response = protobuf::encode_response(&Response::new(
             7,
-            di_worker_protocol::Failure::from(failure).into(),
+            di_worker_protocol::Failure::from(failure.clone()).into(),
         ));
 
         assert_eq!(decode_result(&response, 7).unwrap().unwrap_err(), failure);

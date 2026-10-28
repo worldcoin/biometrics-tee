@@ -49,10 +49,11 @@ impl JobTable {
         sub: &str,
         status: Status,
         extra: (&'static str, String),
+        result_key: Option<&str>,
         now: u64,
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "DynamoDB TransactWriteItems";
-        let job_row = Update::builder()
+        let mut job_row = Update::builder()
             .table_name(&self.table_name)
             .key(attributes::ID, string(&row_id(job_id)))
             .update_expression("SET #status = :status, #extra = :extra")
@@ -63,9 +64,14 @@ impl JobTable {
             .expression_attribute_values(":status", string(status.as_str()))
             .expression_attribute_values(":extra", AttributeValue::S(extra.1))
             .expression_attribute_values(":migrating", string(Status::Migrating.as_str()))
-            .expression_attribute_values(":now", number(now))
-            .build()
-            .map_err(|error| failed(OPERATION, &error))?;
+            .expression_attribute_values(":now", number(now));
+        if let Some(result_key) = result_key {
+            job_row = job_row
+                .update_expression("SET #status = :status, #extra = :extra, #result = :result")
+                .expression_attribute_names("#result", attributes::RESULT_KEY)
+                .expression_attribute_values(":result", string(result_key));
+        }
+        let job_row = job_row.build().map_err(|error| failed(OPERATION, &error))?;
 
         match self
             .transact(vec![
@@ -128,12 +134,14 @@ impl JobTable {
             sub,
             Status::Migrated,
             (attributes::RESULT_KEY, result_key.to_owned()),
+            None,
             now,
         )
         .await
     }
 
-    /// Marks a `migrating` job `failed` with its reason, and frees its `sub`.
+    /// Marks a `migrating` job `failed`, optionally recording an encrypted diagnostic's
+    /// result key in the same transaction, and frees its `sub`.
     ///
     /// # Errors
     ///
@@ -144,6 +152,7 @@ impl JobTable {
         job_id: &JobId,
         sub: &str,
         reason: Reason,
+        result_key: Option<&str>,
         now: u64,
     ) -> Result<(), StorageError> {
         self.finish(
@@ -151,6 +160,7 @@ impl JobTable {
             sub,
             Status::Failed,
             (attributes::REASON, reason.as_str().to_owned()),
+            result_key,
             now,
         )
         .await
@@ -202,7 +212,7 @@ pub struct JobRecord {
     pub created_at: u64,
     /// Unix seconds after which a `migrating` job reads as `failed (timeout)`; set at migrate.
     pub deadline: Option<u64>,
-    /// S3 key of the result, once `migrated`.
+    /// S3 key of the migrated PCP, or of an encrypted diagnostic on a failed job.
     pub result_key: Option<String>,
 }
 
@@ -701,7 +711,7 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_failed(&id(), "sub", Reason::EnclaveError, 100)
+            .mark_failed(&id(), "sub", Reason::EnclaveError, None, 100)
             .await
             .expect("should update");
 
