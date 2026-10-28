@@ -6,45 +6,53 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
-/// Payload version: CBOR `{ pcp, credential }` after the version byte.
-pub const PCP_WITH_CREDENTIAL_VERSION: u8 = 1;
+/// Payload version: CBOR `{ pcp, credential, device_public_key }` after the version byte.
+pub const MIGRATION_PAYLOAD_VERSION: u8 = 2;
 
-/// PCP and self-custody credential the app seals to the enclave.
+/// PCP, self-custody credential, and recipient key the app seals to the enclave.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PcpWithCredential {
+pub struct MigrationPayload {
     /// The PCP to migrate.
     #[serde(with = "serde_bytes")]
     pub pcp: Vec<u8>,
     /// Self-custody credential sealed into the migrated PCP.
     pub credential: String,
+    /// Recipient key bound to the PCP by the client's sealed request.
+    #[serde(with = "serde_bytes")]
+    pub device_public_key: [u8; 32],
 }
 
-/// Prefixes a CBOR `{ pcp, credential }` with [`PCP_WITH_CREDENTIAL_VERSION`].
+/// Prefixes the PCP, credential and recipient key with [`MIGRATION_PAYLOAD_VERSION`].
 ///
 /// # Errors
 ///
 /// [`Error::InvalidInput`] when CBOR encoding fails (should not happen for these fields).
-pub fn encode(pcp: &[u8], credential: &str) -> Result<Vec<u8>, Error> {
-    let body = PcpWithCredential {
+pub fn encode(
+    pcp: &[u8],
+    credential: &str,
+    device_public_key: &[u8; 32],
+) -> Result<Vec<u8>, Error> {
+    let body = MigrationPayload {
         pcp: pcp.to_vec(),
         credential: credential.to_owned(),
+        device_public_key: *device_public_key,
     };
-    let mut payload = vec![PCP_WITH_CREDENTIAL_VERSION];
+    let mut payload = vec![MIGRATION_PAYLOAD_VERSION];
     ciborium::into_writer(&body, &mut payload).map_err(|_| Error::InvalidInput)?;
     Ok(payload)
 }
 
-/// The PCP and credential inside a [`PCP_WITH_CREDENTIAL_VERSION`] `payload`.
+/// The migration inputs inside a [`MIGRATION_PAYLOAD_VERSION`] `payload`.
 ///
 /// # Errors
 ///
-/// [`Error::InvalidInput`] for an unknown version, bad CBOR, or an empty PCP/credential.
-pub fn decode(payload: &[u8]) -> Result<PcpWithCredential, Error> {
-    let Some((&PCP_WITH_CREDENTIAL_VERSION, body)) = payload.split_first() else {
+/// [`Error::InvalidInput`] for an unknown version, bad CBOR, an empty PCP/credential,
+/// or a missing or incorrectly sized recipient key.
+pub fn decode(payload: &[u8]) -> Result<MigrationPayload, Error> {
+    let Some((&MIGRATION_PAYLOAD_VERSION, body)) = payload.split_first() else {
         return Err(Error::InvalidInput);
     };
-    let decoded: PcpWithCredential =
-        ciborium::from_reader(body).map_err(|_| Error::InvalidInput)?;
+    let decoded: MigrationPayload = ciborium::from_reader(body).map_err(|_| Error::InvalidInput)?;
     if decoded.pcp.is_empty() || decoded.credential.is_empty() {
         return Err(Error::InvalidInput);
     }
@@ -53,16 +61,17 @@ pub fn decode(payload: &[u8]) -> Result<PcpWithCredential, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PCP_WITH_CREDENTIAL_VERSION, PcpWithCredential, decode, encode};
+    use super::{MIGRATION_PAYLOAD_VERSION, MigrationPayload, decode, encode};
     use crate::Error;
 
     #[test]
     fn a_pcp_round_trips() {
         assert_eq!(
-            decode(&encode(b"pcp", "cred").expect("encode")),
-            Ok(PcpWithCredential {
+            decode(&encode(b"pcp", "cred", &[7; 32]).expect("encode")),
+            Ok(MigrationPayload {
                 pcp: b"pcp".to_vec(),
                 credential: "cred".to_owned(),
+                device_public_key: [7; 32],
             })
         );
     }
@@ -75,14 +84,44 @@ mod tests {
     }
 
     #[test]
-    fn a_pcp_with_credential_round_trips() {
-        let payload = encode(b"pcp", "cred").expect("encode");
-        assert_eq!(payload[0], PCP_WITH_CREDENTIAL_VERSION);
+    fn legacy_payloads_and_missing_or_wrong_length_recipient_keys_are_rejected() {
+        #[derive(serde::Serialize)]
+        struct UncheckedPayload<'a> {
+            #[serde(with = "serde_bytes")]
+            pcp: &'a [u8],
+            credential: &'a str,
+            #[serde(with = "serde_bytes", skip_serializing_if = "Option::is_none")]
+            device_public_key: Option<Vec<u8>>,
+        }
+        let mut legacy = encode(b"pcp", "cred", &[7; 32]).unwrap();
+        legacy[0] = 1;
+        assert_eq!(decode(&legacy), Err(Error::InvalidInput));
+
+        for device_public_key in [None, Some(vec![]), Some(vec![7; 31]), Some(vec![7; 33])] {
+            let mut payload = vec![MIGRATION_PAYLOAD_VERSION];
+            ciborium::into_writer(
+                &UncheckedPayload {
+                    pcp: b"pcp",
+                    credential: "cred",
+                    device_public_key,
+                },
+                &mut payload,
+            )
+            .unwrap();
+            assert_eq!(decode(&payload), Err(Error::InvalidInput));
+        }
+    }
+
+    #[test]
+    fn a_migration_payload_round_trips() {
+        let payload = encode(b"pcp", "cred", &[7; 32]).expect("encode");
+        assert_eq!(payload[0], MIGRATION_PAYLOAD_VERSION);
         assert_eq!(
             decode(&payload),
-            Ok(PcpWithCredential {
+            Ok(MigrationPayload {
                 pcp: b"pcp".to_vec(),
                 credential: "cred".to_owned(),
+                device_public_key: [7; 32],
             })
         );
     }

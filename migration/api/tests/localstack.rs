@@ -302,32 +302,18 @@ async fn a_migration_runs_from_init_to_download() {
 
     // Init pins the job to the host's enclave and hands out an upload URL.
     let lost = client
-        .init_migration(
-            &token,
-            &signer,
-            &sub,
-            "YQ==",
-            CHALLENGE_ID,
-            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
-        )
+        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("init should succeed");
     assert!(matches!(
         other
-            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID, "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=")
+            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
             .await,
         Err(Error::Api { code, .. }) if code == "migration_in_progress"
     ));
     // The same device, e.g. after losing that response, starts over with a new job.
     let init = client
-        .init_migration(
-            &token,
-            &signer,
-            &sub,
-            "YQ==",
-            CHALLENGE_ID,
-            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
-        )
+        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("a repeated init replaces the unclaimed job");
     assert_ne!(init.upload_url, lost.upload_url);
@@ -350,7 +336,7 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(migrating.status, Status::Migrating);
     assert!(matches!(
         client
-            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID, "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=")
+            .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
             .await,
         Err(Error::Api { code, .. }) if code == "migration_in_progress"
     ));
@@ -361,10 +347,6 @@ async fn a_migration_runs_from_init_to_download() {
     };
     assert_eq!(job.enclave_id, enclave_id());
     assert_eq!(job.attested_key_thumbprint, DEVICE_KEY_THUMBPRINT);
-    assert_eq!(
-        job.device_public_key,
-        "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
-    );
     assert_eq!(
         client
             .migration_status(&token, &signer, &sub)
@@ -407,14 +389,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     // The finished job frees the sub, so the app can start another migration at once.
     client
-        .init_migration(
-            &token,
-            &signer,
-            &sub,
-            "YQ==",
-            CHALLENGE_ID,
-            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
-        )
+        .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("a finished migration no longer blocks init");
 

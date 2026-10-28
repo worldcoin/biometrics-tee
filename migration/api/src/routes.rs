@@ -8,7 +8,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use di_migration_primitives::{
     JobId, Reason, Status,
     app_api::{
@@ -97,13 +96,6 @@ async fn init_migration(
     let attested_key_thumbprint =
         attested_key_thumbprint(&headers).ok_or_else(ApiError::invalid_device_key)?;
     let sub = valid_sub(&request.sub)?;
-    if request.device_public_key.len() != 44
-        || STANDARD
-            .decode(&request.device_public_key)
-            .map_or(true, |key| key.len() != 32)
-    {
-        return Err(ApiError::invalid_device_public_key());
-    }
 
     let verification = proof::VerificationRequest {
         challenge_id: request.challenge_id,
@@ -142,7 +134,6 @@ async fn init_migration(
         job_id: JobId::new(),
         sub: sub.to_owned(),
         attested_key_thumbprint,
-        device_public_key: request.device_public_key,
         // The address we reached, which migrate dials again.
         host_ip: host.ip(),
         enclave_id: attestation.enclave_id.clone(),
@@ -249,7 +240,6 @@ async fn migrate(
         job_id: job.job_id.clone(),
         sub: sub.to_owned(),
         attested_key_thumbprint: job.attested_key_thumbprint,
-        device_public_key: job.device_public_key,
         enclave_id: job.enclave_id,
         deadline,
     };

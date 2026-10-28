@@ -37,6 +37,8 @@ pub enum SealingError {
     OpenDiagnostic(#[source] alkali::AlkaliError),
     #[error("the encrypted migration diagnostic has an invalid size or encoding")]
     InvalidDiagnostic,
+    #[error("the device public key must be a standard-Base64, 32-byte Curve25519 key")]
+    InvalidDevicePublicKey,
 }
 
 /// Checks enclave attestations against the PCRs of the enclave builds the app trusts.
@@ -102,15 +104,28 @@ fn check_enclave_id(claimed: &EnclaveId, attested_key: &[u8]) -> Result<(), Seal
 pub struct EnclaveChannel(ChannelConsumer);
 
 impl EnclaveChannel {
-    /// Seals `pcp` and `credential` as CBOR for upload. Only the returned opener can read the
-    /// enclave's reply, and it cannot be persisted: keep it until the migrated PCP is downloaded.
+    /// Seals `pcp`, `credential`, and the recipient key as CBOR for upload.
+    /// Only the returned opener can read the enclave's reply, and it cannot be persisted:
+    /// keep it until the migrated PCP is downloaded.
     ///
     /// # Errors
     ///
-    /// [`SealingError::Encode`] when the payload cannot be built, [`SealingError::Seal`] when
-    /// sealing fails.
-    pub fn seal(&self, pcp: &[u8], credential: &str) -> Result<(Vec<u8>, PcpOpener), SealingError> {
-        let plaintext = pcp_payload::encode(pcp, credential).map_err(|_| SealingError::Encode)?;
+    /// [`SealingError::InvalidDevicePublicKey`] for a malformed recipient,
+    /// [`SealingError::Encode`] when the payload cannot be built, or [`SealingError::Seal`]
+    /// when sealing fails.
+    pub fn seal(
+        &self,
+        pcp: &[u8],
+        credential: &str,
+        device_public_key: &str,
+    ) -> Result<(Vec<u8>, PcpOpener), SealingError> {
+        let device_public_key: [u8; 32] = STANDARD
+            .decode(device_public_key)
+            .ok()
+            .and_then(|key| key.try_into().ok())
+            .ok_or(SealingError::InvalidDevicePublicKey)?;
+        let plaintext = pcp_payload::encode(pcp, credential, &device_public_key)
+            .map_err(|_| SealingError::Encode)?;
         let (blob, opener) = self
             .0
             .seal_to_enclave(&plaintext)
@@ -134,7 +149,7 @@ impl PcpOpener {
 }
 
 /// Opens a debug report downloaded from `MigrationStatus::debug_report_url` using the personal-custody
-/// private key corresponding to the init request's `device_public_key`.
+/// private key corresponding to the recipient key inside the sealed PCP payload.
 ///
 /// # Errors
 /// Rejects malformed ciphertext, a different key, or non-UTF-8 plaintext.
@@ -223,7 +238,7 @@ mod tests {
         );
 
         let (blob, opener) = channel
-            .seal(b"old pcp", "self-custody")
+            .seal(b"old pcp", "self-custody", &STANDARD.encode([7; 32]))
             .expect("should seal");
         let pcp = opener.open(&migrate(&enclave, &blob)).expect("should open");
 
@@ -239,13 +254,28 @@ mod tests {
         );
 
         let (blob, _) = channel
-            .seal(b"old pcp", "self-custody")
+            .seal(b"old pcp", "self-custody", &STANDARD.encode([7; 32]))
             .expect("should seal");
         let (plaintext, _) = enclave.open(&blob).expect("sealed to this enclave");
         let decoded = pcp_payload::decode(&plaintext).expect("credential payload");
 
         assert_eq!(decoded.pcp, b"old pcp");
         assert_eq!(decoded.credential, "self-custody");
+        assert_eq!(decoded.device_public_key, [7; 32]);
+    }
+
+    #[test]
+    fn sealing_rejects_malformed_recipient_keys() {
+        let enclave = ChannelEnclave::generate(domain()).unwrap();
+        let channel = EnclaveChannel(
+            ChannelConsumer::from_unverified_public_key(domain(), &enclave.public_key()).unwrap(),
+        );
+        for key in ["", "not-base64", "YQ=="] {
+            assert!(matches!(
+                channel.seal(b"pcp", "credential", key),
+                Err(SealingError::InvalidDevicePublicKey),
+            ));
+        }
     }
 
     #[test]
@@ -255,9 +285,11 @@ mod tests {
             ChannelConsumer::from_unverified_public_key(domain(), &enclave.public_key())
                 .expect("valid key"),
         );
-        let (first, _) = channel.seal(b"first", "self-custody").expect("should seal");
+        let (first, _) = channel
+            .seal(b"first", "self-custody", &STANDARD.encode([7; 32]))
+            .expect("should seal");
         let (_, second_opener) = channel
-            .seal(b"second", "self-custody")
+            .seal(b"second", "self-custody", &STANDARD.encode([7; 32]))
             .expect("should seal");
 
         let error = second_opener

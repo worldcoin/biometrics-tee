@@ -19,8 +19,6 @@ pub struct InitMigrationRequest {
     pub proof: String,
     /// The challenge the proof was built for.
     pub challenge_id: String,
-    /// Standard-Base64, 32-byte Curve25519 device public key for the output PCP.
-    pub device_public_key: String,
 }
 
 /// `200` body of `POST /v1/init-migration`.

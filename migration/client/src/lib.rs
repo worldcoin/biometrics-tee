@@ -123,8 +123,7 @@ impl MigrationApiClient {
     }
 
     /// Starts a migration for `sub` with a standard-base64 ownership `proof` and the
-    /// `challenge_id` the proof was built for. `device_public_key` is the standard-Base64
-    /// 32-byte Curve25519 recipient key for the output PCP.
+    /// `challenge_id` the proof was built for.
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
     /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
@@ -136,7 +135,6 @@ impl MigrationApiClient {
         sub: &str,
         proof: &str,
         challenge_id: &str,
-        device_public_key: &str,
     ) -> Result<InitMigrationResponse, Error>
     where
         S: Signer + Send + Sync + 'static,
@@ -146,7 +144,6 @@ impl MigrationApiClient {
             sub: sub.to_owned(),
             proof: proof.to_owned(),
             challenge_id: challenge_id.to_owned(),
-            device_public_key: device_public_key.to_owned(),
         })
         .map_err(Error::Encode)?;
 
@@ -295,14 +292,7 @@ impl MigrationApiClient {
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let response = self
-            .init_migration(
-                integrity_token,
-                signer,
-                sub,
-                proof,
-                challenge_id,
-                device_public_key,
-            )
+            .init_migration(integrity_token, signer, sub, proof, challenge_id)
             .await?;
         let enclave_id = response.enclave_id.clone();
         let upload_url = response.upload_url.clone();
@@ -311,6 +301,7 @@ impl MigrationApiClient {
             response,
             pcp.to_vec(),
             credential.to_owned(),
+            device_public_key.to_owned(),
         )
         .await?;
         self.upload_pcp(&upload_url, blob).await?;
@@ -326,13 +317,14 @@ async fn attest_and_seal(
     response: InitMigrationResponse,
     pcp: Vec<u8>,
     credential: String,
+    device_public_key: String,
 ) -> Result<(Vec<u8>, PcpOpener), Error> {
     let pcp = zeroize::Zeroizing::new(pcp);
     let credential = zeroize::Zeroizing::new(credential);
     tokio::task::spawn_blocking(move || {
         verifier
             .attested_channel(&response)
-            .and_then(|channel| channel.seal(&pcp, &credential))
+            .and_then(|channel| channel.seal(&pcp, &credential, &device_public_key))
             .map_err(Error::Sealing)
     })
     .await
@@ -533,10 +525,7 @@ mod tests {
                     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(body["sub"], "test-sub");
                     assert_eq!(body["proof"], "cHJvb2Y=");
-                    assert_eq!(
-                        body["device_public_key"],
-                        "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
-                    );
+                    assert!(body.get("device_public_key").is_none());
                     assert_eq!(body["challenge_id"], "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31");
                     Json(serde_json::json!({
                         "enclave_id": "ab".repeat(32),
@@ -563,7 +552,6 @@ mod tests {
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
-                "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
             )
             .await
             .unwrap();
@@ -592,7 +580,6 @@ mod tests {
                 "test-sub",
                 "cHJvb2Y=",
                 "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31",
-                "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
             )
             .await
             .unwrap_err();

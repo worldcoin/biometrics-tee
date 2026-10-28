@@ -66,7 +66,6 @@ fn new_job(sub: &str, created_at: u64) -> NewJob {
         job_id: JobId::new(),
         sub: sub.to_owned(),
         attested_key_thumbprint: "device-key".to_owned(),
-        device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
         host_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)),
         enclave_id: EnclaveId::from_commitment([7; 32]),
         created_at,
@@ -89,7 +88,6 @@ async fn the_job_lifecycle_honours_the_sub_lock() {
     assert_eq!(latest.job_id, first.job_id);
     assert_eq!(latest.status, Status::Created);
     assert_eq!(latest.enclave_id, first.enclave_id);
-    assert_eq!(latest.device_public_key, first.device_public_key);
 
     // A second init for the same sub is refused while the first is active; another sub is not.
     assert_eq!(

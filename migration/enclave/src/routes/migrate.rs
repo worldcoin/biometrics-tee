@@ -7,7 +7,6 @@ use std::{
 
 use crate::pcp_keys::BackendKeys;
 use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use di_migration_enclave_primitives::{
     self as enclave_primitives, MAX_MIGRATION_DIAGNOSTIC_BYTES, MigrateError, MigrateRequest,
     MigrateResponse, pcp_payload,
@@ -33,7 +32,7 @@ const TEE_SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Opens the app's PCP with this boot's key and seals it back to the app's one-time response
 /// key, so the host only ever handles ciphertext. The PCP tiers are encrypted to the
-/// device public key supplied at init.
+/// device public key inside the client's sealed payload.
 pub async fn handler(
     state: Arc<EnclaveState>,
     request: MigrateRequest,
@@ -43,36 +42,27 @@ pub async fn handler(
         return Err(enclave_primitives::Error::InvalidInput.into());
     }
 
-    let device_public_key: [u8; 32] = STANDARD
-        .decode(&request.device_public_key)
-        .ok()
-        .and_then(|key| key.try_into().ok())
-        .ok_or_else(|| {
-            tracing::warn!("invalid device public key encoding or length");
-            enclave_primitives::Error::InvalidInput
-        })?;
-
     // Opening and sealing are CPU-bound; keep them off the async workers.
     tokio::task::spawn_blocking(move || -> Result<MigrateResponse, MigrateError> {
         let (plaintext, sealer) = state.channel().open(&request.blob).map_err(|error| {
             tracing::warn!(?error, "migrate request was not sealed to this boot");
             enclave_primitives::Error::RequestNotOpened
         })?;
-        let pcp_with_credential = pcp_payload::decode(&plaintext).inspect_err(|_| {
+        let payload = pcp_payload::decode(&plaintext).inspect_err(|_| {
             tracing::warn!("migrate request carried an unknown payload");
         })?;
+        let device_public_key = payload.device_public_key;
         verify_credential(
             state.issuer_pubkey(),
             &request.sub,
-            &pcp_with_credential.credential,
-            &pcp_with_credential.pcp,
+            &payload.credential,
+            &payload.pcp,
         )?;
 
-        let files =
-            di_migration_pcp::files_from_tar_gz(&pcp_with_credential.pcp).map_err(|error| {
-                tracing::warn!(%error, "migrate request PCP archive could not be opened");
-                enclave_primitives::Error::InvalidPcp
-            })?;
+        let files = di_migration_pcp::files_from_tar_gz(&payload.pcp).map_err(|error| {
+            tracing::warn!(%error, "migrate request PCP archive could not be opened");
+            enclave_primitives::Error::InvalidPcp
+        })?;
         let source_pcp = parse_source_pcp(&state, files)?;
         let (biometrics, debug_report) = run_pipeline(&state, &source_pcp);
         let debug_report = debug_report
@@ -606,7 +596,6 @@ mod tests {
             MigrateRequest {
                 blob: blob.into(),
                 sub: sub.into(),
-                device_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_owned(),
             },
             opener,
         )
@@ -659,7 +648,7 @@ mod tests {
         let pcp = pcp_with_hashes_json(hashes_json);
         let sub = FieldElement::from(42u64);
         let credential = signed_credential_for_pcp(&issuer, hashes_json, sub);
-        let payload = pcp_payload::encode(&pcp, &credential).expect("encode");
+        let payload = pcp_payload::encode(&pcp, &credential, &[7; 32]).expect("encode");
 
         let (request, opener) = sealed(&state, &payload, sub.to_string());
         let _ = opener;
@@ -680,7 +669,7 @@ mod tests {
             serde_json::from_str(&signed_credential_for_pcp(&issuer, hashes_json, sub))
                 .expect("deserialize credential for tampering");
         credential["issuer_version"] = serde_json::json!(1);
-        let payload = pcp_payload::encode(&pcp, &credential.to_string()).expect("encode");
+        let payload = pcp_payload::encode(&pcp, &credential.to_string(), &[7; 32]).expect("encode");
         let (request, _) = sealed(&state, &payload, sub.to_string());
 
         assert_eq!(
@@ -700,7 +689,7 @@ mod tests {
         let pcp = pcp_with_hashes_json(hashes_json);
         let sub = FieldElement::from(42u64);
         let credential = signed_credential_for_pcp(&issuer, hashes_json, sub);
-        let payload = pcp_payload::encode(&pcp, &credential).expect("encode");
+        let payload = pcp_payload::encode(&pcp, &credential, &[7; 32]).expect("encode");
         let (request, _) = sealed(&state, &payload, sub.to_string());
 
         assert_eq!(
@@ -714,7 +703,7 @@ mod tests {
         let earlier = test_support::state();
         let (request, _) = sealed(
             &earlier,
-            &pcp_payload::encode(b"old pcp", "self-custody").expect("encode"),
+            &pcp_payload::encode(b"old pcp", "self-custody", &[7; 32]).expect("encode"),
             "sub",
         );
 
@@ -726,17 +715,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_device_public_keys_are_rejected() {
-        let state = Arc::new(test_support::state());
-        let (request, _) = sealed(&state, b"payload", "sub");
-        for key in ["", "not-base64", "YQ=="] {
-            let mut request = request.clone();
-            request.device_public_key = key.to_owned();
-            assert_eq!(
-                handler(Arc::clone(&state), request).await,
-                Err(enclave_primitives::Error::InvalidInput.into())
-            );
-        }
+    async fn the_host_cannot_substitute_the_sealed_recipient_key() {
+        let issuer = EdDSAPrivateKey::from_bytes([7; 32]);
+        let state = Arc::new(test_support::state_with_issuer_pubkey(issuer.public()));
+        let hashes_json = br#"{"thumbnail.png":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+        let pcp = pcp_with_hashes_json(hashes_json);
+        let sub = FieldElement::from(42u64);
+        let credential = signed_credential_for_pcp(&issuer, hashes_json, sub);
+        let payload = pcp_payload::encode(&pcp, &credential, &[7; 32]).unwrap();
+        let (request, _) = sealed(&state, &payload, sub.to_string());
+
+        // The recipient is supplied only inside the sealed payload.
+        let mut forwarded = serde_json::to_value(&request).unwrap();
+        assert!(forwarded.get("device_public_key").is_none());
+        let matching = handler(Arc::clone(&state), request.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(matching.error, enclave_primitives::Error::InvalidPcp);
+
+        // An obsolete outer key is ignored and cannot change the sealed recipient.
+        forwarded["device_public_key"] = serde_json::json!(base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [8; 32],
+        ));
+        let substituted = handler(state, serde_json::from_value(forwarded).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(substituted.error, enclave_primitives::Error::InvalidPcp);
+        assert!(substituted.debug_report.is_none());
     }
 
     #[tokio::test]
