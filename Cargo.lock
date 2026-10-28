@@ -2300,7 +2300,6 @@ dependencies = [
 name = "di-migration-client"
 version = "0.1.0"
 dependencies = [
- "alkali",
  "attested-request",
  "axum",
  "base64 0.22.1",
