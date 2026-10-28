@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Public API messages for TEE-backed selfie enrollment."
+description = "Defining types for Websocket messaging with host api for selfie enrollment"
 homepage.workspace = true
 repository.workspace = true
 
