@@ -28,6 +28,10 @@ Debug-report upload failures preserve the primary migration outcome. They emit
 `migration.host.debug_report_failures{reason:storage}` and a warning with the job
 ID and storage error; the report contents are never logged.
 
+Report lookup or signing failures also preserve the known migration status and
+any PCP download URL. The response omits the report URL and expiry, logs a warning,
+and increments `migration.api.debug_report_failures{reason:storage}`.
+
 ## Sandboxed workers
 
 The dev and Selfie Check enclaves run their workers through [tabernaculum](https://github.com/worldcoin/tabernaculum), pinned by git revision.

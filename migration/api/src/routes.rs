@@ -278,7 +278,7 @@ async fn migrate(
 
 /// The `sub`'s latest job. A `migrating` job past its deadline reads as `failed (timeout)`
 /// without a write; a `migrated` one carries a fresh download URL.
-/// Any status includes a debug report URL when that job's report exists in S3.
+/// Any status may include a debug report URL when its S3 lookup and signing succeed.
 /// Ownership is checked against the stored attested key thumbprint before issuing a URL.
 async fn migration_status(
     State(state): State<AppState>,
@@ -318,20 +318,27 @@ async fn migration_status(
         }
         _ => {}
     }
-    if state
-        .bucket
-        .debug_report_exists(&job.job_id)
-        .await
-        .map_err(|error| ApiError::storage("s3", error.to_string()))?
-    {
-        status.debug_report_url = Some(
-            state
-                .bucket
-                .presign_debug_report(&job.job_id, state.presigned_url_ttl)
-                .await
-                .map_err(|error| ApiError::storage("s3", error.to_string()))?,
-        );
-        status.debug_report_expires_at = Some(now + state.presigned_url_ttl.as_secs());
+    let debug_report_url = async {
+        if !state.bucket.debug_report_exists(&job.job_id).await? {
+            return Ok(None);
+        }
+        state
+            .bucket
+            .presign_debug_report(&job.job_id, state.presigned_url_ttl)
+            .await
+            .map(Some)
+    }
+    .await;
+    match debug_report_url {
+        Ok(Some(url)) => {
+            status.debug_report_url = Some(url);
+            status.debug_report_expires_at = Some(now + state.presigned_url_ttl.as_secs());
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(job_id = %job.job_id, %error, dependency = "s3", operation = "resolve_debug_report", "debug report unavailable; returning migration status");
+            counter!("migration.api.debug_report_failures", "reason" => "storage").increment(1);
+        }
     }
     Ok(Json(status))
 }

@@ -1307,6 +1307,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn report_lookup_errors_and_timeouts_preserve_migration_status() {
+        for (status, stall) in [
+            ("created", false),
+            ("migrating", false),
+            ("migrated", false),
+            ("failed", false),
+            ("migrated", true),
+        ] {
+            let mut row = job_row(status, now(), &[]);
+            if status == "failed" {
+                row["reason"] = serde_json::json!({"S": "enclave_error"});
+            }
+            let (mut state, _) =
+                migration_state(Some(row), StatusCode::OK, "127.0.0.1:9".parse().unwrap()).await;
+            state.bucket = bucket(
+                serve(Router::new().route(
+                    &format!("/test-bucket/result/debug-report/{JOB_ID}"),
+                    head(move || async move {
+                        if stall {
+                            std::future::pending::<()>().await;
+                        }
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }),
+                ))
+                .await,
+            );
+
+            let requested_at = now();
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                routes::router(state).oneshot(migrations_request("GET", "device-key")),
+            )
+            .await
+            .expect("report lookup must remain bounded")
+            .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json(response).await;
+            assert_eq!(body["status"], status);
+            assert!(body.get("debug_report_url").is_none());
+            assert!(body.get("debug_report_expires_at").is_none());
+            if status == "migrated" {
+                let download = body["download_url"].as_str().unwrap();
+                assert!(download.contains(&format!("/test-bucket/result/{JOB_ID}")));
+                assert!(body["download_expires_at"].as_u64().unwrap() >= requested_at + 299);
+            } else {
+                assert!(body.get("download_url").is_none());
+                assert!(body.get("download_expires_at").is_none());
+            }
+            if status == "failed" {
+                assert_eq!(body["reason"], "enclave_error");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn status_needs_the_job_s_device_key() {
         let host: SocketAddr = "127.0.0.1:9".parse().unwrap();
         let (state, _) =
