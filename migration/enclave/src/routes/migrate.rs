@@ -769,9 +769,23 @@ mod tests {
     #[test]
     fn only_actual_worker_debug_reports_are_sealed() {
         let state = test_support::state();
-        for report in [None, Some("not json"), Some(r#"{"stage":"face"}"#)] {
+        let maximum_report = format!(
+            r#"{{"detail":"{}"}}"#,
+            "x".repeat(
+                enclave_primitives::MAX_MIGRATION_DIAGNOSTIC_BYTES - r#"{"detail":""}"#.len()
+            )
+        );
+        let oversized_report = format!("{maximum_report} ");
+        for (report, expected) in [
+            (None, false),
+            (Some("not json"), false),
+            (Some(r#"{"stage":"face"}"#), true),
+            (Some(maximum_report.as_str()), true),
+            (Some(oversized_report.as_str()), false),
+        ] {
             let debug_report =
                 take_debug_report(report.map(|report| Zeroizing::new(report.to_owned())));
+            assert_eq!(debug_report.is_some(), expected);
             if let Some(debug_report) = debug_report {
                 let (request, opener) = sealed(&state, b"request", "sub");
                 let (_, sealer) = state.channel().open(&request.blob).unwrap();

@@ -2,7 +2,7 @@ use pontifex::Request;
 use serde::{Deserialize, Serialize};
 
 /// Maximum plaintext size of a migration diagnostic sealed to the response key.
-pub const MAX_MIGRATION_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+pub const MAX_MIGRATION_DIAGNOSTIC_BYTES: usize = 2 * 1024 * 1024;
 /// Quantum-box 0.2 header, encapsulated key, and authentication tag.
 pub const MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES: usize = 7 + 1120 + 16;
 /// Maximum sealed migration diagnostic accepted outside the enclave.
