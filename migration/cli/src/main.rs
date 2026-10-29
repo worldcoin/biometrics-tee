@@ -15,7 +15,7 @@ use attested_request::{
 use clap::{Args, Parser, Subcommand};
 use di_migration_client::{
     MigrationApiClient,
-    sealing::{EnclaveVerifier, PcpOpener},
+    sealing::{EnclaveVerifier, MigrationResponseOpener},
 };
 use di_migration_primitives::Status;
 use pontifex::PcrConfig;
@@ -48,7 +48,7 @@ enum Command {
     /// Starts a migration and prints the enclave id, attestation and upload URL.
     InitMigration(InitArgs),
     /// Runs a whole migration as the app does: verifies the enclave, seals and uploads the PCP,
-    /// waits for the job, and opens the migrated PCP into `--out`.
+    /// waits for the job, and unseals the migrated PCP into `--out`.
     Migrate {
         #[command(flatten)]
         init: InitArgs,
@@ -180,11 +180,10 @@ async fn run(cli: Cli) -> Result<(), String> {
             )
             .await?;
             let download_url = wait(&client, &init).await?;
-            let blob = client
-                .download_pcp(&download_url)
+            let migrated = client
+                .fetch_pcp(&download_url, opener.into_secret_bytes())
                 .await
                 .map_err(|error| format!("download failed: {error}"))?;
-            let migrated = opener.open(&blob).map_err(|error| error.to_string())?;
 
             write_private(&out, &migrated)?;
             eprintln!("migrated PCP written to {}", out.display());
@@ -225,7 +224,7 @@ async fn start(
     pcp: &[u8],
     credential: &str,
     device_public_key: &str,
-) -> Result<PcpOpener, String> {
+) -> Result<MigrationResponseOpener, String> {
     let response = init_migration(client, init).await?;
     let (blob, opener) = verifier
         .attested_channel(&response)

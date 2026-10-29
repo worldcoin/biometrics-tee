@@ -1,5 +1,5 @@
-//! The app's end of the sealed channel: verify the enclave boot, seal the PCP to it, and open
-//! the migrated PCP it seals back.
+//! The app's end of the sealed channel: verify the enclave boot, seal the PCP to it, and unseal
+//! the PCP and debug report it seals back.
 
 use std::{sync::Arc, time::Duration};
 
@@ -27,10 +27,12 @@ pub enum SealingError {
     Encode,
     #[error("failed to seal the PCP: {0}")]
     Seal(#[source] ChannelError),
-    #[error("failed to open the migrated PCP: {0}")]
+    #[error("failed to unseal the migration response: {0}")]
     Open(#[source] ChannelError),
     #[error("the device public key must be a standard-Base64, 32-byte Curve25519 key")]
     InvalidDevicePublicKey,
+    #[error("failed to create the response opener from secret bytes: {0}")]
+    ResponseOpenerError(#[source] ChannelError),
 }
 
 /// Checks enclave attestations against the PCRs of the enclave builds the app trusts.
@@ -97,8 +99,8 @@ pub struct EnclaveChannel(ChannelConsumer);
 
 impl EnclaveChannel {
     /// Seals `pcp`, `credential`, and the recipient key as CBOR for upload.
-    /// Only the returned opener can read the enclave's reply, and it cannot be persisted:
-    /// keep it until the migrated PCP is downloaded.
+    /// The returned opener reads the PCP and report responses. Export its secret before
+    /// unsealing either artifact to restore a separate opener for each download.
     ///
     /// # Errors
     ///
@@ -110,7 +112,7 @@ impl EnclaveChannel {
         pcp: &[u8],
         credential: &str,
         device_public_key: &str,
-    ) -> Result<(Vec<u8>, PcpOpener), SealingError> {
+    ) -> Result<(Vec<u8>, MigrationResponseOpener), SealingError> {
         let device_public_key: [u8; 32] = STANDARD
             .decode(device_public_key)
             .ok()
@@ -122,21 +124,39 @@ impl EnclaveChannel {
             .0
             .seal_to_enclave(&plaintext)
             .map_err(SealingError::Seal)?;
-        Ok((blob, PcpOpener(opener)))
+        Ok((blob, MigrationResponseOpener(opener)))
     }
 }
 
-/// Opens the one reply to a sealed PCP.
-pub struct PcpOpener(ResponseOpener);
+/// Unseals a PCP or debug report sealed to a migration request's response key.
+pub struct MigrationResponseOpener(ResponseOpener);
 
-impl PcpOpener {
-    /// The migrated PCP inside the downloaded `blob`.
+impl MigrationResponseOpener {
+    /// The PCP or debug report inside the downloaded `blob`.
     ///
     /// # Errors
     ///
     /// [`SealingError::Open`] when `blob` was not sealed to this request.
     pub fn open(self, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SealingError> {
         self.0.open_from_enclave(blob).map_err(SealingError::Open)
+    }
+
+    /// Consumes the opener and exports its response secret; keep it private and restore
+    /// once per artifact.
+    pub fn into_secret_bytes(self) -> Zeroizing<Vec<u8>> {
+        self.0.to_secret_bytes()
+    }
+
+    /// Restores an opener from a previously exported response secret.
+    ///
+    /// # Errors
+    ///
+    /// [`SealingError::ResponseOpenerError`] when the secret is malformed.
+    pub fn from_secret_bytes(bytes: Zeroizing<Vec<u8>>) -> Result<Self, SealingError> {
+        let domain = ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN);
+        let opener = ResponseOpener::from_secret_bytes(domain, &bytes)
+            .map_err(SealingError::ResponseOpenerError)?;
+        Ok(MigrationResponseOpener(opener))
     }
 }
 
@@ -153,7 +173,9 @@ mod tests {
     use di_migration_primitives::{EnclaveId, app_api::InitMigrationResponse};
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
 
-    use super::{EnclaveChannel, EnclaveVerifier, SealingError, check_enclave_id};
+    use super::{
+        EnclaveChannel, EnclaveVerifier, MigrationResponseOpener, SealingError, check_enclave_id,
+    };
 
     fn domain() -> ChannelDomain {
         ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN)
@@ -187,9 +209,23 @@ mod tests {
         let (blob, opener) = channel
             .seal(b"old pcp", "self-custody", &STANDARD.encode([7; 32]))
             .expect("should seal");
-        let pcp = opener.open(&migrate(&enclave, &blob)).expect("should open");
-
+        let secret = opener.into_secret_bytes();
+        let pcp_blob = migrate(&enclave, &blob);
+        let pcp = MigrationResponseOpener::from_secret_bytes(secret.clone())
+            .unwrap()
+            .open(&pcp_blob)
+            .expect("should open");
         assert_eq!(pcp.as_slice(), b"old pcp");
+
+        // Unsealing the request again recovers the same response key for the optional report.
+        let (_, report_sealer) = enclave.open(&blob).unwrap();
+        let report = br#"{"stage":"completed"}"#;
+        let report_blob = report_sealer.seal(report).unwrap();
+        let plaintext = MigrationResponseOpener::from_secret_bytes(secret)
+            .unwrap()
+            .open(&report_blob)
+            .expect("same response secret opens the report");
+        assert_eq!(plaintext.as_slice(), report);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use di_migration_enclave::{
     state::EnclaveState,
     worker::SandboxWorker,
 };
-use di_migration_enclave_primitives::PONTIFEX_PORT;
+use di_migration_enclave_primitives::{MAX_MIGRATION_DIAGNOSTIC_BYTES, PONTIFEX_PORT};
 use pontifex::SecureModule;
 use tabernaculum::{
     ConnectionConfig, ConnectionError, Limits, Policy, SandboxConfig, Worker,
@@ -62,7 +62,8 @@ pub(super) fn run() -> anyhow::Result<()> {
             // Leave time inside the host's default five-minute request budget for PCP assembly.
             request_timeout: Duration::from_secs(240),
             max_request_bytes: di_worker_protocol::framing::MAX_FRAME_BYTES,
-            max_response_bytes: 1024 * 1024,
+            // Allow a maximum-size report plus the existing biometric result budget.
+            max_response_bytes: MAX_MIGRATION_DIAGNOSTIC_BYTES + 1024 * 1024,
             ..ConnectionConfig::default()
         },
         worker_failed,

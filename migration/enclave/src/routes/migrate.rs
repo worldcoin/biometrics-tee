@@ -6,7 +6,6 @@ use std::{
 };
 
 use crate::pcp_keys::BackendKeys;
-use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
 use di_migration_enclave_primitives::{
     self as enclave_primitives, MAX_MIGRATION_DIAGNOSTIC_BYTES, MigrateError, MigrateRequest,
     MigrateResponse, pcp_payload,
@@ -30,7 +29,7 @@ use crate::state::EnclaveState;
 const MAX_HASHES_JSON_BYTES: usize = 1024 * 1024;
 const TEE_SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Opens the app's PCP with this boot's key and seals it back to the app's one-time response
+/// Unseals the app's PCP with this boot's key and seals it back to the app's one-time response
 /// key, so the host only ever handles ciphertext. The PCP tiers are encrypted to the
 /// device public key inside the client's sealed payload.
 pub async fn handler(
@@ -42,7 +41,7 @@ pub async fn handler(
         return Err(enclave_primitives::Error::InvalidInput.into());
     }
 
-    // Opening and sealing are CPU-bound; keep them off the async workers.
+    // Unsealing and sealing are CPU-bound; keep them off the async workers.
     tokio::task::spawn_blocking(move || -> Result<MigrateResponse, MigrateError> {
         let (plaintext, sealer) = state.channel().open(&request.blob).map_err(|error| {
             tracing::warn!(?error, "migrate request was not sealed to this boot");
@@ -66,7 +65,15 @@ pub async fn handler(
         let source_pcp = parse_source_pcp(&state, files)?;
         let (biometrics, debug_report) = run_pipeline(&state, &source_pcp);
         let debug_report = debug_report
-            .map(|report| seal_debug_report(report, &device_public_key))
+            .map(|report| {
+                // Pontifex consumes each sealer. Unseal the same authenticated request again
+                // to seal the report separately to the same response key.
+                let (_, report_sealer) = state.channel().open(&request.blob).map_err(|error| {
+                    tracing::error!(?error, "failed to recover the diagnostic response sealer");
+                    enclave_primitives::Error::MigrationDiagnosticSealingFailed
+                })?;
+                seal_debug_report(report, report_sealer)
+            })
             .transpose()?;
         let result = biometrics.and_then(|biometrics| {
             build_and_seal_pcp(&state, &source_pcp, &biometrics, &device_public_key, sealer)
@@ -151,7 +158,7 @@ fn build_and_seal_pcp(
 
 fn seal_debug_report(
     report: Zeroizing<String>,
-    public_key: &[u8; 32],
+    sealer: ResponseSealer,
 ) -> Result<Vec<u8>, enclave_primitives::Error> {
     if report.len() > MAX_MIGRATION_DIAGNOSTIC_BYTES {
         tracing::error!(
@@ -160,9 +167,8 @@ fn seal_debug_report(
         );
         return Err(enclave_primitives::Error::MigrationDiagnosticSealingFailed);
     }
-    let mut blob = vec![0; report.len() + sealedbox::OVERHEAD_LENGTH];
-    sealedbox::encrypt(report.as_bytes(), public_key, &mut blob).map_err(|error| {
-        tracing::error!(?error, "failed to encrypt migration diagnostic");
+    let blob = sealer.seal(report.as_bytes()).map_err(|error| {
+        tracing::error!(?error, "failed to seal migration diagnostic");
         enclave_primitives::Error::MigrationDiagnosticSealingFailed
     })?;
     drop(report);
@@ -762,16 +768,33 @@ mod tests {
 
     #[test]
     fn only_actual_worker_debug_reports_are_sealed() {
-        use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
-
-        let pair = sealedbox::Keypair::generate().unwrap();
-        for report in [None, Some("not json"), Some(r#"{"stage":"face"}"#)] {
+        let state = test_support::state();
+        let maximum_report = format!(
+            r#"{{"detail":"{}"}}"#,
+            "x".repeat(
+                enclave_primitives::MAX_MIGRATION_DIAGNOSTIC_BYTES - r#"{"detail":""}"#.len()
+            )
+        );
+        let oversized_report = format!("{maximum_report} ");
+        for (report, expected) in [
+            (None, false),
+            (Some("not json"), false),
+            (Some(r#"{"stage":"face"}"#), true),
+            (Some(maximum_report.as_str()), true),
+            (Some(oversized_report.as_str()), false),
+        ] {
             let debug_report =
                 take_debug_report(report.map(|report| Zeroizing::new(report.to_owned())));
+            assert_eq!(debug_report.is_some(), expected);
             if let Some(debug_report) = debug_report {
-                let mut plaintext = Zeroizing::new(vec![0; debug_report.len()]);
-                let blob = seal_debug_report(debug_report, &pair.public_key).expect("seal report");
-                sealedbox::decrypt(&blob, &pair, &mut plaintext).unwrap();
+                let (request, opener) = sealed(&state, b"request", "sub");
+                let (_, sealer) = state.channel().open(&request.blob).unwrap();
+                let blob = seal_debug_report(debug_report, sealer).expect("seal report");
+                assert_eq!(
+                    blob.len(),
+                    report.unwrap().len() + enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
+                );
+                let plaintext = opener.open_from_enclave(&blob).unwrap();
                 assert_eq!(
                     plaintext.as_slice(),
                     report.expect("valid report").as_bytes()
