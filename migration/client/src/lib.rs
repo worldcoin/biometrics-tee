@@ -8,19 +8,17 @@ use attested_request::{
     base::CanonicalRequest,
     sign::{Signer, sign_request},
 };
-use di_migration_primitives::{
-    EnclaveId,
-    app_api::{
-        DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
-        MigrateResponse, MigrationStatus,
-    },
+use di_migration_primitives::app_api::{
+    DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
+    MigrateResponse, MigrationStatus,
 };
 use reqwest::{
     Request, RequestBuilder, StatusCode, Url,
     header::{CONTENT_TYPE, HeaderName, HeaderValue},
 };
+use zeroize::Zeroizing;
 
-use crate::sealing::{EnclaveVerifier, PcpOpener, SealingError};
+use crate::sealing::{EnclaveVerifier, MigrationResponseOpener, SealingError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -41,6 +39,8 @@ pub enum Error {
     SigningTask(#[source] tokio::task::JoinError),
     #[error("the background attestation and sealing task failed: {0}")]
     SealingTask(#[source] tokio::task::JoinError),
+    #[error("the background response unsealing task failed: {0}")]
+    UnsealingTask(#[source] tokio::task::JoinError),
     #[error("request to the migration API failed: {0}")]
     Transport(#[source] reqwest::Error),
     #[error("migration API answered {status}")]
@@ -49,7 +49,7 @@ pub enum Error {
     Api { status: StatusCode, code: String },
     #[error("failed to decode the migration API response: {0}")]
     Decode(#[source] reqwest::Error),
-    #[error("the encrypted debug report exceeds the {limit} byte limit")]
+    #[error("the sealed debug report exceeds the {limit} byte limit")]
     DebugReportTooLarge { limit: usize },
     #[error(transparent)]
     Sealing(#[from] SealingError),
@@ -223,8 +223,16 @@ impl MigrationApiClient {
         url
     }
 
-    /// Downloads the sealed migrated PCP from a presigned URL in [`MigrationStatus`].
-    pub async fn download_pcp(&self, download_url: &str) -> Result<Vec<u8>, Error> {
+    /// Downloads the migrated PCP from a presigned URL in [`MigrationStatus`] and unseals
+    /// its Pontifex response envelope, returning PCP bytes that are zeroized on drop.
+    ///
+    /// `opener_key` is the secret exported by [`MigrationResponseOpener::into_secret_bytes`]
+    /// for the migration request. Unsealing runs on Tokio's blocking pool.
+    pub async fn fetch_pcp(
+        &self,
+        download_url: &str,
+        opener_key: Zeroizing<Vec<u8>>,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
         let response = self
             .http
             .get(download_url)
@@ -237,12 +245,22 @@ impl MigrationApiClient {
             return Err(Error::UnexpectedStatus { status });
         }
         let blob = response.bytes().await.map_err(Error::Transport)?;
-        Ok(blob.to_vec())
+        unseal_response(blob, opener_key).await
     }
 
-    /// Downloads encrypted report bytes from the signed status request's `debug_report_url`.
-    /// The calling application is responsible for decryption.
-    pub async fn download_debug_report(&self, debug_report_url: &str) -> Result<Vec<u8>, Error> {
+    /// Downloads the report from the signed status request's `debug_report_url` and unseals
+    /// its Pontifex response envelope, returning the worker's JSON report bytes in a
+    /// buffer that is zeroized on drop.
+    ///
+    /// `opener_key` is the same exported response secret used by
+    /// [`Self::fetch_pcp`]. The sealed download is bounded by
+    /// [`di_migration_enclave_primitives::MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES`].
+    /// Unsealing runs on Tokio's blocking pool.
+    pub async fn fetch_debug_report(
+        &self,
+        debug_report_url: &str,
+        opener_key: Zeroizing<Vec<u8>>,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
         use di_migration_enclave_primitives::MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES;
 
         let mut response = self
@@ -269,7 +287,7 @@ impl MigrationApiClient {
             }
             blob.extend_from_slice(&chunk);
         }
-        Ok(blob)
+        unseal_response(blob, opener_key).await
     }
 
     /// Uploads a sealed PCP to a presigned URL returned by [`Self::init_migration`].
@@ -292,7 +310,9 @@ impl MigrationApiClient {
 
     /// Inits, verifies the enclave, seals and uploads the PCP, and starts the job.
     ///
-    /// Returns the opener for the migrated result and the attested `enclave_id`.
+    /// Returns the exported response secret for [`Self::fetch_pcp`] and
+    /// [`Self::fetch_debug_report`]. The secret is zeroized on drop;
+    /// keep it private and clone it when downloading both artifacts.
     /// Signing, attestation verification, and PCP sealing run on Tokio's blocking pool, keeping
     /// the caller's executor thread responsive.
     /// Not retried here: each call creates a new migration record and must be re-signed.
@@ -309,7 +329,7 @@ impl MigrationApiClient {
             pcp,
             credential,
         }: StartMigration<'_, S>,
-    ) -> Result<(PcpOpener, EnclaveId), Error>
+    ) -> Result<Zeroizing<Vec<u8>>, Error>
     where
         S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
@@ -317,7 +337,6 @@ impl MigrationApiClient {
         let response = self
             .init_migration(integrity_token, signer, sub, proof, challenge_id)
             .await?;
-        let enclave_id = response.enclave_id.clone();
         let upload_url = response.upload_url.clone();
         let (blob, opener) = attest_and_seal(
             verifier.clone(),
@@ -329,11 +348,24 @@ impl MigrationApiClient {
         .await?;
         self.upload_pcp(&upload_url, blob).await?;
         self.migrate(integrity_token, signer, sub).await?;
-        Ok((opener, enclave_id))
+        Ok(opener.into_secret_bytes())
     }
 }
 
-/// Verifies an enclave's attestation and encrypts the potentially large PCP off the caller's
+async fn unseal_response(
+    blob: impl AsRef<[u8]> + Send + 'static,
+    opener_key: Zeroizing<Vec<u8>>,
+) -> Result<Zeroizing<Vec<u8>>, Error> {
+    tokio::task::spawn_blocking(move || {
+        let opener =
+            MigrationResponseOpener::from_secret_bytes(opener_key).map_err(Error::Sealing)?;
+        opener.open(blob.as_ref()).map_err(Error::Sealing)
+    })
+    .await
+    .map_err(Error::UnsealingTask)?
+}
+
+/// Verifies an enclave's attestation and seals the potentially large PCP off the caller's
 /// executor thread. Both operations are CPU-bound on mobile clients.
 async fn attest_and_seal(
     verifier: EnclaveVerifier,
@@ -341,9 +373,9 @@ async fn attest_and_seal(
     pcp: Vec<u8>,
     credential: String,
     device_public_key: String,
-) -> Result<(Vec<u8>, PcpOpener), Error> {
-    let pcp = zeroize::Zeroizing::new(pcp);
-    let credential = zeroize::Zeroizing::new(credential);
+) -> Result<(Vec<u8>, MigrationResponseOpener), Error> {
+    let pcp = Zeroizing::new(pcp);
+    let credential = Zeroizing::new(credential);
     tokio::task::spawn_blocking(move || {
         verifier
             .attested_channel(&response)

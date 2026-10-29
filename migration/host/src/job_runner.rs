@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_encrypted_diagnostic_is_stored_and_the_job_stays_failed() {
-        let ciphertext = vec![7; 96];
+        let ciphertext = vec![7; enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES + 48];
         for fail_upload in [false, true] {
             let store = MemoryStore::with_pcp(&job(1), b"sealed");
             let store = Arc::new(if fail_upload {
@@ -300,7 +300,11 @@ mod tests {
         let enclave = StubEnclave {
             response: Some(enclave_primitives::MigrateResponse {
                 pcp: b"migrated".to_vec(),
-                debug_report: Some(vec![7; 96]),
+                debug_report: Some(vec![
+                    7;
+                    enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
+                        + 48
+                ]),
             }),
             ..StubEnclave::default()
         };
@@ -312,7 +316,14 @@ mod tests {
             Some(Outcome::Migrated(result_key(1)))
         );
         assert_eq!(store.result(&job(1).job_id), Some(b"migrated".to_vec()));
-        assert_eq!(store.debug_report(&job(1).job_id), Some(vec![7; 96]));
+        assert_eq!(
+            store.debug_report(&job(1).job_id),
+            Some(vec![
+                7;
+                enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
+                    + 48
+            ])
+        );
     }
 
     #[tokio::test]
@@ -322,7 +333,11 @@ mod tests {
         let enclave = StubEnclave {
             response: Some(enclave_primitives::MigrateResponse {
                 pcp: b"migrated".to_vec(),
-                debug_report: Some(vec![7; 96]),
+                debug_report: Some(vec![
+                    7;
+                    enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
+                        + 48
+                ]),
             }),
             ..StubEnclave::default()
         };
