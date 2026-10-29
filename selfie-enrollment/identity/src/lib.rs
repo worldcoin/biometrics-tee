@@ -22,7 +22,7 @@ pub const USER_DATA_VERSION: u8 = 1;
 pub const USER_DATA_BYTES: usize = 1 + 48 + 32;
 pub const MAX_OWNERSHIP_PROOF_BYTES: usize = 64 * 1024;
 const MAX_IDENTIFIER_BYTES: usize = 128;
-const BINDING_DOMAIN: &[u8] = b"selfie-enrollment/identity/v1";
+const BINDING_DOMAIN: &[u8] = b"web-authenticator:identity:v1";
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 pub struct Inputs<'a> {
@@ -474,7 +474,7 @@ mod tests {
         assert_eq!(user_data[1..49], WORKER);
         assert_eq!(
             hex::encode(&user_data[49..]),
-            "67d6d283fd41ce333f5664e70a1d8fd615b16b9aee4864e36d5f8b6262022b55"
+            "aaea0b04e1c35d62ff90f66898b3f949b7f105ac8d80bd10e7bd824e6815c652"
         );
     }
 
