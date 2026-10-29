@@ -1,11 +1,11 @@
 use pontifex::Request;
 use serde::{Deserialize, Serialize};
 
-/// Maximum plaintext size of a migration diagnostic sealed to the device key.
+/// Maximum plaintext size of a migration diagnostic sealed to the response key.
 pub const MAX_MIGRATION_DIAGNOSTIC_BYTES: usize = 64 * 1024;
-/// Libsodium sealed-box overhead added to a migration diagnostic.
-pub const MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES: usize = 48;
-/// Maximum encrypted migration diagnostic accepted outside the enclave.
+/// Quantum-box 0.2 header, encapsulated key, and authentication tag.
+pub const MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES: usize = 7 + 1120 + 16;
+/// Maximum sealed migration diagnostic accepted outside the enclave.
 pub const MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES: usize =
     MAX_MIGRATION_DIAGNOSTIC_BYTES + MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES;
 
@@ -25,23 +25,23 @@ impl Request for MigrateRequest {
     type Response = Result<MigrateResponse, MigrateError>;
 }
 
-/// Successful migration with an optional encrypted worker debug report.
+/// Successful migration with an optional sealed worker debug report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateResponse {
     /// Tier 0 PCP sealed to the app's one-time response key.
     #[serde(with = "serde_bytes")]
     pub pcp: Vec<u8>,
-    /// Worker JSON report encrypted to `device_public_key` on success.
+    /// Worker JSON report sealed to the same response key as the PCP.
     #[serde(default, with = "serde_bytes", skip_serializing_if = "Option::is_none")]
     pub debug_report: Option<Vec<u8>>,
 }
 
-/// A migration failure and optional worker report encrypted to the device key.
+/// A migration failure and optional worker report sealed to the request's response key.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateError {
     /// Payload-free failure reason exposed to the host.
     pub error: Error,
-    /// Sealed debug report JSON report encrypted to `device_public_key`.
+    /// Worker JSON report sealed to the request's response key.
     #[serde(default, with = "serde_bytes", skip_serializing_if = "Option::is_none")]
     pub debug_report: Option<Vec<u8>>,
 }

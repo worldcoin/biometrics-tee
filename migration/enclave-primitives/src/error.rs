@@ -9,7 +9,7 @@ pub enum Error {
     RequestNotOpened,
     /// The blocking migration task was cancelled before it returned a result.
     MigrationTaskCancelled,
-    /// The enclave could not seal a migration diagnostic to the device key.
+    /// The enclave could not seal a migration diagnostic to the response key.
     MigrationDiagnosticSealingFailed,
     /// The enclave clock was before the Unix epoch.
     InvalidSystemTime,

@@ -34,11 +34,20 @@ and increments `migration.api.debug_report_failures{reason:storage}`.
 
 Migration clients seal the recipient `device_public_key` with the PCP and credential
 in payload version 2. The key is absent from the init request and job metadata;
-only the enclave reads it, for PCP and report encryption. Upgrade the API, hosts,
+only the enclave reads it, for PCP tier encryption. Upgrade the API, hosts,
 enclaves, and clients together: legacy payloads without a bound key are rejected.
 
-The Rust client downloads debug reports as encrypted bytes; the calling application
-handles report decryption.
+The enclave seals the PCP response and debug report separately to the same
+request-bound Pontifex response key. Export `MigrationResponseOpener::into_secret_bytes()` before
+unsealing either artifact and pass the saved secret to the Rust client's
+`fetch_pcp` and `fetch_debug_report`; both remove the
+Pontifex response envelope and return its plaintext bytes. Response secrets and
+unsealed payloads use `Zeroizing<Vec<u8>>` buffers that are wiped on drop. Clone the
+saved secret when downloading both artifacts, and keep it private.
+
+Roll out matching host, enclave, and client versions: the report sealing format
+and accepted size bounds changed. Previously stored reports still use device-key
+encryption and cannot be opened with the response key.
 
 ## Sandboxed workers
 
