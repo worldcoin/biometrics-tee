@@ -1,57 +1,42 @@
 # Overview
 
-The enclave assembles the enrollment form. Signup-service independently hashes
-the received fields and compares the result to the authenticated Nitro nonce.
+The enclave assembles the enrollment form. Signup-service hashes the received
+fields and compares the result to the authenticated Nitro nonce.
 
+## Attestation
 
-## Signed fields and HTTP transport
-
-- `nonce`: the 32-byte SHA-256 digest defined below.
-- `user_data`: byte `01`, followed by the running worker's 48-byte SHA-384.
-
-- Nitro `public_key`: absent. The channel's boot-key document is separate.
-- HTTP `x-tee-attestation`: standard padded base64 of the complete binary
-  COSE_Sign1 document. The raw document is bounded at 16 KiB; gateways must accept its base64-expanded
-  representation or impose a compatible, explicitly reviewed tighter limit.
-- The attestation is not a multipart part and is excluded from its own digest.
+- `nonce`: the 32-byte SHA-256 digest below.
+- `user_data`: byte `0x01`, followed by the worker's 48-byte SHA-384.
+- `public_key`: absent.
+- HTTP `x-tee-attestation`: standard padded base64 of the binary COSE_Sign1 document.
 
 ## Canonical digest
 
-Start SHA-256 with the exact ASCII bytes `web-authenticator:identity:v1`.
-Append `idComm`, then the 17 entries returned by `Form::parts()`, in that fixed
-order. For every entry append, in sequence:
+Hash the ASCII prefix `web-authenticator:identity:v1`, then the query field
+`idComm`, then these 17 multipart fields in order:
 
-1. Four-byte unsigned big-endian byte length of the field name.
-2. The exact field-name bytes.
-3. Four-byte unsigned big-endian byte length of the field value.
-4. The exact field-value bytes.
+1. `capture_id`
+2. `timestamp`
+3. `face_embedding_shares_0`
+4. `face_embedding_shares_1`
+5. `face_embedding_shares_2`
+6. `face_embedding_shares_0_hash`
+7. `face_embedding_shares_1_hash`
+8. `face_embedding_shares_2_hash`
+9. `face_embedding_version`
+10. `face_embedding_type`
+11. `face_embedding_inference_backend`
+12. `pcp_version`
+13. `id_commitment_hash`
+14. `associated_data_hash`
+15. `sub`
+16. `world_id_challenge_id`
+17. `world_id_ownership_proof`
 
-`idComm` comes from the single query parameter; reject duplicate or unexpected
-query/form fields. The proof is raw binary, not base64. Text values are their
-submitted UTF-8 bytes, without trimming or normalization. Multipart boundaries,
-wire part order, filenames, MIME headers and the attestation header are not
-hashed. Multipart order is irrelevant because the verifier uses the fixed
-canonical order; reject duplicate fields rather than choosing the first/last.
+Encode each field, including `idComm`, as
+`u32be(name length) || name || u32be(value length) || value`.
+Lengths count bytes and use unsigned 32-bit big-endian encoding. Text uses
+unmodified UTF-8; the ownership proof uses raw binary. Multipart framing and
+the attestation header are excluded.
 
-The ownership proof is nonempty and at most 768 KiB, matching signup-service's
-bound and accommodating Oxide's measured 570,464-byte proof. Image and embedding
-validation retain their existing bounds.
-
-`tests/fixtures/enrollment-v1.json` is a synthetic cross-language encoding
-fixture, not a valid enrollment or Nitro document. Python independently produced
-its digest; Rust and Go must reproduce both signed fields exactly. Mutating any
-body field or `idComm` must invalidate the nonce. Changing the worker changes
-`user_data` and must fail approved-release matching.
-
-## Producer trust and custody
-
-The integration must obtain the capture time, worker measurement, recipient
-keys and identity inside their reviewed trust boundaries. In particular,
-attesting host-supplied worker hashes or AMPC keys does not authenticate them.
-Recipient keys must be covered by the enclave release measurements.
-
-The associated data contains the same plaintext shares encrypted into the form.
-A separate custody-package builder must serialize and encrypt that data for
-the user before it leaves the enclave. Its decoded associated-data hash must
-equal the form's `associated_data_hash`. Credential issuance and later wallet
-import are separate operations; this crate does not perform either.
+[Encoding fixture](tests/fixtures/enrollment-v1.json).
