@@ -1,6 +1,7 @@
 //! Public enclave broker for sandboxed Selfie Check embedding extraction.
 pub mod attestation;
 pub mod engine;
+pub mod enrollment;
 pub mod rng;
 #[cfg(target_os = "linux")]
 pub mod runtime;
