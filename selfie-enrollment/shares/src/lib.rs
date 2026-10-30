@@ -93,24 +93,7 @@ pub fn encrypt<R: Rng + CryptoRng>(
     recipient_keys: &[PublicKey; 3],
     rng: &mut R,
 ) -> Result<[String; 3], Error> {
-    // Little-endian p = 2^255 - 19. Sealed-box nonces hash the raw key bytes,
-    // so aliases accepted by X25519 must be rejected before encryption.
-    const FIELD_MODULUS: [u8; 32] = {
-        let mut bytes = [0xff; 32];
-        bytes[0] = 0xed;
-        bytes[31] = 0x7f;
-        bytes
-    };
-    for (party, key) in recipient_keys.iter().enumerate() {
-        // Parsing a PublicKey checks only its length. A fixed clamped scalar
-        // detects points that would produce an all-zero X25519 shared secret.
-        if key.as_bytes().iter().rev().ge(FIELD_MODULUS.iter().rev())
-            || recipient_keys[..party].contains(key)
-            || MontgomeryPoint(*key.as_bytes()).mul_clamped([0x42; 32]) == MontgomeryPoint([0; 32])
-        {
-            return Err(Error::InvalidRecipient { party });
-        }
-    }
+    validate_recipients(recipient_keys)?;
 
     let mut encrypted = std::array::from_fn(|_| String::new());
     for (party, share) in shares.iter().enumerate() {
@@ -133,6 +116,34 @@ pub fn encrypt<R: Rng + CryptoRng>(
         encrypted[party] = STANDARD.encode(ciphertext);
     }
     Ok(encrypted)
+}
+
+/// Checks sealed-box recipient suitability without consuming randomness.
+/// Key provenance must be established by the caller.
+///
+/// # Errors
+/// Rejects non-canonical, duplicate and low-order X25519 public keys.
+pub fn validate_recipients(recipient_keys: &[PublicKey]) -> Result<(), Error> {
+    // Little-endian p = 2^255 - 19. Sealed-box nonces hash the raw key bytes,
+    // so aliases accepted by X25519 must be rejected before encryption.
+    const FIELD_MODULUS: [u8; 32] = {
+        let mut bytes = [0xff; 32];
+        bytes[0] = 0xed;
+        bytes[31] = 0x7f;
+        bytes
+    };
+    for (party, key) in recipient_keys.iter().enumerate() {
+        // Parsing a PublicKey checks only its length. A fixed clamped scalar
+        // detects points that would produce an all-zero X25519 shared secret.
+        if key.as_bytes().iter().rev().ge(FIELD_MODULUS.iter().rev())
+            || recipient_keys[..party].contains(key)
+            || MontgomeryPoint(*key.as_bytes()).mul_clamped([0x42; 32]) == MontgomeryPoint([0; 32])
+        {
+            return Err(Error::InvalidRecipient { party });
+        }
+    }
+
+    Ok(())
 }
 
 fn quantize(embedding: &FaceEmbedding) -> Result<Zeroizing<[i8; FACE_VECTOR_SIZE]>, Error> {

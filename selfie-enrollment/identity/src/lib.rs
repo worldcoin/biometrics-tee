@@ -7,6 +7,7 @@
 //! Share recipients, the capture clock, the v3 identity and the attestor are supplied by the
 //! caller. Sensitive types deliberately do not implement `Debug`.
 
+pub mod custody;
 mod poseidon;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -661,5 +662,108 @@ mod tests {
                 Err(Error::InvalidAttestationDocument)
             ));
         }
+    }
+
+    #[test]
+    fn custody_roundtrip_preserves_the_attested_data_and_exact_shares() {
+        use std::collections::BTreeMap;
+        use std::io::Read;
+        let mut rng = StdRng::seed_from_u64(19);
+        let fixture = Fixture::new(&mut rng);
+        let enrollment =
+            assemble(&fixture.inputs(), &RecordingAttestor::default(), &mut rng).unwrap();
+        let key = SecretKey::generate(&mut rng);
+        let encrypted = custody::encrypt(&enrollment, &key.public_key(), &mut rng).unwrap();
+        assert!(SecretKey::generate(&mut rng).unseal(&encrypted).is_err());
+        let mut changed = encrypted.clone();
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        assert!(key.unseal(&changed).is_err());
+        let plaintext = key.unseal(&encrypted).unwrap();
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(plaintext.as_slice()));
+        let mut files = BTreeMap::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            assert!(files.insert(name, bytes).is_none());
+        }
+        assert!(!files.contains_key("credential.json"));
+        assert!(!files.contains_key("signed_hashes_attestation_gw.sign"));
+        let manifest: serde_json::Value = serde_json::from_slice(&files["manifest.json"]).unwrap();
+        assert_eq!(manifest["format"], custody::FORMAT);
+        assert_eq!(
+            manifest["associated_data_hash"],
+            enrollment.form.associated_data_hash
+        );
+        let info: serde_json::Value =
+            serde_json::from_slice(&files["associated_data/info.json"]).unwrap();
+        let mut embeddings: Vec<FaceEmbedding> =
+            serde_json::from_slice(&files["associated_data/face_embeddings.json"]).unwrap();
+        let data = AssociatedData {
+            id_commitment: info["id_commitment"].as_str().unwrap().into(),
+            pcp_version: manifest["pcp_version"].as_str().unwrap().into(),
+            embedding: embeddings.remove(0),
+            image_png: files["associated_data/face_image.png"].clone(),
+            capture_id: info["capture_id"].as_str().unwrap().into(),
+            captured_at: info["captured_at"].as_u64().unwrap(),
+            shares: std::array::from_fn(|party| {
+                let share: serde_json::Value = serde_json::from_slice(
+                    &files[&format!("associated_data/face_ampc_share_{party}.json")],
+                )
+                .unwrap();
+                assert_eq!(
+                    share["share_data"],
+                    enrollment.associated_data.shares[party].share_data
+                );
+                FaceShare {
+                    version: share["version"].as_str().unwrap().into(),
+                    share_data: share["share_data"].as_str().unwrap().into(),
+                }
+            }),
+        };
+        assert_eq!(
+            poseidon::associated_data(&data).unwrap().to_string(),
+            enrollment.form.associated_data_hash
+        );
+        let body: serde_json::Value = serde_json::from_slice(&files["enrollment.json"]).unwrap();
+        assert_eq!(body["id_commitment"], enrollment.id_commitment);
+        for ((name, value), part) in enrollment
+            .form
+            .parts()
+            .iter()
+            .zip(body["parts"].as_array().unwrap())
+        {
+            assert_eq!(part["name"], *name);
+            assert_eq!(
+                STANDARD
+                    .decode(part["value_base64"].as_str().unwrap())
+                    .unwrap(),
+                *value
+            );
+        }
+        assert_eq!(
+            files["attestation/nitro.cose"],
+            enrollment.tee_attestation_document
+        );
+    }
+
+    #[test]
+    fn custody_rejects_a_bad_key_and_mutated_associated_data() {
+        let mut rng = StdRng::seed_from_u64(19);
+        let fixture = Fixture::new(&mut rng);
+        let mut enrollment =
+            assemble(&fixture.inputs(), &RecordingAttestor::default(), &mut rng).unwrap();
+        assert!(matches!(
+            custody::encrypt(&enrollment, &PublicKey::from([0; 32]), &mut rng),
+            Err(custody::Error::InvalidRecipient)
+        ));
+        let key = SecretKey::generate(&mut rng);
+        enrollment.associated_data.image_png.push(0);
+        assert!(matches!(
+            custody::encrypt(&enrollment, &key.public_key(), &mut rng),
+            Err(custody::Error::InconsistentEnrollment)
+        ));
     }
 }
