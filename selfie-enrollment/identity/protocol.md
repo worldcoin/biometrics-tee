@@ -1,20 +1,17 @@
-# Web enrollment binding v1
+# Overview
 
 The enclave assembles the enrollment form. Signup-service independently hashes
 the received fields and compares the result to the authenticated Nitro nonce.
-This is a request-integrity binding, not a server-issued challenge or a Redis
-handshake. Existing ownership-challenge and capture-persistence checks must
-define replay and retry behavior before the endpoint is enabled.
+
 
 ## Signed fields and HTTP transport
 
-- Nitro `nonce`: the 32-byte SHA-256 digest defined below.
-- Nitro `user_data`: byte `01`, followed by the running worker's 48-byte SHA-384.
-  Verify that worker hash and PCR0/1/2 against one complete approved release.
+- `nonce`: the 32-byte SHA-256 digest defined below.
+- `user_data`: byte `01`, followed by the running worker's 48-byte SHA-384.
+
 - Nitro `public_key`: absent. The channel's boot-key document is separate.
 - HTTP `x-tee-attestation`: standard padded base64 of the complete binary
-  COSE_Sign1 document. Reject empty, duplicate, malformed or oversized headers.
-  The raw document is bounded at 16 KiB; gateways must accept its base64-expanded
+  COSE_Sign1 document. The raw document is bounded at 16 KiB; gateways must accept its base64-expanded
   representation or impose a compatible, explicitly reviewed tighter limit.
 - The attestation is not a multipart part and is excluded from its own digest.
 
