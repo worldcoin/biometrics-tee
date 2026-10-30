@@ -3,7 +3,7 @@
 //! Worker JSON is borrowed from zeroizing storage and
 //! remains opaque below its face/iris wrappers; diagnostics are only returned after encryption.
 
-use std::{collections::BTreeMap, sync::LazyLock, time::SystemTime};
+use std::{collections::BTreeMap, io, sync::LazyLock, time::SystemTime};
 
 use di_migration_enclave_primitives::{Error, MAX_MIGRATION_DIAGNOSTIC_BYTES};
 use di_migration_pcp::{SignupId, SourcePcp};
@@ -37,6 +37,13 @@ impl RuntimeMetadata {
     /// Collection failures are logged without substituting host resources or expected PCRs.
     #[must_use]
     pub fn collect(worker_sha384: String, document: &AttestationDoc) -> Self {
+        std::panic::catch_unwind(|| Self::observe(worker_sha384, document)).unwrap_or_else(|_| {
+            tracing::warn!("debug report metadata collection panicked; omitting optional metadata");
+            Self::default()
+        })
+    }
+
+    fn observe(worker_sha384: String, document: &AttestationDoc) -> Self {
         let usable_logical_cpus = std::thread::available_parallelism()
             .map(std::num::NonZeroUsize::get)
             .inspect_err(|error| tracing::warn!(%error, "could not observe enclave CPU allocation"))
@@ -265,17 +272,39 @@ impl Report {
                 }),
             },
         };
-        let text = serde_json::to_string(&report)
-            .map(Zeroizing::new)
-            .inspect_err(|_| {
-                tracing::warn!("migration debug report serialization failed");
-            })
-            .ok()?;
-        if text.len() > MAX_MIGRATION_DIAGNOSTIC_BYTES {
-            tracing::warn!("migration debug report exceeds its size limit");
-            return None;
+        serialize_report(&report)
+    }
+}
+
+fn serialize_report(report: &impl Serialize) -> Option<Zeroizing<String>> {
+    let mut writer = ReportWriter(Zeroizing::new(Vec::new()));
+    serde_json::to_writer(&mut writer, report)
+        .inspect_err(|_| tracing::warn!("debug report serialization failed or exceeded its limit"))
+        .ok()?;
+    match String::from_utf8(std::mem::take(&mut *writer.0)) {
+        Ok(text) => Some(Zeroizing::new(text)),
+        Err(error) => {
+            drop(Zeroizing::new(error.into_bytes()));
+            tracing::warn!("debug report serialization produced invalid UTF-8");
+            None
         }
-        Some(text)
+    }
+}
+
+struct ReportWriter(Zeroizing<Vec<u8>>);
+
+impl io::Write for ReportWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > MAX_MIGRATION_DIAGNOSTIC_BYTES - self.0.len() {
+            return Err(io::Error::other("debug report size limit exceeded"));
+        }
+        self.0.try_reserve(bytes.len()).map_err(io::Error::other)?;
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

@@ -19,6 +19,14 @@ SHA-256 of its exact bytes supplies the top-level `version`.
 | Other processing failure | `Failure` | `Failure` |
 
 Unavailable optional metadata is omitted; null engine outputs do not imply success.
-Reports must fit the 2 MiB plaintext limit. Diagnostic failures are logged and omit
-the report while preserving the migration result; engine output is never truncated.
-Unsealing failures have no report; a fatal process exit may prevent one.
+Report serialization stops at the 2 MiB plaintext limit. Serialization and encryption
+errors or unwinding panics omit the report while preserving the migration result;
+engine output is never truncated. Optional boot metadata collection is also isolated.
+
+The host stores the PCP and records the primary outcome before uploading the report.
+Report uploads are bounded to five seconds; invalid sizes, storage errors, timeouts
+and upload-task panics are logged and counted by `migration.host.debug_report_failures`.
+The API discovers reports independently in storage, so a subsequent status poll may
+include a report URL after the migration is already complete.
+Unsealing failures have no report. Process-wide failures such as allocation aborts,
+stack overflow and termination cannot be recovered by panic isolation.

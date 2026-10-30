@@ -337,3 +337,38 @@ fn memory_observations_require_valid_units_and_checked_conversion() {
     );
     assert!(timestamp(SystemTime::UNIX_EPOCH - Duration::from_secs(1)).is_none());
 }
+
+#[test]
+fn serialization_errors_and_expansion_beyond_the_limit_drop_the_report() {
+    struct BrokenReport;
+    impl Serialize for BrokenReport {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("injected serialization failure"))
+        }
+    }
+    assert!(serialize_report(&BrokenReport).is_none());
+    // Control characters expand to six bytes each in JSON.
+    assert!(serialize_report(&"\0".repeat(MAX_MIGRATION_DIAGNOSTIC_BYTES / 2)).is_none());
+}
+
+#[test]
+fn report_writer_rejects_overflow_before_appending_bytes() {
+    use std::io::Write;
+
+    let mut writer = ReportWriter(Zeroizing::new(Vec::new()));
+    writer
+        .write_all(&vec![b'x'; MAX_MIGRATION_DIAGNOSTIC_BYTES])
+        .unwrap();
+    assert!(writer.write_all(b"x").is_err());
+    assert_eq!(writer.0.len(), MAX_MIGRATION_DIAGNOSTIC_BYTES);
+}
+
+#[test]
+fn deeply_nested_worker_diagnostics_stay_opaque() {
+    let nested = format!("{}0{}", "[".repeat(10_000), "]".repeat(10_000));
+    let source = format!(r#"{{"iris":{{"detail":{nested}}}}}"#);
+    let mut report = Report::new(SystemTime::now());
+    report.worker_report(Some(Zeroizing::new(source)));
+    let encoded = report.serialize(&test_support::state(), None).unwrap();
+    assert!(encoded.contains(&nested));
+}

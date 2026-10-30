@@ -220,8 +220,14 @@ struct Memory {
 pub struct MemoryStore {
     memory: Mutex<Memory>,
     failing_writes: bool,
-    failing_debug_report_writes: bool,
+    debug_report_failure: Option<DebugReportFailure>,
     resolved_elsewhere: bool,
+}
+
+enum DebugReportFailure {
+    Storage,
+    Stall,
+    Panic,
 }
 
 impl MemoryStore {
@@ -246,7 +252,17 @@ impl MemoryStore {
 
     /// Fails diagnostic uploads while keeping PCP storage healthy.
     pub const fn failing_debug_report_writes(mut self) -> Self {
-        self.failing_debug_report_writes = true;
+        self.debug_report_failure = Some(DebugReportFailure::Storage);
+        self
+    }
+
+    pub const fn stalling_debug_report_writes(mut self) -> Self {
+        self.debug_report_failure = Some(DebugReportFailure::Stall);
+        self
+    }
+
+    pub const fn panicking_debug_report_writes(mut self) -> Self {
+        self.debug_report_failure = Some(DebugReportFailure::Panic);
         self
     }
 
@@ -313,7 +329,13 @@ impl BlobStore for MemoryStore {
     }
 
     async fn put_debug_report(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError> {
-        if self.failing_writes || self.failing_debug_report_writes {
+        match self.debug_report_failure {
+            Some(DebugReportFailure::Storage) => return Err(unreachable()),
+            Some(DebugReportFailure::Stall) => std::future::pending::<()>().await,
+            Some(DebugReportFailure::Panic) => panic!("injected report upload panic"),
+            None => {}
+        }
+        if self.failing_writes {
             return Err(unreachable());
         }
         self.lock().debug_reports.insert(job_id.clone(), blob);

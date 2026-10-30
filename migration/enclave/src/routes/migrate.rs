@@ -1,5 +1,6 @@
 use std::{
     io::Read,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -53,9 +54,10 @@ pub async fn handler(
         })?;
         let mut report = Report::new(started);
         let result = migrate_payload(&state, &plaintext, &request.sub, sealer, &mut report);
-        let debug_report = report
-            .serialize(&state, result.as_ref().err().copied())
-            .and_then(|report| {
+        drop(plaintext);
+        let error = result.as_ref().err().copied();
+        finish_migration(result, || {
+            report.serialize(&state, error).and_then(|report| {
                 // Pontifex consumes each sealer. Unseal the same authenticated request again
                 // to seal the report separately to the same response key.
                 let (_, report_sealer) = state
@@ -67,14 +69,8 @@ pub async fn handler(
                     .ok()?;
                 // Diagnostic failure preserves the already established migration outcome.
                 seal_debug_report(report, report_sealer).ok()
-            });
-        match result {
-            Ok(pcp) => Ok(MigrateResponse { pcp, debug_report }),
-            Err(error) => Err(MigrateError {
-                error,
-                debug_report,
-            }),
-        }
+            })
+        })
     })
     .await
     .map_err(|error| {
@@ -86,6 +82,25 @@ pub async fn handler(
         tracing::error!(%error, "migration task was cancelled");
         enclave_primitives::Error::MigrationTaskCancelled
     })?
+}
+
+fn finish_migration(
+    result: Result<Vec<u8>, enclave_primitives::Error>,
+    produce_report: impl FnOnce() -> Option<Vec<u8>>,
+) -> Result<MigrateResponse, MigrateError> {
+    // Reporting only reads enclave state and owns its temporary buffers. Unwinding it
+    // cannot invalidate the completed migration or the biometric worker's state.
+    let debug_report = catch_unwind(AssertUnwindSafe(produce_report)).unwrap_or_else(|_| {
+        tracing::error!("debug report production panicked; preserving migration outcome");
+        None
+    });
+    match result {
+        Ok(pcp) => Ok(MigrateResponse { pcp, debug_report }),
+        Err(error) => Err(MigrateError {
+            error,
+            debug_report,
+        }),
+    }
 }
 
 fn migrate_payload(
@@ -542,7 +557,7 @@ mod tests {
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ResponseOpener};
     use world_id_primitives::{Credential, EdDSAPrivateKey, FieldElement};
 
-    use super::{handler, prepare_biometrics, seal_debug_report};
+    use super::{finish_migration, handler, prepare_biometrics, seal_debug_report};
     use crate::{state::EnclaveState, test_support, worker::MigrationOutput};
     use zeroize::Zeroizing;
 
@@ -813,6 +828,32 @@ mod tests {
         let failure = handler(state, empty).await.unwrap_err();
         assert_eq!(failure.error, enclave_primitives::Error::InvalidInput);
         assert!(failure.debug_report.is_none());
+    }
+
+    #[test]
+    fn report_failures_and_panics_preserve_the_completed_migration() {
+        let producers: [fn() -> Option<Vec<u8>>; 2] =
+            [|| None, || panic!("injected diagnostic panic")];
+        for produce_report in producers {
+            for result in [
+                Ok(b"sealed PCP".to_vec()),
+                Err(enclave_primitives::Error::FailedToBuildPcp),
+            ] {
+                let actual = finish_migration(result.clone(), produce_report);
+                match (result, actual) {
+                    (Ok(expected), Ok(response)) => {
+                        assert_eq!(response.pcp, expected);
+                        assert!(response.debug_report.is_none());
+                    }
+                    (Err(expected), Err(failure)) => {
+                        assert_eq!(failure.error, expected);
+                        assert!(failure.debug_report.is_none());
+                    }
+                    _ => panic!("diagnostics changed the migration outcome"),
+                }
+            }
+        }
+        assert!(finish_migration(Ok(vec![1]), || Some(vec![2])).is_ok());
     }
 
     #[test]
