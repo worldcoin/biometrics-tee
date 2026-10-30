@@ -23,7 +23,10 @@ use world_id_primitives::{
 
 use zeroize::Zeroizing;
 
-use crate::state::EnclaveState;
+use crate::{
+    debug_report::{Report, Stage},
+    state::EnclaveState,
+};
 
 /// Ceiling for `hashes.json` inside a PCP; the file is a small JSON manifest.
 const MAX_HASHES_JSON_BYTES: usize = 1024 * 1024;
@@ -36,6 +39,7 @@ pub async fn handler(
     state: Arc<EnclaveState>,
     request: MigrateRequest,
 ) -> Result<MigrateResponse, MigrateError> {
+    let started = SystemTime::now();
     if request.blob.is_empty() {
         tracing::warn!("migrate request carried no blob");
         return Err(enclave_primitives::Error::InvalidInput.into());
@@ -47,37 +51,23 @@ pub async fn handler(
             tracing::warn!(?error, "migrate request was not sealed to this boot");
             enclave_primitives::Error::RequestNotOpened
         })?;
-        let payload = pcp_payload::decode(&plaintext).inspect_err(|_| {
-            tracing::warn!("migrate request carried an unknown payload");
-        })?;
-        let device_public_key = payload.device_public_key;
-        verify_credential(
-            state.issuer_pubkey(),
-            &request.sub,
-            &payload.credential,
-            &payload.pcp,
-        )?;
-
-        let files = di_migration_pcp::files_from_tar_gz(&payload.pcp).map_err(|error| {
-            tracing::warn!(%error, "migrate request PCP archive could not be opened");
-            enclave_primitives::Error::InvalidPcp
-        })?;
-        let source_pcp = parse_source_pcp(&state, files)?;
-        let (biometrics, debug_report) = run_pipeline(&state, &source_pcp);
-        let debug_report = debug_report
-            .map(|report| {
+        let mut report = Report::new(started);
+        let result = migrate_payload(&state, &plaintext, &request.sub, sealer, &mut report);
+        let debug_report = report
+            .serialize(&state, result.as_ref().err().copied())
+            .and_then(|report| {
                 // Pontifex consumes each sealer. Unseal the same authenticated request again
                 // to seal the report separately to the same response key.
-                let (_, report_sealer) = state.channel().open(&request.blob).map_err(|error| {
-                    tracing::error!(?error, "failed to recover the diagnostic response sealer");
-                    enclave_primitives::Error::MigrationDiagnosticSealingFailed
-                })?;
-                seal_debug_report(report, report_sealer)
-            })
-            .transpose()?;
-        let result = biometrics.and_then(|biometrics| {
-            build_and_seal_pcp(&state, &source_pcp, &biometrics, &device_public_key, sealer)
-        });
+                let (_, report_sealer) = state
+                    .channel()
+                    .open(&request.blob)
+                    .inspect_err(|_| {
+                        tracing::warn!("failed to recover the diagnostic response sealer");
+                    })
+                    .ok()?;
+                // Diagnostic failure preserves the already established migration outcome.
+                seal_debug_report(report, report_sealer).ok()
+            });
         match result {
             Ok(pcp) => Ok(MigrateResponse { pcp, debug_report }),
             Err(error) => Err(MigrateError {
@@ -98,13 +88,50 @@ pub async fn handler(
     })?
 }
 
+fn migrate_payload(
+    state: &EnclaveState,
+    plaintext: &[u8],
+    sub: &str,
+    sealer: ResponseSealer,
+    report: &mut Report,
+) -> Result<Vec<u8>, enclave_primitives::Error> {
+    let payload = pcp_payload::decode(plaintext).inspect_err(|_| {
+        tracing::warn!("migrate request carried an unknown payload");
+    })?;
+    report.stage = Stage::VerifyCredential;
+    verify_credential(
+        state.issuer_pubkey(),
+        sub,
+        &payload.credential,
+        &payload.pcp,
+    )?;
+    report.stage = Stage::OpenPcp;
+    let files = di_migration_pcp::files_from_tar_gz(&payload.pcp).map_err(|error| {
+        tracing::warn!(%error, "migrate request PCP archive could not be opened");
+        enclave_primitives::Error::InvalidPcp
+    })?;
+    let source_pcp = parse_source_pcp(state, files)?;
+    report.source(&source_pcp);
+    let biometrics = run_pipeline(state, &source_pcp, report)?;
+    build_and_seal_pcp(
+        state,
+        &source_pcp,
+        &biometrics,
+        &payload.device_public_key,
+        sealer,
+        report,
+    )
+}
+
 fn build_and_seal_pcp(
     state: &EnclaveState,
     source_pcp: &SourcePcp,
     owned_biometrics: &OwnedPreparedBiometrics,
     device_public_key: &[u8; 32],
     sealer: ResponseSealer,
+    report: &mut Report,
 ) -> Result<Vec<u8>, enclave_primitives::Error> {
+    report.stage = Stage::BuildPcp;
     let prepared_biometrics = owned_biometrics.as_prepared();
     let migrated_ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -115,6 +142,7 @@ fn build_and_seal_pcp(
         migrated_ts,
         S3Region::UsEast1,
     );
+    report.signup_id = Some(context.signup_id.clone());
 
     di_migration_pcp::validate_build_inputs(
         source_pcp,
@@ -127,6 +155,7 @@ fn build_and_seal_pcp(
         enclave_primitives::Error::FailedToBuildPcp
     })?;
 
+    report.stage = Stage::GenerateRecipients;
     let backend_keys = tokio::runtime::Handle::current()
         .block_on(BackendKeys::generate(state.key_wrapper()))
         .map_err(|error| {
@@ -134,22 +163,32 @@ fn build_and_seal_pcp(
             enclave_primitives::Error::PcpRecipientKeyGenerationFailed
         })?;
     let recipients = backend_keys.recipients(device_public_key);
+    report.stage = Stage::SignManifest;
     let manifest_signer = state.manifest_signer().ok_or_else(|| {
         tracing::error!("PCP manifest signing is not configured");
         enclave_primitives::Error::ManifestSignerUnavailable
     })?;
+    report.stage = Stage::BuildPcp;
     let package = di_migration_pcp::build(
         source_pcp,
         &prepared_biometrics,
         &context,
         recipients,
-        |digest| tokio::runtime::Handle::current().block_on(manifest_signer.sign(digest)),
+        |digest| {
+            report.stage = Stage::SignManifest;
+            let result = tokio::runtime::Handle::current().block_on(manifest_signer.sign(digest));
+            if result.is_ok() {
+                report.stage = Stage::BuildPcp;
+            }
+            result
+        },
     )
     .map_err(|error| {
         tracing::warn!(%error, "failed to build output PCP");
         enclave_primitives::Error::FailedToBuildPcp
     })?;
 
+    report.stage = Stage::SealPcp;
     sealer.seal(&package.tier0).map_err(|error| {
         tracing::error!(?error, "failed to seal the migrated PCP");
         enclave_primitives::Error::PcpResponseSealingFailed
@@ -178,24 +217,25 @@ fn seal_debug_report(
 fn run_pipeline(
     state: &EnclaveState,
     source_pcp: &SourcePcp,
-) -> (
-    Result<OwnedPreparedBiometrics, enclave_primitives::Error>,
-    Option<Zeroizing<String>>,
-) {
+    report: &mut Report,
+) -> Result<OwnedPreparedBiometrics, enclave_primitives::Error> {
+    report.stage = Stage::Biometrics;
     match state.migrate(source_pcp.pipeline_inputs()) {
         Ok(mut output) => {
-            let debug_report = take_debug_report(output.debug_report.take());
-            (prepare_biometrics(output), debug_report)
+            report.worker_report(output.debug_report.take());
+            report.stage = Stage::PrepareBiometrics;
+            prepare_biometrics(output)
         }
         Err(mut failure) => {
-            let debug_report = take_debug_report(failure.debug_report.take().map(Zeroizing::new));
+            report.worker_report(failure.debug_report.take().map(Zeroizing::new));
+            report.worker_failure(&failure);
             tracing::warn!(
                 ?failure,
                 dependency = "worker",
                 "biometric pipeline rejected migration"
             );
             let reason = pipeline_failure_reason(failure.code);
-            (Err(reason), debug_report)
+            Err(reason)
         }
     }
 }
@@ -211,26 +251,6 @@ fn pipeline_failure_reason(code: i32) -> enclave_primitives::Error {
         Ok(FailureCode::Internal) => Error::BiometricPipelineFailed,
         Ok(FailureCode::Unspecified) | Err(_) => Error::Unknown,
     }
-}
-
-fn take_debug_report(report: Option<Zeroizing<String>>) -> Option<Zeroizing<String>> {
-    let report = report?;
-    if report.is_empty() || report.len() > MAX_MIGRATION_DIAGNOSTIC_BYTES {
-        tracing::warn!(
-            diagnostic_bytes = report.len(),
-            dependency = "worker",
-            "worker debug report has an invalid size"
-        );
-        return None;
-    }
-    if serde_json::from_str::<serde_json::Value>(&report).is_err() {
-        tracing::warn!(
-            dependency = "worker",
-            "worker debug report is not valid JSON"
-        );
-        return None;
-    }
-    Some(report)
 }
 
 /// Owns worker iris buffers and shares so [`PreparedBiometrics`] can borrow them for PCP build.
@@ -522,7 +542,7 @@ mod tests {
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ResponseOpener};
     use world_id_primitives::{Credential, EdDSAPrivateKey, FieldElement};
 
-    use super::{handler, prepare_biometrics, seal_debug_report, take_debug_report};
+    use super::{handler, prepare_biometrics, seal_debug_report};
     use crate::{state::EnclaveState, test_support, worker::MigrationOutput};
     use zeroize::Zeroizing;
 
@@ -657,11 +677,21 @@ mod tests {
         let payload = pcp_payload::encode(&pcp, &credential, &[7; 32]).expect("encode");
 
         let (request, opener) = sealed(&state, &payload, sub.to_string());
-        let _ = opener;
+        let failure = handler(state, request).await.unwrap_err();
+        assert_eq!(failure.error, enclave_primitives::Error::InvalidPcp);
+        let report = opener
+            .open_from_enclave(&failure.debug_report.unwrap())
+            .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&report).unwrap();
+        assert_eq!(report["metadata"]["signup_status"], "Failure");
         assert_eq!(
-            handler(state, request).await,
-            Err(enclave_primitives::Error::InvalidPcp.into())
+            report["pipeline_errors"]["migration_error"]["stage"],
+            "open_pcp"
         );
+        assert!(report["signup_id"].is_null());
+        assert!(report["src_signup_id"].is_null());
+        assert!(report["face"].is_null());
+        assert!(report["iris"].is_null());
     }
 
     #[tokio::test]
@@ -676,12 +706,22 @@ mod tests {
                 .expect("deserialize credential for tampering");
         credential["issuer_version"] = serde_json::json!(1);
         let payload = pcp_payload::encode(&pcp, &credential.to_string(), &[7; 32]).expect("encode");
-        let (request, _) = sealed(&state, &payload, sub.to_string());
-
+        let (request, opener) = sealed(&state, &payload, sub.to_string());
+        let failure = handler(state, request).await.unwrap_err();
         assert_eq!(
-            handler(state, request).await,
-            Err(enclave_primitives::Error::CredentialSignatureInvalid.into())
+            failure.error,
+            enclave_primitives::Error::CredentialSignatureInvalid
         );
+        let plaintext = opener
+            .open_from_enclave(&failure.debug_report.unwrap())
+            .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(
+            report["pipeline_errors"]["migration_error"]["stage"],
+            "verify_credential"
+        );
+        assert!(report["face"].is_null());
+        assert!(!String::from_utf8_lossy(&plaintext).contains("issuer_version"));
     }
 
     #[tokio::test]
@@ -698,10 +738,12 @@ mod tests {
         let payload = pcp_payload::encode(&pcp, &credential, &[7; 32]).expect("encode");
         let (request, _) = sealed(&state, &payload, sub.to_string());
 
+        let failure = handler(state, request).await.unwrap_err();
         assert_eq!(
-            handler(state, request).await,
-            Err(enclave_primitives::Error::CredentialSignatureVerificationFailed.into())
+            failure.error,
+            enclave_primitives::Error::CredentialSignatureVerificationFailed
         );
+        assert!(failure.debug_report.is_some());
     }
 
     #[tokio::test]
@@ -748,26 +790,33 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(substituted.error, enclave_primitives::Error::InvalidPcp);
-        assert!(substituted.debug_report.is_none());
+        assert!(substituted.debug_report.is_some());
     }
 
     #[tokio::test]
     async fn an_unknown_payload_or_empty_blob_is_invalid() {
         let state = Arc::new(test_support::state());
-        let (unknown, _) = sealed(&state, &[9, 1, 2], "sub");
+        let (unknown, opener) = sealed(&state, &[9, 1, 2], "sub");
         let mut empty = unknown.clone();
         empty.blob = Vec::new().into();
 
-        for request in [unknown, empty] {
-            assert_eq!(
-                handler(Arc::clone(&state), request).await,
-                Err(enclave_primitives::Error::InvalidInput.into())
-            );
-        }
+        let failure = handler(Arc::clone(&state), unknown).await.unwrap_err();
+        assert_eq!(failure.error, enclave_primitives::Error::InvalidInput);
+        let plaintext = opener
+            .open_from_enclave(&failure.debug_report.unwrap())
+            .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(
+            report["pipeline_errors"]["migration_error"]["stage"],
+            "decode_payload"
+        );
+        let failure = handler(state, empty).await.unwrap_err();
+        assert_eq!(failure.error, enclave_primitives::Error::InvalidInput);
+        assert!(failure.debug_report.is_none());
     }
 
     #[test]
-    fn only_actual_worker_debug_reports_are_sealed() {
+    fn report_encryption_preserves_bytes_and_enforces_the_size_limit() {
         let state = test_support::state();
         let maximum_report = format!(
             r#"{{"detail":"{}"}}"#,
@@ -777,28 +826,21 @@ mod tests {
         );
         let oversized_report = format!("{maximum_report} ");
         for (report, expected) in [
-            (None, false),
-            (Some("not json"), false),
-            (Some(r#"{"stage":"face"}"#), true),
-            (Some(maximum_report.as_str()), true),
-            (Some(oversized_report.as_str()), false),
+            (r#"{"face":null}"#, true),
+            (maximum_report.as_str(), true),
+            (oversized_report.as_str(), false),
         ] {
-            let debug_report =
-                take_debug_report(report.map(|report| Zeroizing::new(report.to_owned())));
-            assert_eq!(debug_report.is_some(), expected);
-            if let Some(debug_report) = debug_report {
-                let (request, opener) = sealed(&state, b"request", "sub");
-                let (_, sealer) = state.channel().open(&request.blob).unwrap();
-                let blob = seal_debug_report(debug_report, sealer).expect("seal report");
+            let (request, opener) = sealed(&state, b"request", "sub");
+            let (_, sealer) = state.channel().open(&request.blob).unwrap();
+            let result = seal_debug_report(Zeroizing::new(report.to_owned()), sealer);
+            assert_eq!(result.is_ok(), expected);
+            if let Ok(blob) = result {
                 assert_eq!(
                     blob.len(),
-                    report.unwrap().len() + enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
+                    report.len() + enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
                 );
                 let plaintext = opener.open_from_enclave(&blob).unwrap();
-                assert_eq!(
-                    plaintext.as_slice(),
-                    report.expect("valid report").as_bytes()
-                );
+                assert_eq!(plaintext.as_slice(), report.as_bytes());
             }
         }
     }

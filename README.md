@@ -49,6 +49,11 @@ Debug reports may contain up to 2 MiB (2,097,152 bytes) of plaintext JSON. The
 sealed size limit includes Pontifex overhead. The worker response budget is 3 MiB
 to accommodate the report alongside the biometric result.
 
+The enclave's [migration debug report](migration/enclave/README.md) records the
+final processing outcome and observed execution environment alongside top-level
+face and iris diagnostics. Its schema and synthetic example are versioned with
+the enclave.
+
 Roll out matching host, enclave, and client versions: the report sealing format
 and accepted size bounds changed. Previously stored reports still use device-key
 encryption and cannot be opened with the response key.
