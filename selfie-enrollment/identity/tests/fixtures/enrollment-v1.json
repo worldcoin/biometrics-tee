@@ -1,0 +1,77 @@
+{
+  "domain": "web-authenticator:identity:v1",
+  "id_commitment": "0x0000000000000000000000000000000000000000000000000000000000000123",
+  "worker_sha384_hex": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "parts": [
+    {
+      "name": "capture_id",
+      "value_base64": "NmY5NjE5ZmYtOGI4Ni00ZDAxLWI0MmQtMDBjZjRmYzk2NGZm"
+    },
+    {
+      "name": "timestamp",
+      "value_base64": "MTcwMDAwMDAwMA=="
+    },
+    {
+      "name": "face_embedding_shares_0",
+      "value_base64": "YzA="
+    },
+    {
+      "name": "face_embedding_shares_1",
+      "value_base64": "YzE="
+    },
+    {
+      "name": "face_embedding_shares_2",
+      "value_base64": "YzI="
+    },
+    {
+      "name": "face_embedding_shares_0_hash",
+      "value_base64": "aDA="
+    },
+    {
+      "name": "face_embedding_shares_1_hash",
+      "value_base64": "aDE="
+    },
+    {
+      "name": "face_embedding_shares_2_hash",
+      "value_base64": "aDI="
+    },
+    {
+      "name": "face_embedding_version",
+      "value_base64": "Mi4wLjA="
+    },
+    {
+      "name": "face_embedding_type",
+      "value_base64": "Z2hvc3RmYWNlbmV0X2ZsaXBwZWRfbWVhbg=="
+    },
+    {
+      "name": "face_embedding_inference_backend",
+      "value_base64": "ZmFjZS1lbmdpbmU="
+    },
+    {
+      "name": "pcp_version",
+      "value_base64": "MQ=="
+    },
+    {
+      "name": "id_commitment_hash",
+      "value_base64": "MHgwMQ=="
+    },
+    {
+      "name": "associated_data_hash",
+      "value_base64": "MHgwMg=="
+    },
+    {
+      "name": "sub",
+      "value_base64": "MHgxZg=="
+    },
+    {
+      "name": "world_id_challenge_id",
+      "value_base64": "MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAxMjM0"
+    },
+    {
+      "name": "world_id_ownership_proof",
+      "value_base64": "cHJvb2Y="
+    }
+  ],
+  "nonce_hex": "aaea0b04e1c35d62ff90f66898b3f949b7f105ac8d80bd10e7bd824e6815c652",
+  "user_data_hex": "015a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+}
