@@ -49,10 +49,8 @@ Debug reports may contain up to 2 MiB (2,097,152 bytes) of plaintext JSON. The
 sealed size limit includes Pontifex overhead. The worker response budget is 3 MiB
 to accommodate the report alongside the biometric result.
 
-The enclave's [migration debug report](migration/enclave/README.md) is for debugging
-only. It records the final processing outcome, observed execution environment,
-pseudonymous signup identifiers, and face/iris diagnostics. Treat its contents as
-sensitive diagnostic data. Its JSON schema is versioned with the enclave.
+The [migration debug report](migration/enclave/README.md) contains debug information
+about the TEE migration.
 
 Roll out matching host, enclave, and client versions: the report sealing format
 and accepted size bounds changed. Previously stored reports still use device-key

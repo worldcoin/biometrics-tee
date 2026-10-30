@@ -1,7 +1,6 @@
 # Migration debug report
 
-For debugging only. Contains pseudonymous signup identifiers and biometric
-diagnostics; treat the report as sensitive diagnostic data.
+A report containing debug information about the TEE migration.
 
 The enclave finalizes the report after PCP processing and seals it to the request’s
 response key. The [schema](src/debug_report/schema.json) defines the envelope;
