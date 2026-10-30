@@ -9,7 +9,10 @@ use di_migration_enclave_primitives::{Error, MAX_MIGRATION_DIAGNOSTIC_BYTES};
 use di_migration_pcp::{SignupId, SourcePcp};
 use di_worker_protocol::migration::{Failure, ImageRole, invalid_request_reason};
 use pontifex::AttestationDoc;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize,
+    de::{Error as _, MapAccess, Visitor},
+};
 use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -384,16 +387,74 @@ fn object_or_null<'de, D: serde::Deserializer<'de>>(
     Ok(value)
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 struct FaceReport<'a> {
-    #[serde(borrow, skip_serializing)]
+    #[serde(skip_serializing)]
     worker_version: Option<&'a str>,
-    #[serde(borrow)]
     request_type: &'a RawValue,
-    #[serde(borrow)]
     outputs: Vec<&'a RawValue>,
-    #[serde(borrow, flatten)]
-    extra: BTreeMap<&'a str, &'a RawValue>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, &'a RawValue>,
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for FaceReport<'a> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FaceVisitor;
+
+        impl<'de> Visitor<'de> for FaceVisitor {
+            type Value = FaceReport<'de>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a face diagnostic object")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut worker_version = None;
+                let mut request_type = None;
+                let mut outputs = None;
+                let mut extra = BTreeMap::new();
+
+                // Read values directly from JSON so extensions borrow their exact raw text.
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "worker_version" => {
+                            if worker_version.is_some() {
+                                return Err(M::Error::duplicate_field("worker_version"));
+                            }
+                            worker_version = Some(map.next_value()?);
+                        }
+                        "request_type" => {
+                            if request_type.is_some() {
+                                return Err(M::Error::duplicate_field("request_type"));
+                            }
+                            request_type = Some(map.next_value()?);
+                        }
+                        "outputs" => {
+                            if outputs.is_some() {
+                                return Err(M::Error::duplicate_field("outputs"));
+                            }
+                            outputs = Some(map.next_value()?);
+                        }
+                        _ => {
+                            if extra.insert(key, map.next_value()?).is_some() {
+                                return Err(M::Error::custom("duplicate face diagnostic field"));
+                            }
+                        }
+                    }
+                }
+
+                Ok(FaceReport {
+                    worker_version: worker_version.flatten(),
+                    request_type: request_type
+                        .ok_or_else(|| M::Error::missing_field("request_type"))?,
+                    outputs: outputs.ok_or_else(|| M::Error::missing_field("outputs"))?,
+                    extra,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(FaceVisitor)
+    }
 }
 
 struct Versions<'a> {

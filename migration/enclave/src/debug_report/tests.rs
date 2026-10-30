@@ -150,6 +150,57 @@ fn diagnostics_survive_success_and_failures_after_inference() {
 }
 
 #[test]
+fn extra_face_wrapper_fields_preserve_all_diagnostics_and_numeric_precision() {
+    let source = WORKER_REPORT.replacen(
+        r#""face":{"#,
+        r#""face":{
+          "timings":{"total_ms":1,"precise":0.1234567890123456789012},
+          "future":[null,true,9007199254740993],
+          "escaped\u005fkey":{"label":"line\nbreak"},"#,
+        1,
+    );
+    let mut expected: Value = serde_json::from_str(&source).unwrap();
+    expected["face"]
+        .as_object_mut()
+        .unwrap()
+        .remove("worker_version");
+    let mut report = report();
+    report.worker_report(Some(Zeroizing::new(source)));
+    for error in [None, Some(Error::FailedToBuildPcp)] {
+        let encoded = report.serialize(&test_support::state(), error).unwrap();
+        let actual: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(actual["face"], expected["face"]);
+        assert_eq!(actual["iris"], expected["iris"]);
+        assert_eq!(
+            actual["metadata"]["software_version"]["worker_version"],
+            "test-worker"
+        );
+        assert!(encoded.contains("0.1234567890123456789012"));
+        assert!(encoded.contains("9007199254740993"));
+    }
+}
+
+#[test]
+fn face_wrapper_requires_known_fields_and_rejects_duplicates() {
+    for source in [
+        r#"{"request_type":{}}"#,
+        r#"{"outputs":[]}"#,
+        r#"{"request_type":{},"outputs":[],"worker_version":null,"worker_version":"test"}"#,
+        r#"{"request_type":{},"request_type":{},"outputs":[]}"#,
+        r#"{"request_type":{},"outputs":[],"outputs":[]}"#,
+        r#"{"request_type":{},"outputs":[],"extra":null,"extra":1}"#,
+    ] {
+        assert!(serde_json::from_str::<FaceReport<'_>>(source).is_err());
+    }
+    let face = serde_json::from_str::<FaceReport<'_>>(
+        r#"{"request_type":{},"outputs":[],"worker_version":null,"extra":null}"#,
+    )
+    .unwrap();
+    assert!(face.worker_version.is_none());
+    assert_eq!(face.extra["extra"].get(), "null");
+}
+
+#[test]
 fn versions_come_from_available_engine_metadata_and_must_agree() {
     let mut source: Value = serde_json::from_str(WORKER_REPORT).unwrap();
     source["iris"]["left"] = Value::Null;
