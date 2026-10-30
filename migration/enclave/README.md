@@ -1,5 +1,8 @@
 # Migration debug report
 
+For debugging only. Contains pseudonymous signup identifiers and biometric
+diagnostics; treat the report as sensitive diagnostic data.
+
 The enclave finalizes the report after PCP processing and seals it to the request’s
 response key. The [schema](src/debug_report/schema.json) defines the envelope;
 SHA-256 of its exact bytes supplies the top-level `version`.
