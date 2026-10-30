@@ -7,6 +7,12 @@ license.workspace = true
 publish = false
 
 [dependencies]
+crypto_box = "0.9.1"
+embedding-shares = { path = "../shares" }
+rand.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+selfie-enrollment-identity = { path = "../identity" }
 selfie-enrollment-api-types.workspace = true
 selfie-enrollment-enclave-types.workspace = true
 selfie-enrollment-sealed-types.workspace = true
@@ -24,5 +30,6 @@ pontifex = { workspace = true, features = ["server"] }
 tabernaculum.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 pontifex = { workspace = true, features = ["attestation"] }
 tokio = { workspace = true, features = ["test-util"] }

@@ -5608,16 +5608,23 @@ name = "selfie-enrollment-enclave"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "biometric-engines-protocol",
+ "crypto_box",
+ "embedding-shares",
  "hex",
  "pontifex",
+ "rand 0.8.8",
  "selfie-enrollment-api-types",
  "selfie-enrollment-enclave-types",
+ "selfie-enrollment-identity",
  "selfie-enrollment-sealed-types",
  "tabernaculum",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "zeroize",
 ]
 

@@ -43,6 +43,23 @@ impl Attestor for NsmAttestor {
     }
 }
 
+impl selfie_enrollment_identity::CaptureAttestor for NsmAttestor {
+    fn attest(
+        &self,
+        nonce: &[u8; selfie_enrollment_identity::NONCE_BYTES],
+        user_data: &[u8; selfie_enrollment_identity::USER_DATA_BYTES],
+    ) -> Result<Vec<u8>, selfie_enrollment_identity::AttestationFailed> {
+        SecureModule::try_global()
+            .ok_or(selfie_enrollment_identity::AttestationFailed)?
+            .raw_attest(
+                Some(user_data.to_vec()),
+                Some(nonce.to_vec()),
+                None::<Vec<u8>>,
+            )
+            .map_err(|_| selfie_enrollment_identity::AttestationFailed)
+    }
+}
+
 /// A cached document and when it was produced.
 struct CachedAttestation {
     document: Vec<u8>,
