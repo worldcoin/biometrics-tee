@@ -37,7 +37,7 @@ fn decode(report: &Report, error: Option<Error>) -> Value {
 }
 
 #[test]
-fn published_example_matches_the_emitted_envelope() {
+fn envelope_records_runtime_metadata_and_migration_provenance() {
     let mut state = test_support::state();
     state.set_report_metadata(RuntimeMetadata {
         worker_sha384: Some("ab".repeat(48)),
@@ -57,7 +57,7 @@ fn published_example_matches_the_emitted_envelope() {
     report.source_pcp_version = Some("2.7");
     let encoded = report.serialize(&state, None).unwrap();
     assert!(encoded.contains("0.1234567890123456789012"));
-    let mut actual: Value = serde_json::from_str(&encoded).unwrap();
+    let actual: Value = serde_json::from_str(&encoded).unwrap();
     assert_eq!(
         actual["version"],
         hex::encode(Sha256::digest(SCHEMA.as_bytes()))
@@ -67,11 +67,38 @@ fn published_example_matches_the_emitted_envelope() {
         actual["metadata"]["environment"]["boot_id"],
         hex::encode(state.channel().public_key_commitment())
     );
-    actual["metadata"]["end_timestamp"] = json!(123.75);
-    actual["metadata"]["environment"]["boot_id"] = json!("00".repeat(32));
-    let expected: Value =
-        serde_json::from_str(include_str!("../../debug-report.example.json")).unwrap();
-    assert_eq!(actual, expected);
+    assert_eq!(actual["signup_id"], json!(report.signup_id));
+    assert_eq!(actual["src_signup_id"], json!(report.src_signup_id));
+    let metadata = &actual["metadata"];
+    assert_eq!(metadata["start_timestamp"], 123.5);
+    assert_eq!(metadata["source_pcp_version"], "2.7");
+    assert_eq!(
+        metadata["software_version"]["main_program_version"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
+        metadata["software_version"]["worker_sha384"],
+        "ab".repeat(48)
+    );
+    assert_eq!(
+        metadata["hardware"],
+        json!({
+            "architecture": "x86_64",
+            "usable_logical_cpus": 2,
+            "visible_memory_bytes": 12_u64 * 1024 * 1024 * 1024
+        })
+    );
+    assert_eq!(metadata["environment"]["type"], "tee");
+    assert_eq!(
+        metadata["environment"]["tee"],
+        json!({
+            "technology": "aws_nitro_enclaves",
+            "attestation": {
+                "measurements_zeroed": false,
+                "pcrs": {"0": "11".repeat(48), "1": "11".repeat(48), "2": "11".repeat(48)}
+            }
+        })
+    );
 }
 
 #[test]

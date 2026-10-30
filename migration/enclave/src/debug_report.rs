@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 use crate::state::EnclaveState;
 
 /// Exact published schema bytes whose SHA-256 identifies the report contract.
-pub const SCHEMA: &str = include_str!("../debug-report.schema.json");
+pub const SCHEMA: &str = include_str!("debug_report/schema.json");
 static VERSION: LazyLock<String> = LazyLock::new(|| hex::encode(Sha256::digest(SCHEMA.as_bytes())));
 
 /// Observations fixed for this enclave boot. Unavailable observations are omitted.
