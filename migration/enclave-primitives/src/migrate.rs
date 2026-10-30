@@ -25,23 +25,23 @@ impl Request for MigrateRequest {
     type Response = Result<MigrateResponse, MigrateError>;
 }
 
-/// Successful migration with an optional sealed worker debug report.
+/// Successful migration with an optional sealed migration debug report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateResponse {
     /// Tier 0 PCP sealed to the app's one-time response key.
     #[serde(with = "serde_bytes")]
     pub pcp: Vec<u8>,
-    /// Worker JSON report sealed to the same response key as the PCP.
+    /// Migration JSON report sealed to the same response key as the PCP.
     #[serde(default, with = "serde_bytes", skip_serializing_if = "Option::is_none")]
     pub debug_report: Option<Vec<u8>>,
 }
 
-/// A migration failure and optional worker report sealed to the request's response key.
+/// A migration failure and optional migration report sealed to the request's response key.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrateError {
     /// Payload-free failure reason exposed to the host.
     pub error: Error,
-    /// Worker JSON report sealed to the request's response key.
+    /// Migration JSON report sealed to the request's response key.
     #[serde(default, with = "serde_bytes", skip_serializing_if = "Option::is_none")]
     pub debug_report: Option<Vec<u8>>,
 }

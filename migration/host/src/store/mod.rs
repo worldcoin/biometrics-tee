@@ -24,7 +24,7 @@ pub trait BlobStore: Send + Sync {
     /// Writes the encrypted PCP once; a result already there is kept.
     async fn put_result(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError>;
 
-    /// Writes the encrypted worker debug report once, separately from the PCP.
+    /// Writes the encrypted migration debug report once, separately from the PCP.
     async fn put_debug_report(&self, job_id: &JobId, blob: Vec<u8>) -> Result<String, StoreError>;
 }
 
