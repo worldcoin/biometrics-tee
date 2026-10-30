@@ -8,6 +8,7 @@ publish = false
 description = "Assembles the attested web identity enrollment for one Selfie Check capture"
 
 [dependencies]
+base64.workspace = true
 crypto_box = "0.9.1"
 embedding-shares = { path = "../shares" }
 poseidon2 = { package = "taceo-poseidon2", version = "0.3", default-features = false, features = ["bn254", "t16"] }
@@ -22,5 +23,5 @@ world-id-primitives.workspace = true
 zeroize = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-base64.workspace = true
+serde_json.workspace = true
 hex.workspace = true

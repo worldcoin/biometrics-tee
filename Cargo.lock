@@ -5663,6 +5663,7 @@ dependencies = [
  "rand 0.8.8",
  "selfie-enrollment-api-types",
  "selfie-enrollment-sealed-types",
+ "serde_json",
  "sha2 0.10.9",
  "sha3 0.10.9",
  "taceo-poseidon2",

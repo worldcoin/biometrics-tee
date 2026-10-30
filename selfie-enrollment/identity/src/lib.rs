@@ -1,13 +1,15 @@
 //! Assembles `PUT /api/v1/web/identity` for one Selfie Check capture inside the enclave.
 //!
 //! The form keeps signup-service's mobile face fields and Oxide's Poseidon2 hashes. One
-//! per-capture Nitro document signs [`user_data`]: the running worker's SHA-384 and a SHA-256
-//! binding of `idComm` and every other part, so the relaying host cannot change any of them.
+//! per-capture Nitro document signs the running worker SHA-384 in [`user_data`] and a
+//! canonical request digest in its `nonce`. The document travels in an HTTP header,
+//! outside the body it binds, so the relaying host cannot change enrollment fields.
 //! Share recipients, the capture clock, the v3 identity and the attestor are supplied by the
 //! caller. Sensitive types deliberately do not implement `Debug`.
 
 mod poseidon;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use crypto_box::PublicKey;
 use embedding_shares::FaceShare;
 use rand::{CryptoRng, Rng};
@@ -18,9 +20,15 @@ use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const USER_DATA_VERSION: u8 = 1;
-/// Version byte, worker SHA-384 and binding SHA-256; within Nitro's 512-byte `user_data`.
-pub const USER_DATA_BYTES: usize = 1 + 48 + 32;
-pub const MAX_OWNERSHIP_PROOF_BYTES: usize = 64 * 1024;
+/// Version byte and running-worker SHA-384. The request digest is the signed nonce.
+pub const USER_DATA_BYTES: usize = 1 + 48;
+pub const NONCE_BYTES: usize = 32;
+/// Matches signup-service's bound and accommodates Oxide's measured 570,464-byte proof.
+pub const MAX_OWNERSHIP_PROOF_BYTES: usize = 768 * 1024;
+/// Standard base64 of the binary COSE_Sign1 document; never a multipart body field.
+pub const ATTESTATION_HEADER: &str = "x-tee-attestation";
+/// Application bound; the submitting proxy must accept the base64-expanded header.
+pub const MAX_ATTESTATION_DOCUMENT_BYTES: usize = 16 * 1024;
 const MAX_IDENTIFIER_BYTES: usize = 128;
 const BINDING_DOMAIN: &[u8] = b"web-authenticator:identity:v1";
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -54,13 +62,18 @@ pub struct Subject<'a> {
     pub ownership_proof: &'a [u8],
 }
 
-/// Produces a per-capture Nitro attestation over caller-chosen `user_data`.
+/// Produces a fresh per-capture Nitro attestation over both signed fields.
 pub trait CaptureAttestor {
-    /// Returns a COSE_Sign1 document whose signed `user_data` is exactly `user_data`.
+    /// Returns a COSE_Sign1 document with exactly these `nonce` and `user_data` values.
+    /// Leave its optional `public_key` empty; channel-key attestation is separate.
     ///
     /// # Errors
     /// Returns [`AttestationFailed`] when the secure module rejects the request.
-    fn attest(&self, user_data: &[u8; USER_DATA_BYTES]) -> Result<Vec<u8>, AttestationFailed>;
+    fn attest(
+        &self,
+        nonce: &[u8; NONCE_BYTES],
+        user_data: &[u8; USER_DATA_BYTES],
+    ) -> Result<Vec<u8>, AttestationFailed>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -78,19 +91,29 @@ pub enum Error {
     Hash(&'static str),
     #[error(transparent)]
     Attestation(#[from] AttestationFailed),
+    #[error("invalid capture attestation document length")]
+    InvalidAttestationDocument,
 }
 
 pub struct IdentityEnrollment {
     /// The `idComm` query parameter.
     pub id_commitment: String,
     pub form: Form,
-    /// Binary file part attesting [`user_data`] for `id_commitment` and `form`.
+    /// COSE_Sign1 document, sent as standard base64 in [`ATTESTATION_HEADER`].
     pub tee_attestation_document: Vec<u8>,
     /// What `associated_data_hash` commits to. Contains the image, embedding and plaintext shares.
     pub associated_data: AssociatedData,
 }
 
-/// Every form part except `tee_attestation_document`.
+impl IdentityEnrollment {
+    /// Encodes the document for [`ATTESTATION_HEADER`]; it is excluded from [`Form::parts`].
+    #[must_use]
+    pub fn attestation_header(&self) -> String {
+        STANDARD.encode(&self.tee_attestation_document)
+    }
+}
+
+/// Enrollment body fields. The attestation document is transported separately in a header.
 #[derive(Clone)]
 pub struct Form {
     pub capture_id: String,
@@ -159,8 +182,8 @@ pub struct AssociatedData {
 
 /// Builds the enrollment for one successful extraction and attests it once.
 ///
-/// Inputs are validated before randomness is consumed or the attestor is called. Supply an
-/// RNG seeded from fresh entropy in production.
+/// Basic inputs and the embedding are validated before sharing. All failures precede
+/// attestation. Supply an RNG seeded from fresh entropy in production.
 ///
 /// # Errors
 /// Rejects malformed inputs, unsupported embeddings and unsuitable recipient keys; propagates
@@ -218,11 +241,15 @@ pub fn assemble<R: Rng + CryptoRng>(
         world_id_challenge_id: subject.challenge_id.to_string(),
         world_id_ownership_proof: subject.ownership_proof.to_vec(),
     };
-    let tee_attestation_document = attestor.attest(&user_data(
-        inputs.worker_sha384,
-        inputs.id_commitment,
-        &form,
-    ))?;
+    let tee_attestation_document = attestor.attest(
+        &binding_digest(inputs.id_commitment, &form),
+        &user_data(inputs.worker_sha384),
+    )?;
+    if tee_attestation_document.is_empty()
+        || tee_attestation_document.len() > MAX_ATTESTATION_DOCUMENT_BYTES
+    {
+        return Err(Error::InvalidAttestationDocument);
+    }
     Ok(IdentityEnrollment {
         id_commitment: inputs.id_commitment.to_owned(),
         form,
@@ -231,15 +258,12 @@ pub fn assemble<R: Rng + CryptoRng>(
     })
 }
 
-/// [`USER_DATA_VERSION`], `worker_sha384`, then SHA-256 over [`BINDING_DOMAIN`] followed by
-/// `idComm` and each [`Form::parts`] entry, each encoded as a big-endian `u32` name length,
-/// the name, a big-endian `u32` value length and the value.
+/// Canonical enrollment-body SHA-256, carried in the Nitro document's signed `nonce`.
+/// Hash [`BINDING_DOMAIN`], then `idComm` and each [`Form::parts`] entry. Each name
+/// and value is prefixed by its big-endian `u32` byte length. Multipart boundaries,
+/// header encoding and the attestation document itself are excluded.
 #[must_use]
-pub fn user_data(
-    worker_sha384: &[u8; 48],
-    id_commitment: &str,
-    form: &Form,
-) -> [u8; USER_DATA_BYTES] {
+pub fn binding_digest(id_commitment: &str, form: &Form) -> [u8; NONCE_BYTES] {
     let mut binding = Sha256::new();
     binding.update(BINDING_DOMAIN);
     let parts = std::iter::once(("idComm", id_commitment.as_bytes())).chain(form.parts());
@@ -250,11 +274,16 @@ pub fn user_data(
             binding.update(field);
         }
     }
-    let mut user_data = [0; USER_DATA_BYTES];
-    user_data[0] = USER_DATA_VERSION;
-    user_data[1..49].copy_from_slice(worker_sha384);
-    user_data[49..].copy_from_slice(&binding.finalize());
-    user_data
+    binding.finalize().into()
+}
+
+/// Signed release metadata, checked with PCR0/1/2 against one approved release.
+#[must_use]
+pub fn user_data(worker_sha384: &[u8; 48]) -> [u8; USER_DATA_BYTES] {
+    let mut value = [0; USER_DATA_BYTES];
+    value[0] = USER_DATA_VERSION;
+    value[1..].copy_from_slice(worker_sha384);
+    value
 }
 
 fn validate(inputs: &Inputs<'_>) -> Result<(), Error> {
@@ -300,7 +329,6 @@ fn is_identifier(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use crypto_box::SecretKey;
     use rand::{SeedableRng, rngs::StdRng};
     use std::cell::{Cell, RefCell};
@@ -313,9 +341,15 @@ mod tests {
     struct RecordingAttestor {
         calls: Cell<usize>,
         user_data: RefCell<Vec<u8>>,
+        nonce: RefCell<Vec<u8>>,
     }
     impl CaptureAttestor for RecordingAttestor {
-        fn attest(&self, user_data: &[u8; USER_DATA_BYTES]) -> Result<Vec<u8>, AttestationFailed> {
+        fn attest(
+            &self,
+            nonce: &[u8; NONCE_BYTES],
+            user_data: &[u8; USER_DATA_BYTES],
+        ) -> Result<Vec<u8>, AttestationFailed> {
+            *self.nonce.borrow_mut() = nonce.to_vec();
             self.calls.set(self.calls.get() + 1);
             *self.user_data.borrow_mut() = user_data.to_vec();
             Ok(b"document".to_vec())
@@ -378,9 +412,14 @@ mod tests {
 
         assert_eq!(attestor.calls.get(), 1);
         assert_eq!(enrollment.tee_attestation_document, b"document");
+        assert_eq!(*attestor.user_data.borrow(), user_data(&WORKER));
         assert_eq!(
-            *attestor.user_data.borrow(),
-            user_data(&WORKER, ID_COMMITMENT, form)
+            *attestor.nonce.borrow(),
+            binding_digest(ID_COMMITMENT, form)
+        );
+        assert_eq!(
+            STANDARD.decode(enrollment.attestation_header()).unwrap(),
+            b"document"
         );
         assert_eq!(enrollment.id_commitment, ID_COMMITMENT);
         assert_eq!(form.capture_id, "6f9619ff-8b86-4d01-b42d-00cf4fc964ff");
@@ -418,9 +457,9 @@ mod tests {
         let form = assemble(&fixture.inputs(), &RecordingAttestor::default(), &mut rng)
             .unwrap()
             .form;
-        let original = user_data(&WORKER, ID_COMMITMENT, &form);
-        assert_ne!(user_data(&WORKER, "0x1", &form), original);
-        assert_ne!(user_data(&[0; 48], ID_COMMITMENT, &form), original);
+        let original = binding_digest(ID_COMMITMENT, &form);
+        assert_ne!(binding_digest("0x1", &form), original);
+        assert_ne!(user_data(&[0; 48]), user_data(&WORKER));
         for index in 0..form.parts().len() {
             let mut changed = form.clone();
             let field = match index {
@@ -438,13 +477,13 @@ mod tests {
                 15 => &mut changed.world_id_challenge_id,
                 _ => {
                     changed.world_id_ownership_proof.push(0);
-                    assert_ne!(user_data(&WORKER, ID_COMMITMENT, &changed), original);
+                    assert_ne!(binding_digest(ID_COMMITMENT, &changed), original);
                     continue;
                 }
             };
             field.push('0');
             assert_ne!(
-                user_data(&WORKER, ID_COMMITMENT, &changed),
+                binding_digest(ID_COMMITMENT, &changed),
                 original,
                 "{}",
                 form.parts()[index].0
@@ -469,11 +508,40 @@ mod tests {
             world_id_challenge_id: "00000000-0000-0000-0000-000000001234".into(),
             world_id_ownership_proof: b"proof".to_vec(),
         };
-        let user_data = user_data(&WORKER, ID_COMMITMENT, &form);
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/enrollment-v1.json")).unwrap();
+        assert_eq!(
+            fixture["domain"],
+            std::str::from_utf8(BINDING_DOMAIN).unwrap()
+        );
+        assert_eq!(fixture["id_commitment"], ID_COMMITMENT);
+        assert_eq!(
+            fixture["parts"].as_array().unwrap().len(),
+            form.parts().len()
+        );
+        for ((name, value), part) in form
+            .parts()
+            .iter()
+            .zip(fixture["parts"].as_array().unwrap())
+        {
+            assert_eq!(part["name"], *name);
+            assert_eq!(
+                STANDARD
+                    .decode(part["value_base64"].as_str().unwrap())
+                    .unwrap(),
+                *value
+            );
+        }
+        assert_eq!(
+            fixture["nonce_hex"],
+            hex::encode(binding_digest(ID_COMMITMENT, &form))
+        );
+        assert_eq!(fixture["user_data_hex"], hex::encode(user_data(&WORKER)));
+        let user_data = user_data(&WORKER);
         assert_eq!(user_data[0], USER_DATA_VERSION);
         assert_eq!(user_data[1..49], WORKER);
         assert_eq!(
-            hex::encode(&user_data[49..]),
+            hex::encode(binding_digest(ID_COMMITMENT, &form)),
             "aaea0b04e1c35d62ff90f66898b3f949b7f105ac8d80bd10e7bd824e6815c652"
         );
     }
@@ -530,7 +598,11 @@ mod tests {
     fn attestation_failure_returns_no_enrollment() {
         struct Failing;
         impl CaptureAttestor for Failing {
-            fn attest(&self, _: &[u8; USER_DATA_BYTES]) -> Result<Vec<u8>, AttestationFailed> {
+            fn attest(
+                &self,
+                _: &[u8; NONCE_BYTES],
+                _: &[u8; USER_DATA_BYTES],
+            ) -> Result<Vec<u8>, AttestationFailed> {
                 Err(AttestationFailed)
             }
         }
@@ -540,5 +612,54 @@ mod tests {
             assemble(&fixture.inputs(), &Failing, &mut rng),
             Err(Error::Attestation(_))
         ));
+    }
+
+    #[test]
+    fn real_size_proofs_and_the_agreed_boundary_are_accepted() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let fixture = Fixture::new(&mut rng);
+        for size in [
+            570_464,
+            MAX_OWNERSHIP_PROOF_BYTES,
+            MAX_OWNERSHIP_PROOF_BYTES + 1,
+        ] {
+            let proof = vec![0xa0; size];
+            let mut inputs = fixture.inputs();
+            inputs.subject.ownership_proof = &proof;
+            let attestor = RecordingAttestor::default();
+            let result = assemble(&inputs, &attestor, &mut rng);
+            if size <= MAX_OWNERSHIP_PROOF_BYTES {
+                assert_eq!(result.unwrap().form.world_id_ownership_proof, proof);
+                assert_eq!(attestor.calls.get(), 1);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(Error::InvalidInput("world_id_ownership_proof"))
+                ));
+                assert_eq!(attestor.calls.get(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn empty_or_oversized_attestation_documents_are_rejected() {
+        struct SizedDocument(usize);
+        impl CaptureAttestor for SizedDocument {
+            fn attest(
+                &self,
+                _: &[u8; NONCE_BYTES],
+                _: &[u8; USER_DATA_BYTES],
+            ) -> Result<Vec<u8>, AttestationFailed> {
+                Ok(vec![0; self.0])
+            }
+        }
+        let mut rng = StdRng::seed_from_u64(7);
+        let fixture = Fixture::new(&mut rng);
+        for length in [0, MAX_ATTESTATION_DOCUMENT_BYTES + 1] {
+            assert!(matches!(
+                assemble(&fixture.inputs(), &SizedDocument(length), &mut rng),
+                Err(Error::InvalidAttestationDocument)
+            ));
+        }
     }
 }

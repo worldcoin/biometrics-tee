@@ -20,7 +20,7 @@ The sealed CBOR request contains protocol version 1 and an image of at most 8 Mi
 - `enclave-types`: ciphertext-only Pontifex RPCs and health.
 - `sealed-types`: client/enclave plaintext types and strict codecs.
 - `shares` (`embedding-shares`): standalone Oxide-compatible face embedding decoding, quantization, share generation and recipient encryption through `embedding_shares::generate(...)` and `embedding_shares::encrypt(...)`; not yet wired into extraction.
-- `identity` (`selfie-enrollment-identity`): `assemble(...)` builds signup-service's `PUT /api/v1/web/identity` form from one capture, with Oxide's Poseidon2 share, identity and associated-data hashes, and attests it once through a per-capture `user_data` binding. Recipient keys, the capture clock, the v3 identity and the attestor are inputs; not yet wired into the enclave.
+- `identity` (`selfie-enrollment-identity`): `assemble(...)` builds signup-service's `PUT /api/v1/web/identity` form from one capture, with Oxide's Poseidon2 share, identity and associated-data hashes, and binds it to a per-capture Nitro `nonce`, with the worker hash in signed `user_data` and the document in an HTTP header. See [the binding contract](identity/protocol.md). Recipient keys, the capture clock, the v3 identity and the attestor are inputs; not yet wired into the enclave.
 - `enclave`: worker bootstrap, Minijail adapter, attested keys, extraction policy.
 - `host`: bounded WebSocket relay, health/readiness and graceful shutdown.
 - `e2e`: native diagnostic command and loopback-only browser harness.
