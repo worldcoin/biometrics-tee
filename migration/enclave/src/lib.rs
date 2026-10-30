@@ -14,6 +14,8 @@
 
 /// Nitro Secure Module attestation of the boot's channel key.
 pub mod attestation;
+/// Migration diagnostic envelope and enclave execution metadata.
+pub mod debug_report;
 /// KMS encryption of per-package private recipient keys.
 pub mod kms;
 /// Fresh PCP recipients and KMS encryption of their private keys.

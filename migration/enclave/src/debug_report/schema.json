@@ -1,0 +1,479 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "Enclave migration outcome, execution environment and complete biometric worker diagnostics.",
+  "properties": {
+    "face": {
+      "additionalProperties": true,
+      "properties": {
+        "outputs": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "request_type": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "request_type",
+        "outputs"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "iris": {
+      "description": "Complete worker iris diagnostics, including left/right image wrappers and pair checks.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "end_timestamp": {
+          "description": "Enclave operation boundary in Unix seconds, including fractional seconds; null when unavailable.",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "environment": {
+          "additionalProperties": false,
+          "properties": {
+            "boot_id": {
+              "description": "Hex-encoded public channel-key commitment for this boot; null only when unavailable in a historical conversion.",
+              "pattern": "^[0-9a-f]{64}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tee": {
+              "additionalProperties": false,
+              "properties": {
+                "attestation": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "measurements_zeroed": {
+                      "type": "boolean"
+                    },
+                    "pcrs": {
+                      "additionalProperties": false,
+                      "minProperties": 1,
+                      "properties": {
+                        "0": {
+                          "pattern": "^[0-9a-f]{96}$",
+                          "type": "string"
+                        },
+                        "1": {
+                          "pattern": "^[0-9a-f]{96}$",
+                          "type": "string"
+                        },
+                        "2": {
+                          "pattern": "^[0-9a-f]{96}$",
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "measurements_zeroed",
+                    "pcrs"
+                  ],
+                  "type": "object"
+                },
+                "technology": {
+                  "const": "aws_nitro_enclaves",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "technology"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "tee",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "boot_id",
+            "tee"
+          ],
+          "type": "object"
+        },
+        "hardware": {
+          "additionalProperties": false,
+          "properties": {
+            "architecture": {
+              "type": "string"
+            },
+            "usable_logical_cpus": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "visible_memory_bytes": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "architecture"
+          ],
+          "type": "object"
+        },
+        "signup_reason": {
+          "description": "Coarse processing category using Orb JSON reason names. Normal on success; Fraud for a spoof-check rejection; Failure for other terminating failures. Detailed error codes belong in pipeline_errors.migration_error.",
+          "enum": [
+            "Normal",
+            "Fraud",
+            "Failure",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signup_status": {
+          "description": "Outcome of enclave migration through output-PCP preparation and sealing. Success pairs with reason Normal, Fraud with Fraud, Failure with Failure; null denotes an unestablished outcome. Does not cover host upload or downstream enrollment. Failure is a migration-report enum value, not the Orb status enum.",
+          "enum": [
+            "Success",
+            "Fraud",
+            "Failure",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "software_version": {
+          "additionalProperties": false,
+          "properties": {
+            "face_engine_version": {
+              "type": "string"
+            },
+            "iris_engine_version": {
+              "type": "string"
+            },
+            "main_program_version": {
+              "description": "Exact migration.pb.tee_software_version application package-version string.",
+              "type": "string"
+            },
+            "worker_sha384": {
+              "description": "Exact migration.pb.biometric_pipeline_version for this TEE producer: verified worker executable SHA-384.",
+              "pattern": "^[0-9a-f]{96}$",
+              "type": "string"
+            },
+            "worker_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "main_program_version"
+          ],
+          "type": "object"
+        },
+        "source_pcp_version": {
+          "description": "Exact migration.pb.source_pcp_version: source package format, not the signup-ID version.",
+          "type": "string"
+        },
+        "start_timestamp": {
+          "description": "Enclave operation boundary in Unix seconds, including fractional seconds; null when unavailable.",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "start_timestamp",
+        "end_timestamp",
+        "signup_status",
+        "signup_reason",
+        "software_version",
+        "environment"
+      ],
+      "type": "object"
+    },
+    "pipeline_errors": {
+      "additionalProperties": false,
+      "properties": {
+        "migration_error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "enum": [
+                "InvalidInput",
+                "RequestNotOpened",
+                "MigrationTaskCancelled",
+                "MigrationDiagnosticSealingFailed",
+                "InvalidSystemTime",
+                "PcpRecipientKeyGenerationFailed",
+                "ManifestSignerUnavailable",
+                "PcpResponseSealingFailed",
+                "BiometricPipelineFailed",
+                "BiometricInvalidRequest",
+                "BiometricInvalidImage",
+                "BiometricQualityRejected",
+                "BiometricSpoofDetected",
+                "IncompleteBiometricPipelineResult",
+                "EmbeddingShareGenerationFailed",
+                "PcpKeyDecryptionFailed",
+                "AttestationFailed",
+                "ChannelKeyGenerationFailed",
+                "CredentialSubMismatch",
+                "CredentialDeserializationFailed",
+                "CredentialSignatureVerificationFailed",
+                "CredentialSignatureInvalid",
+                "CredentialClaimsMismatch",
+                "InvalidPcp",
+                "FailedToBuildPcp",
+                "InvalidDevicePublicKeyEncoding",
+                "Unknown"
+              ],
+              "type": "string"
+            },
+            "image": {
+              "enum": [
+                "Face",
+                "LeftIris",
+                "RightIris",
+                "IrisPair",
+                null
+              ],
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "invalid_request_reason": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "missing_image": {
+                      "additionalProperties": false,
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "missing_image"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "image_too_large": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "limit_bytes": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "limit_bytes"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "image_too_large"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "stage": {
+              "enum": [
+                "decode_payload",
+                "verify_credential",
+                "open_pcp",
+                "biometrics",
+                "prepare_biometrics",
+                "build_pcp",
+                "generate_recipients",
+                "sign_manifest",
+                "seal_pcp"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "stage",
+            "code",
+            "image",
+            "invalid_request_reason"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "migration_error"
+      ],
+      "type": "object"
+    },
+    "signup_id": {
+      "additionalProperties": false,
+      "properties": {
+        "data_id": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "s3_region": {
+          "enum": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            255
+          ],
+          "type": "integer"
+        },
+        "signup_id": {
+          "items": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 10,
+          "minItems": 10,
+          "type": "array"
+        },
+        "version": {
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "s3_region",
+        "signup_id",
+        "data_id"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "src_signup_id": {
+      "additionalProperties": false,
+      "properties": {
+        "data_id": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "s3_region": {
+          "enum": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            255
+          ],
+          "type": "integer"
+        },
+        "signup_id": {
+          "items": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 10,
+          "minItems": 10,
+          "type": "array"
+        },
+        "version": {
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "s3_region",
+        "signup_id",
+        "data_id"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "version": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "signup_id",
+    "src_signup_id",
+    "version",
+    "metadata",
+    "face",
+    "iris",
+    "pipeline_errors"
+  ],
+  "title": "MigrationDebugReport",
+  "type": "object"
+}

@@ -28,6 +28,7 @@ pub struct EnclaveState {
     /// Signup-service credential signer key used to verify PCP credentials.
     issuer_pubkey: EdDSAPublicKey,
     worker: Box<dyn Worker>,
+    report_metadata: crate::debug_report::RuntimeMetadata,
 }
 
 impl EnclaveState {
@@ -62,6 +63,7 @@ impl EnclaveState {
             manifest_signer: None,
             issuer_pubkey,
             worker,
+            report_metadata: crate::debug_report::RuntimeMetadata::default(),
         })
     }
 
@@ -87,6 +89,15 @@ impl EnclaveState {
     #[must_use]
     pub const fn channel(&self) -> &ChannelEnclave {
         &self.channel
+    }
+
+    /// Installs observations collected from the initialized enclave runtime before serving.
+    pub fn set_report_metadata(&mut self, metadata: crate::debug_report::RuntimeMetadata) {
+        self.report_metadata = metadata;
+    }
+
+    pub(crate) const fn report_metadata(&self) -> &crate::debug_report::RuntimeMetadata {
+        &self.report_metadata
     }
 
     /// The credential issuer public key this boot verifies signatures against.
