@@ -15,32 +15,10 @@ SHA-256 of its exact bytes supplies the top-level `version`.
 - `metadata` records operation timestamps, outcome, software versions, observed
   enclave resources, TEE technology, boot identity and measurements.
 - `face` and `iris` preserve complete worker diagnostics and numeric precision.
-- `pipeline_errors.migration_error` records the terminating TEE `stage` and `code`,
-  the failing `component`, and the exact `pipeline_code` / `pipeline_message` when
-  available. `invalid_request_reason` retains input-validation details.
-
-For a left-eye capture QA rejection, the summary contains:
-
-```json
-{
-  "stage": "biometrics",
-  "code": "BiometricQualityRejected",
-  "component": "iris.left.capture_qa",
-  "pipeline_code": "IrisUnsharp",
-  "pipeline_message": "iris texture is unsharp",
-  "invalid_request_reason": null
-}
-```
-
-The summary selects the worker-reported failing branch and reads its immediate
-stage-level `error` fields. Exactly one non-null error supplies the stage name,
-code and existing message. Stage names come from the JSON keys. Pair-check errors
-sit directly on the pair output; their `check` supplies the code. Missing, malformed
-or multiple errors retain the broad component with null pipeline fields. Messages
-are copied only when supplied. Non-biometric failures have null pipeline details.
-The JSON parsed for extraction is separate from the raw diagnostics saved in the
-report, preserving all original fields and numeric precision. Details do not
-change the migration outcome and are returned only in the encrypted report.
+- `pipeline_errors.migration_error` records `stage`, `code`, `component` and
+  `invalid_request_reason`. The component is `Face`, `LeftIris`, `RightIris`,
+  `IrisPair`, or null when unavailable. Detailed engine errors remain in `face`
+  and `iris`.
 
 `metadata.environment.tee.attestation.measurements_zeroed` is true when PCR0,
 PCR1 and PCR2 are all present as 48-byte zero digests. These image measurements

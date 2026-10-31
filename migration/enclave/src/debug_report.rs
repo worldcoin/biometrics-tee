@@ -1,7 +1,7 @@
 //! Enclave-owned migration diagnostics.
 //!
 //! Worker JSON is borrowed from zeroizing storage and
-//! retains complete face/iris outputs; diagnostics are only returned after encryption.
+//! remains opaque below its face/iris wrappers; diagnostics are only returned after encryption.
 
 use std::{collections::BTreeMap, io, sync::LazyLock, time::SystemTime};
 
@@ -18,8 +18,6 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::state::EnclaveState;
-
-mod pipeline_error;
 
 /// Exact published schema bytes whose SHA-256 identifies the report contract.
 pub const SCHEMA: &str = include_str!("debug_report/schema.json");
@@ -179,7 +177,13 @@ impl Report {
 
     pub fn worker_failure(&mut self, failure: &Failure) {
         self.worker_failure = Some(WorkerFailure {
-            image: ImageRole::try_from(failure.image).ok(),
+            image: match ImageRole::try_from(failure.image) {
+                Ok(ImageRole::Face) => Some("Face"),
+                Ok(ImageRole::LeftIris) => Some("LeftIris"),
+                Ok(ImageRole::RightIris) => Some("RightIris"),
+                Ok(ImageRole::IrisPair) => Some("IrisPair"),
+                Ok(ImageRole::Unspecified) | Err(_) => None,
+            },
             invalid_request_reason: failure
                 .invalid_request_reason
                 .as_ref()
@@ -264,28 +268,17 @@ impl Report {
             face: worker.face.as_ref(),
             iris: worker.iris,
             pipeline_errors: PipelineErrors {
-                migration_error: error.map(|code| {
-                    let details = if matches!(self.stage, Stage::Biometrics) {
-                        worker.pipeline_error(
-                            self.worker_failure
-                                .as_ref()
-                                .and_then(|failure| failure.image),
-                            code,
-                        )
-                    } else {
-                        pipeline_error::Details::default()
-                    };
-                    MigrationError {
-                        stage: self.stage,
-                        code,
-                        component: details.component,
-                        pipeline_code: details.code,
-                        pipeline_message: details.message,
-                        invalid_request_reason: self
-                            .worker_failure
-                            .as_ref()
-                            .and_then(|failure| failure.invalid_request_reason.as_ref()),
-                    }
+                migration_error: error.map(|code| MigrationError {
+                    stage: self.stage,
+                    code,
+                    component: self
+                        .worker_failure
+                        .as_ref()
+                        .and_then(|failure| failure.image),
+                    invalid_request_reason: self
+                        .worker_failure
+                        .as_ref()
+                        .and_then(|failure| failure.invalid_request_reason.as_ref()),
                 }),
             },
         };
@@ -335,7 +328,7 @@ fn timestamp(time: SystemTime) -> Option<f64> {
 }
 
 struct WorkerFailure {
-    image: Option<ImageRole>,
+    image: Option<&'static str>,
     invalid_request_reason: Option<InvalidRequest>,
 }
 
@@ -407,9 +400,7 @@ struct PipelineErrors<'a> {
 struct MigrationError<'a> {
     stage: Stage,
     code: Error,
-    component: Option<String>,
-    pipeline_code: Option<String>,
-    pipeline_message: Option<String>,
+    component: Option<&'static str>,
     invalid_request_reason: Option<&'a InvalidRequest>,
 }
 

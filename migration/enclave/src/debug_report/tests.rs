@@ -338,7 +338,7 @@ fn an_explicit_worker_engine_version_is_available_before_eye_processing() {
 }
 
 #[test]
-fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
+fn partial_worker_failure_keeps_its_component_reason_and_available_diagnostics() {
     let mut report = report();
     report.src_signup_id = Some("00000000000000000000000000000000".parse().unwrap());
     report.source_pcp_version = Some("2.1");
@@ -352,8 +352,7 @@ fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
     assert_eq!(
         value["pipeline_errors"]["migration_error"],
         json!({
-            "stage":"biometrics", "code":"BiometricInvalidRequest", "component":"iris.right",
-            "pipeline_code":null, "pipeline_message":null,
+            "stage":"biometrics", "code":"BiometricInvalidRequest", "component":"RightIris",
             "invalid_request_reason":{"image_too_large":{"limit_bytes":1024}}
         })
     );
@@ -364,7 +363,7 @@ fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
     assert_eq!(value["metadata"]["signup_reason"], "Fraud");
     assert_eq!(
         value["pipeline_errors"]["migration_error"]["component"],
-        "iris.pair"
+        "IrisPair"
     );
     let quality = decode(&report, Some(Error::BiometricQualityRejected));
     assert_eq!(quality["metadata"]["signup_status"], "Failure");
@@ -372,159 +371,6 @@ fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
     assert_eq!(quality["signup_id"], json!(report.signup_id));
     assert_eq!(quality["src_signup_id"], json!(report.src_signup_id));
     assert_eq!(quality["metadata"]["source_pcp_version"], "2.1");
-}
-
-fn pipeline_failure(worker: &Value, image: ImageRole, error: Error) -> Value {
-    let mut report = Report::new(SystemTime::now());
-    report.stage = Stage::Biometrics;
-    report.worker_report(Some(Zeroizing::new(worker.to_string())));
-    report.worker_failure(&Failure::new(FailureCode::QualityRejected).at_image(image));
-    decode(&report, Some(error))
-}
-
-#[test]
-fn eye_failure_summary_preserves_the_exact_terminal_error_and_diagnostics() {
-    for (eye, role) in [
-        ("left", ImageRole::LeftIris),
-        ("right", ImageRole::RightIris),
-    ] {
-        for stage in ["capture_qa", "pipeline", "pad", "additional_check"] {
-            let mut worker = json!({"iris":{eye:{"outputs":{}}}});
-            let original_error = if stage == "pad" {
-                json!({"ContactLensDetectedError":{"spoof_score":0.9,"threshold":0.5}})
-            } else {
-                json!({"error":"IrisUnsharp","message":"iris texture is unsharp\nretry capture"})
-            };
-            worker["iris"][eye]["outputs"][stage] = json!({"error":original_error});
-            let outcome = if stage == "pad" {
-                Error::BiometricSpoofDetected
-            } else {
-                Error::BiometricQualityRejected
-            };
-            let value = pipeline_failure(&worker, role, outcome);
-            let summary = &value["pipeline_errors"]["migration_error"];
-            assert_eq!(summary["component"], format!("iris.{eye}.{stage}"));
-            assert_eq!(
-                summary["pipeline_code"],
-                if stage == "pad" {
-                    "ContactLensDetectedError"
-                } else {
-                    "IrisUnsharp"
-                }
-            );
-            assert_eq!(
-                summary["pipeline_message"],
-                if stage == "pad" {
-                    Value::Null
-                } else {
-                    json!("iris texture is unsharp\nretry capture")
-                }
-            );
-            assert!(summary.get("image").is_none());
-            assert_eq!(value["iris"], worker["iris"]);
-        }
-    }
-}
-
-#[test]
-fn face_and_pair_failures_use_their_explicit_terminal_error() {
-    for stage in ["captured_image_analyzer", "template_generator"] {
-        let worker = json!({"face":{
-            "request_type":{"type":"Embedding","source":"Orb"},
-            "outputs":[{stage:{"error":{"FaceTooSmallError":{"size":12}}}}]
-        }});
-        let value = pipeline_failure(&worker, ImageRole::Face, Error::BiometricQualityRejected);
-        let summary = &value["pipeline_errors"]["migration_error"];
-        assert_eq!(summary["component"], format!("face.{stage}"));
-        assert_eq!(summary["pipeline_code"], "FaceTooSmallError");
-        assert!(summary["pipeline_message"].is_null());
-        assert_eq!(value["face"], worker["face"]);
-    }
-    for (kind, code) in [
-        ("Rejected", Error::BiometricSpoofDetected),
-        ("Internal", Error::BiometricPipelineFailed),
-    ] {
-        let worker =
-            json!({"iris":{"pair":{"output":{"error":{"check":"GaborSameEye","kind":kind}}}}});
-        let value = pipeline_failure(&worker, ImageRole::IrisPair, code);
-        let summary = &value["pipeline_errors"]["migration_error"];
-        assert_eq!(summary["component"], "iris.pair");
-        assert_eq!(summary["pipeline_code"], "GaborSameEye");
-        assert!(summary["pipeline_message"].is_null());
-    }
-}
-
-#[test]
-fn absent_ambiguous_or_malformed_details_keep_the_known_component_and_outcome() {
-    let qa = json!({"error":{"error":"IrisUnsharp","message":"iris texture is unsharp"}});
-    for worker in [
-        json!({}),
-        json!({"iris":{"right":{"outputs":{"capture_qa":qa}}}}),
-        json!({"iris":{"left":{"outputs":{"capture_qa":{"error":null,"nested":{"error":"unrelated"}}}}}}),
-        json!({"iris":{"left":{"outputs":{"capture_qa":qa,"pipeline":qa}}}}),
-        json!({"iris":{"left":{"outputs":{"capture_qa":{"error":{"error":42}}}}}}),
-        json!({"iris":{"left":{"outputs":{"capture_qa":{"error":{"error":{"First":{},"Second":{}}}}}}}}),
-        json!({"iris":{"left":{"outputs":{"capture_qa":{"error":{"error":"x".repeat(129)}}}}}}),
-        json!({"iris":{"left":{"outputs":{"capture_qa":{"error":{"error":"IrisUnsharp","message":"x".repeat(4097)}}}}}}),
-    ] {
-        let value = pipeline_failure(
-            &worker,
-            ImageRole::LeftIris,
-            Error::BiometricQualityRejected,
-        );
-        let summary = &value["pipeline_errors"]["migration_error"];
-        assert_eq!(summary["component"], "iris.left");
-        assert_eq!(summary["code"], "BiometricQualityRejected");
-        assert!(summary["pipeline_code"].is_null());
-        assert!(summary["pipeline_message"].is_null());
-        assert_eq!(value["iris"], worker["iris"]);
-    }
-}
-
-#[test]
-fn success_and_non_pipeline_failures_do_not_promote_engine_diagnostics() {
-    let worker = json!({"iris":{"left":{"outputs":{"capture_qa":{
-        "error":{"error":"IrisUnsharp","message":"iris texture is unsharp"}
-    }}}}});
-    let value = pipeline_failure(&worker, ImageRole::LeftIris, Error::BiometricInvalidImage);
-    assert!(value["pipeline_errors"]["migration_error"]["pipeline_code"].is_null());
-    let mut report = Report::new(SystemTime::now());
-    report.worker_report(Some(Zeroizing::new(worker.to_string())));
-    report
-        .worker_failure(&Failure::new(FailureCode::QualityRejected).at_image(ImageRole::LeftIris));
-    report.stage = Stage::BuildPcp;
-    let value = decode(&report, Some(Error::FailedToBuildPcp));
-    let summary = &value["pipeline_errors"]["migration_error"];
-    assert!(summary["component"].is_null());
-    assert!(summary["pipeline_code"].is_null());
-    assert!(decode(&report, None)["pipeline_errors"]["migration_error"].is_null());
-}
-
-#[test]
-fn extracting_an_error_keeps_raw_diagnostic_precision() {
-    let mut report = Report::new(SystemTime::now());
-    report.stage = Stage::Biometrics;
-    report
-        .worker_failure(&Failure::new(FailureCode::QualityRejected).at_image(ImageRole::LeftIris));
-    report.worker_report(Some(Zeroizing::new(
-        r#"{"iris":{"left":{"outputs":{
-        "capture_qa":{"error":{"error":"IrisUnsharp","message":"iris texture is unsharp"},
-        "precise":0.1234567890123456789012,"large_integer":9007199254740993}}}}}"#
-            .into(),
-    )));
-    let encoded = report
-        .serialize(
-            &test_support::state(),
-            Some(Error::BiometricQualityRejected),
-        )
-        .unwrap();
-    assert!(encoded.contains("0.1234567890123456789012"));
-    assert!(encoded.contains("9007199254740993"));
-    let value: Value = serde_json::from_str(&encoded).unwrap();
-    assert_eq!(
-        value["pipeline_errors"]["migration_error"]["pipeline_code"],
-        "IrisUnsharp"
-    );
 }
 
 #[test]
