@@ -17,6 +17,11 @@ SHA-256 of its exact bytes supplies the top-level `version`.
 - `face` and `iris` preserve complete worker diagnostics and numeric precision.
 - `pipeline_errors.migration_error` records the terminating phase and error.
 
+`metadata.environment.tee.attestation.measurements_zeroed` is true when PCR0,
+PCR1 and PCR2 are all present as 48-byte zero digests. These image measurements
+are zeroed in debug mode; parent-instance PCRs can remain nonzero. A false value
+does not establish verified code identity or replace attestation verification.
+
 | Enclave outcome | `signup_status` | `signup_reason` |
 |---|---|---|
 | PCP prepared and sealed | `Success` | `Normal` |

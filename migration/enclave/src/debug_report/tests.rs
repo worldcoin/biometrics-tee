@@ -60,6 +60,38 @@ fn observation_failure_preserves_the_verified_worker_digest() {
 }
 
 #[test]
+fn zeroed_image_measurements_ignore_parent_pcrs_and_require_complete_digests() {
+    let mut document: AttestationDoc = serde_json::from_value(json!({
+        "module_id": "synthetic", "digest": "SHA384", "timestamp": 0,
+        "pcrs": {}, "certificate": [], "cabundle": [],
+        "public_key": null, "user_data": null, "nonce": null
+    }))
+    .unwrap();
+    assert!(!crate::attestation::has_zeroed_measurements(&document));
+    for index in 0..=4 {
+        document
+            .pcrs
+            .insert(index, vec![u8::from(index > 2); 48].into());
+    }
+    let mut state = test_support::state();
+    state.set_report_metadata(RuntimeMetadata::collect("ab".repeat(48), &document));
+    let value: Value = serde_json::from_str(&report().serialize(&state, None).unwrap()).unwrap();
+    let attestation = &value["metadata"]["environment"]["tee"]["attestation"];
+    assert_eq!(attestation["measurements_zeroed"], true);
+    assert_eq!(attestation["pcrs"].as_object().unwrap().len(), 3);
+    for index in 0..=2 {
+        assert_eq!(attestation["pcrs"][index.to_string()], "00".repeat(48));
+        let mut invalid = document.clone();
+        invalid.pcrs.remove(&index);
+        assert!(!crate::attestation::has_zeroed_measurements(&invalid));
+        for digest in [vec![], vec![0; 47], vec![0; 49], vec![1; 48]] {
+            invalid.pcrs.insert(index, digest.into());
+            assert!(!crate::attestation::has_zeroed_measurements(&invalid));
+        }
+    }
+}
+
+#[test]
 fn attempt_id_is_stable_across_failure_stages_and_distinct_between_attempts() {
     let mut report = Report::new(SystemTime::now());
     let id = json!(report.signup_id);

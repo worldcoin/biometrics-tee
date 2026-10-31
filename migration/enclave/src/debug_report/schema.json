@@ -60,6 +60,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "measurements_zeroed": {
+                      "description": "True when PCR0, PCR1 and PCR2 are present as 48-byte all-zero image measurements. Other PCRs do not affect this flag; false does not establish verified code identity.",
                       "type": "boolean"
                     },
                     "pcrs": {
