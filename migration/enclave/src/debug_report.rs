@@ -407,9 +407,9 @@ struct PipelineErrors<'a> {
 struct MigrationError<'a> {
     stage: Stage,
     code: Error,
-    component: Option<&'static str>,
-    pipeline_code: Option<&'a str>,
-    pipeline_message: Option<&'a RawValue>,
+    component: Option<String>,
+    pipeline_code: Option<String>,
+    pipeline_message: Option<String>,
     invalid_request_reason: Option<&'a InvalidRequest>,
 }
 

@@ -32,15 +32,15 @@ For a left-eye capture QA rejection, the summary contains:
 }
 ```
 
-The summary reads explicit stage-level errors only in the worker-reported failing
-branch. Iris capture QA, iris processing, PAD, face analysis/template generation
-and pair checks have known diagnostic layouts. Later-stage output after a terminal
-error is ambiguous. Missing, malformed or ambiguous details retain the broad
-component (`face`, `iris.left`, `iris.right`, `iris.pair`) with null pipeline fields.
-Non-biometric failures have null component/pipeline fields. Pair checks expose the
-check name; messages are copied only when the engine supplies them. Full engine
-outputs retain their original structure and precision. Summary details never alter
-the migration outcome and are returned only in the encrypted report.
+The summary selects the worker-reported failing branch and reads its immediate
+stage-level `error` fields. Exactly one non-null error supplies the stage name,
+code and existing message. Stage names come from the JSON keys. Pair-check errors
+sit directly on the pair output; their `check` supplies the code. Missing, malformed
+or multiple errors retain the broad component with null pipeline fields. Messages
+are copied only when supplied. Non-biometric failures have null pipeline details.
+The JSON parsed for extraction is separate from the raw diagnostics saved in the
+report, preserving all original fields and numeric precision. Details do not
+change the migration outcome and are returned only in the encrypted report.
 
 `metadata.environment.tee.attestation.measurements_zeroed` is true when PCR0,
 PCR1 and PCR2 are all present as 48-byte zero digests. These image measurements

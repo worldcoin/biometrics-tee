@@ -245,23 +245,9 @@
               "type": "string"
             },
             "component": {
-              "description": "Worker-reported failing component, refined to its terminal diagnostic stage when available.",
-              "enum": [
-                "face",
-                "face.captured_image_analyzer",
-                "face.challenge_response",
-                "face.template_generator",
-                "iris.left",
-                "iris.left.capture_qa",
-                "iris.left.pipeline",
-                "iris.left.pad",
-                "iris.right",
-                "iris.right.capture_qa",
-                "iris.right.pipeline",
-                "iris.right.pad",
-                "iris.pair",
-                null
-              ],
+              "description": "Worker-reported failing branch, with the stage name when exactly one explicit error is present.",
+              "maxLength": 128,
+              "pattern": "^(face|iris\\.(left|right|pair))(\\.[A-Za-z0-9_]{1,64})?$",
               "type": [
                 "string",
                 "null"

@@ -388,7 +388,7 @@ fn eye_failure_summary_preserves_the_exact_terminal_error_and_diagnostics() {
         ("left", ImageRole::LeftIris),
         ("right", ImageRole::RightIris),
     ] {
-        for stage in ["capture_qa", "pipeline", "pad"] {
+        for stage in ["capture_qa", "pipeline", "pad", "additional_check"] {
             let mut worker = json!({"iris":{eye:{"outputs":{}}}});
             let original_error = if stage == "pad" {
                 json!({"ContactLensDetectedError":{"spoof_score":0.9,"threshold":0.5}})
@@ -461,7 +461,7 @@ fn absent_ambiguous_or_malformed_details_keep_the_known_component_and_outcome() 
         json!({}),
         json!({"iris":{"right":{"outputs":{"capture_qa":qa}}}}),
         json!({"iris":{"left":{"outputs":{"capture_qa":{"error":null,"nested":{"error":"unrelated"}}}}}}),
-        json!({"iris":{"left":{"outputs":{"capture_qa":qa,"pipeline":{"error":null}}}}}),
+        json!({"iris":{"left":{"outputs":{"capture_qa":qa,"pipeline":qa}}}}),
         json!({"iris":{"left":{"outputs":{"capture_qa":{"error":{"error":42}}}}}}),
         json!({"iris":{"left":{"outputs":{"capture_qa":{"error":{"error":{"First":{},"Second":{}}}}}}}}),
         json!({"iris":{"left":{"outputs":{"capture_qa":{"error":{"error":"x".repeat(129)}}}}}}),
@@ -498,6 +498,33 @@ fn success_and_non_pipeline_failures_do_not_promote_engine_diagnostics() {
     assert!(summary["component"].is_null());
     assert!(summary["pipeline_code"].is_null());
     assert!(decode(&report, None)["pipeline_errors"]["migration_error"].is_null());
+}
+
+#[test]
+fn extracting_an_error_keeps_raw_diagnostic_precision() {
+    let mut report = Report::new(SystemTime::now());
+    report.stage = Stage::Biometrics;
+    report
+        .worker_failure(&Failure::new(FailureCode::QualityRejected).at_image(ImageRole::LeftIris));
+    report.worker_report(Some(Zeroizing::new(
+        r#"{"iris":{"left":{"outputs":{
+        "capture_qa":{"error":{"error":"IrisUnsharp","message":"iris texture is unsharp"},
+        "precise":0.1234567890123456789012,"large_integer":9007199254740993}}}}}"#
+            .into(),
+    )));
+    let encoded = report
+        .serialize(
+            &test_support::state(),
+            Some(Error::BiometricQualityRejected),
+        )
+        .unwrap();
+    assert!(encoded.contains("0.1234567890123456789012"));
+    assert!(encoded.contains("9007199254740993"));
+    let value: Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        value["pipeline_errors"]["migration_error"]["pipeline_code"],
+        "IrisUnsharp"
+    );
 }
 
 #[test]
