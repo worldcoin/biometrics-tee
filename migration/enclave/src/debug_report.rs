@@ -37,13 +37,23 @@ impl RuntimeMetadata {
     /// Collection failures are logged without substituting host resources or expected PCRs.
     #[must_use]
     pub fn collect(worker_sha384: String, document: &AttestationDoc) -> Self {
-        std::panic::catch_unwind(|| Self::observe(worker_sha384, document)).unwrap_or_else(|_| {
-            tracing::warn!("debug report metadata collection panicked; omitting optional metadata");
-            Self::default()
-        })
+        Self::collect_observations(worker_sha384, || Self::observe(document))
     }
 
-    fn observe(worker_sha384: String, document: &AttestationDoc) -> Self {
+    fn collect_observations(
+        worker_sha384: String,
+        observe: impl FnOnce() -> Self + std::panic::UnwindSafe,
+    ) -> Self {
+        Self {
+            worker_sha384: Some(worker_sha384),
+            ..std::panic::catch_unwind(observe).unwrap_or_else(|_| {
+                tracing::warn!("debug report metadata collection panicked; omitting observations");
+                Self::default()
+            })
+        }
+    }
+
+    fn observe(document: &AttestationDoc) -> Self {
         let usable_logical_cpus = std::thread::available_parallelism()
             .map(std::num::NonZeroUsize::get)
             .inspect_err(|error| tracing::warn!(%error, "could not observe enclave CPU allocation"))
@@ -64,7 +74,7 @@ impl RuntimeMetadata {
             })
             .collect();
         Self {
-            worker_sha384: Some(worker_sha384),
+            worker_sha384: None,
             hardware: Some(Hardware {
                 architecture: std::env::consts::ARCH,
                 usable_logical_cpus,

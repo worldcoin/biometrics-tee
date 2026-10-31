@@ -37,6 +37,29 @@ fn decode(report: &Report, error: Option<Error>) -> Value {
 }
 
 #[test]
+fn observation_failure_preserves_the_verified_worker_digest() {
+    let mut state = test_support::state();
+    state.set_report_metadata(RuntimeMetadata::collect_observations(
+        "ab".repeat(48),
+        || panic!("injected observation failure"),
+    ));
+    let encoded = report()
+        .serialize(&state, Some(Error::BiometricQualityRejected))
+        .unwrap();
+    let actual: Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        actual["metadata"]["software_version"]["worker_sha384"],
+        "ab".repeat(48)
+    );
+    assert!(actual["metadata"].get("hardware").is_none());
+    assert!(
+        actual["metadata"]["environment"]["tee"]
+            .get("attestation")
+            .is_none()
+    );
+}
+
+#[test]
 fn attempt_id_is_stable_across_failure_stages_and_distinct_between_attempts() {
     let mut report = Report::new(SystemTime::now());
     let id = json!(report.signup_id);
