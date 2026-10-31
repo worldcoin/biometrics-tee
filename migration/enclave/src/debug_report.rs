@@ -6,7 +6,7 @@
 use std::{collections::BTreeMap, io, sync::LazyLock, time::SystemTime};
 
 use di_migration_enclave_primitives::{Error, MAX_MIGRATION_DIAGNOSTIC_BYTES};
-use di_migration_pcp::{SignupId, SourcePcp};
+use di_migration_pcp::{S3Region, SignupId, SourcePcp};
 use di_worker_protocol::migration::{Failure, ImageRole, invalid_request_reason};
 use pontifex::AttestationDoc;
 use serde::{
@@ -122,7 +122,7 @@ pub(crate) enum Stage {
 
 pub(crate) struct Report {
     start_timestamp: Option<f64>,
-    pub signup_id: Option<SignupId>,
+    pub signup_id: SignupId,
     src_signup_id: Option<SignupId>,
     source_pcp_version: Option<&'static str>,
     pub stage: Stage,
@@ -134,7 +134,7 @@ impl Report {
     pub fn new(started: SystemTime) -> Self {
         Self {
             start_timestamp: timestamp(started),
-            signup_id: None,
+            signup_id: SignupId::new(S3Region::UsEast1),
             src_signup_id: None,
             source_pcp_version: None,
             stage: Stage::DecodePayload,
@@ -229,7 +229,7 @@ impl Report {
         };
         let versions = worker.versions();
         let report = Envelope {
-            signup_id: self.signup_id.as_ref(),
+            signup_id: &self.signup_id,
             src_signup_id: self.src_signup_id.as_ref(),
             version: &VERSION,
             metadata: Metadata {
@@ -331,7 +331,7 @@ enum InvalidRequest {
 
 #[derive(Serialize)]
 struct Envelope<'a> {
-    signup_id: Option<&'a SignupId>,
+    signup_id: &'a SignupId,
     src_signup_id: Option<&'a SignupId>,
     version: &'a str,
     metadata: Metadata<'a>,

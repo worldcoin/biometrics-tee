@@ -390,10 +390,7 @@
         "signup_id",
         "data_id"
       ],
-      "type": [
-        "object",
-        "null"
-      ]
+      "type": "object"
     },
     "src_signup_id": {
       "additionalProperties": false,

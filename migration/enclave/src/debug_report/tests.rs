@@ -37,6 +37,43 @@ fn decode(report: &Report, error: Option<Error>) -> Value {
 }
 
 #[test]
+fn attempt_id_is_stable_across_failure_stages_and_distinct_between_attempts() {
+    let mut report = Report::new(SystemTime::now());
+    let id = json!(report.signup_id);
+    assert!(id.is_object());
+    assert_ne!(id, json!(Report::new(SystemTime::now()).signup_id));
+    for (stage, error) in [
+        (Stage::DecodePayload, Error::InvalidInput),
+        (Stage::VerifyCredential, Error::CredentialClaimsMismatch),
+        (Stage::OpenPcp, Error::PcpKeyDecryptionFailed),
+        (Stage::Biometrics, Error::BiometricQualityRejected),
+        (Stage::Biometrics, Error::BiometricSpoofDetected),
+        (
+            Stage::PrepareBiometrics,
+            Error::IncompleteBiometricPipelineResult,
+        ),
+        (
+            Stage::PrepareBiometrics,
+            Error::EmbeddingShareGenerationFailed,
+        ),
+        (Stage::BuildPcp, Error::FailedToBuildPcp),
+        (
+            Stage::GenerateRecipients,
+            Error::PcpRecipientKeyGenerationFailed,
+        ),
+        (Stage::SignManifest, Error::ManifestSignerUnavailable),
+        (Stage::SealPcp, Error::PcpResponseSealingFailed),
+    ] {
+        report.stage = stage;
+        let value = decode(&report, Some(error));
+        assert_eq!(value["signup_id"], id);
+        assert!(value["src_signup_id"].is_null());
+    }
+    let schema: Value = serde_json::from_str(SCHEMA).unwrap();
+    assert_eq!(schema["properties"]["signup_id"]["type"], "object");
+}
+
+#[test]
 fn envelope_records_runtime_metadata_and_migration_provenance() {
     let mut state = test_support::state();
     state.set_report_metadata(RuntimeMetadata {
@@ -52,7 +89,7 @@ fn envelope_records_runtime_metadata_and_migration_provenance() {
         }),
     });
     let mut report = report();
-    report.signup_id = Some("00000000000000000000000100000000".parse().unwrap());
+    report.signup_id = "00000000000000000000000100000000".parse().unwrap();
     report.src_signup_id = Some("00000000000000000000000000000000".parse().unwrap());
     report.source_pcp_version = Some("2.7");
     let encoded = report.serialize(&state, None).unwrap();
@@ -248,6 +285,8 @@ fn an_explicit_worker_engine_version_is_available_before_eye_processing() {
 #[test]
 fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
     let mut report = report();
+    report.src_signup_id = Some("00000000000000000000000000000000".parse().unwrap());
+    report.source_pcp_version = Some("2.1");
     report.stage = Stage::Biometrics;
     let failure = Failure::invalid(invalid_request_reason::Reason::ImageTooLarge(
         ByteLimitExceeded { limit_bytes: 1024 },
@@ -273,6 +312,10 @@ fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
     );
     let quality = decode(&report, Some(Error::BiometricQualityRejected));
     assert_eq!(quality["metadata"]["signup_status"], "Failure");
+    assert!(quality["signup_id"].is_object());
+    assert_eq!(quality["signup_id"], json!(report.signup_id));
+    assert_eq!(quality["src_signup_id"], json!(report.src_signup_id));
+    assert_eq!(quality["metadata"]["source_pcp_version"], "2.1");
 }
 
 #[test]
