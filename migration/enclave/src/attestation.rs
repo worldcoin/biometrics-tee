@@ -151,14 +151,16 @@ pub async fn connect() -> anyhow::Result<&'static SecureModule> {
     Ok(SecureModule::try_init_global().await?)
 }
 
-/// Whether every PCR is zeroed, as in a `--debug-mode` enclave whose measurements prove nothing.
+/// Whether PCR0/1/2 are complete, zeroed SHA-384 image measurements, as in debug mode.
+/// Parent-instance PCRs can remain nonzero in debug mode. A false result does not validate identity.
 #[must_use]
 pub fn has_zeroed_measurements(document: &AttestationDoc) -> bool {
-    !document.pcrs.is_empty()
-        && document
+    (0..=2).all(|index| {
+        document
             .pcrs
-            .values()
-            .all(|pcr| pcr.iter().all(|&byte| byte == 0))
+            .get(&index)
+            .is_some_and(|pcr| pcr.len() == 48 && pcr.iter().all(|&byte| byte == 0))
+    })
 }
 
 /// Logs the measurements apps pin this enclave against, once at boot, so the running image is
@@ -167,7 +169,7 @@ pub fn log_boot_measurements(document: &AttestationDoc) {
     if has_zeroed_measurements(document) {
         tracing::warn!(
             module_id = %document.module_id,
-            "enclave runs in debug mode: measurements are zeroed and attestations are unverifiable"
+            "enclave image measurements are zeroed; code identity cannot be pinned"
         );
         return;
     }

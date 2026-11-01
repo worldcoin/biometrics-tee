@@ -6,7 +6,7 @@
 use std::{collections::BTreeMap, io, sync::LazyLock, time::SystemTime};
 
 use di_migration_enclave_primitives::{Error, MAX_MIGRATION_DIAGNOSTIC_BYTES};
-use di_migration_pcp::{SignupId, SourcePcp};
+use di_migration_pcp::{S3Region, SignupId, SourcePcp};
 use di_worker_protocol::migration::{Failure, ImageRole, invalid_request_reason};
 use pontifex::AttestationDoc;
 use serde::{
@@ -37,13 +37,23 @@ impl RuntimeMetadata {
     /// Collection failures are logged without substituting host resources or expected PCRs.
     #[must_use]
     pub fn collect(worker_sha384: String, document: &AttestationDoc) -> Self {
-        std::panic::catch_unwind(|| Self::observe(worker_sha384, document)).unwrap_or_else(|_| {
-            tracing::warn!("debug report metadata collection panicked; omitting optional metadata");
-            Self::default()
-        })
+        Self::collect_observations(worker_sha384, || Self::observe(document))
     }
 
-    fn observe(worker_sha384: String, document: &AttestationDoc) -> Self {
+    fn collect_observations(
+        worker_sha384: String,
+        observe: impl FnOnce() -> Self + std::panic::UnwindSafe,
+    ) -> Self {
+        Self {
+            worker_sha384: Some(worker_sha384),
+            ..std::panic::catch_unwind(observe).unwrap_or_else(|_| {
+                tracing::warn!("debug report metadata collection panicked; omitting observations");
+                Self::default()
+            })
+        }
+    }
+
+    fn observe(document: &AttestationDoc) -> Self {
         let usable_logical_cpus = std::thread::available_parallelism()
             .map(std::num::NonZeroUsize::get)
             .inspect_err(|error| tracing::warn!(%error, "could not observe enclave CPU allocation"))
@@ -64,7 +74,7 @@ impl RuntimeMetadata {
             })
             .collect();
         Self {
-            worker_sha384: Some(worker_sha384),
+            worker_sha384: None,
             hardware: Some(Hardware {
                 architecture: std::env::consts::ARCH,
                 usable_logical_cpus,
@@ -122,7 +132,7 @@ pub(crate) enum Stage {
 
 pub(crate) struct Report {
     start_timestamp: Option<f64>,
-    pub signup_id: Option<SignupId>,
+    pub signup_id: SignupId,
     src_signup_id: Option<SignupId>,
     source_pcp_version: Option<&'static str>,
     pub stage: Stage,
@@ -134,7 +144,7 @@ impl Report {
     pub fn new(started: SystemTime) -> Self {
         Self {
             start_timestamp: timestamp(started),
-            signup_id: None,
+            signup_id: SignupId::new(S3Region::UsEast1),
             src_signup_id: None,
             source_pcp_version: None,
             stage: Stage::DecodePayload,
@@ -229,7 +239,7 @@ impl Report {
         };
         let versions = worker.versions();
         let report = Envelope {
-            signup_id: self.signup_id.as_ref(),
+            signup_id: &self.signup_id,
             src_signup_id: self.src_signup_id.as_ref(),
             version: &VERSION,
             metadata: Metadata {
@@ -261,7 +271,7 @@ impl Report {
                 migration_error: error.map(|code| MigrationError {
                     stage: self.stage,
                     code,
-                    image: self
+                    component: self
                         .worker_failure
                         .as_ref()
                         .and_then(|failure| failure.image),
@@ -331,7 +341,7 @@ enum InvalidRequest {
 
 #[derive(Serialize)]
 struct Envelope<'a> {
-    signup_id: Option<&'a SignupId>,
+    signup_id: &'a SignupId,
     src_signup_id: Option<&'a SignupId>,
     version: &'a str,
     metadata: Metadata<'a>,
@@ -390,7 +400,7 @@ struct PipelineErrors<'a> {
 struct MigrationError<'a> {
     stage: Stage,
     code: Error,
-    image: Option<&'static str>,
+    component: Option<&'static str>,
     invalid_request_reason: Option<&'a InvalidRequest>,
 }
 

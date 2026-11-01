@@ -60,6 +60,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "measurements_zeroed": {
+                      "description": "True when PCR0, PCR1 and PCR2 are present as 48-byte all-zero image measurements. Other PCRs do not affect this flag; false does not establish verified code identity.",
                       "type": "boolean"
                     },
                     "pcrs": {
@@ -243,7 +244,7 @@
               ],
               "type": "string"
             },
-            "image": {
+            "component": {
               "enum": [
                 "Face",
                 "LeftIris",
@@ -316,7 +317,7 @@
           "required": [
             "stage",
             "code",
-            "image",
+            "component",
             "invalid_request_reason"
           ],
           "type": [
@@ -390,10 +391,7 @@
         "signup_id",
         "data_id"
       ],
-      "type": [
-        "object",
-        "null"
-      ]
+      "type": "object"
     },
     "src_signup_id": {
       "additionalProperties": false,
