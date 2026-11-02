@@ -20,15 +20,15 @@
   any other key cannot be opened. Keep real values in deployment configuration.
 - The host's AWS region (`AWS_REGION` or the SDK chain) must match the ARN's region.
 - `migration.pb` records the bare manifest-signing KMS key ID as `signing_key_id`,
-  alongside the TEE version and migration timestamp. Key ARNs provide the ID directly;
-  alias ARNs are resolved once at startup using `kms:DescribeKey`. Signing uses the resolved
+  alongside the TEE version and migration timestamp. Key and alias ARNs are resolved
+  once at startup using `kms:DescribeKey`. Signing uses the resolved
   key ARN for the life of that boot, so moving an alias requires an enclave restart.
   Consumers should pass this ID as `tee_key_id` when requesting the public key from authentication-service.
   Previously generated packages may contain an ARN in this field.
 - The host's credential provider must return temporary credentials. Its IAM policy and the
   key owner's key policy must allow `kms:Encrypt` and `kms:Decrypt` on the wrapping key and
-  `kms:Sign` with `RSASSA_PSS_SHA_256` on the RSA signing key, plus `kms:DescribeKey` when
-  configuring signing through an alias ARN. Source key envelopes are unwrapped with
+  `kms:Sign` with `RSASSA_PSS_SHA_256` and `kms:DescribeKey` on the RSA signing key,
+  whether configured with a key ARN or an alias ARN. Source key envelopes are unwrapped with
   the same configured wrapping-key ARN used when those envelopes were created.
 - The host listens on vsock ports 7000 (KMS proxy) and 7001 (credentials); both must be free.
 

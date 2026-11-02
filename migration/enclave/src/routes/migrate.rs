@@ -148,16 +148,15 @@ fn build_and_seal_pcp(
 ) -> Result<Vec<u8>, enclave_primitives::Error> {
     report.stage = Stage::BuildPcp;
     let prepared_biometrics = owned_biometrics.as_prepared();
-    report.stage = Stage::SignManifest;
-    let manifest_signer = state.manifest_signer().ok_or_else(|| {
-        tracing::error!("PCP manifest signing is not configured");
-        enclave_primitives::Error::ManifestSignerUnavailable
-    })?;
-    report.stage = Stage::BuildPcp;
     let migrated_ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| enclave_primitives::Error::InvalidSystemTime)?
         .as_secs();
+
+    let manifest_signer = state.manifest_signer().ok_or_else(|| {
+        tracing::error!("PCP manifest signing is not configured");
+        enclave_primitives::Error::ManifestSignerUnavailable
+    })?;
     let context = MigrationContext {
         tee_software_version: TEE_SOFTWARE_VERSION.to_owned(),
         signing_key_id: manifest_signer.key_id().to_owned(),

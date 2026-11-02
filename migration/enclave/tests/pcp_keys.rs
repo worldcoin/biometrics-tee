@@ -114,13 +114,28 @@ fn mock_kms() -> (KeyWrapper, Arc<sealedbox::Keypair>) {
 }
 
 #[tokio::test]
-async fn manifest_key_arns_record_only_the_key_id_without_a_lookup() {
+async fn manifest_key_arns_resolve_once_and_record_the_key_id() {
     for key_id in ["00000000-0000-0000-0000-000000000001", "mrk-synthetic"] {
         let arn = format!("arn:aws:kms:us-east-1:000000000000:key/{key_id}");
-        let signer = ManifestSigner::new(&Client::from_conf(config().build()), arn)
-            .await
-            .unwrap();
+        let expected_arn = arn.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let http = infallible_client_fn(move |request| {
+            count.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                request.headers()["x-amz-target"],
+                "TrentService.DescribeKey"
+            );
+            let body: Value = serde_json::from_slice(request.body().bytes().unwrap()).unwrap();
+            assert_eq!(body["KeyId"], expected_arn);
+            response(json!({"KeyMetadata": {"KeyId": key_id, "Arn": expected_arn}}))
+        });
+        let signer =
+            ManifestSigner::new(&Client::from_conf(config().http_client(http).build()), arn)
+                .await
+                .unwrap();
         assert_eq!(signer.key_id(), key_id);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
 

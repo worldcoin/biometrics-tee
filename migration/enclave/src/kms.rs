@@ -275,36 +275,30 @@ impl ManifestSigner {
     }
 
     /// Pins the signer to a key ARN and records its bare key ID for migration metadata.
-    /// Alias ARNs are resolved once with `DescribeKey`; moving an alias then requires a restart.
+    /// Key and alias ARNs are resolved once with `DescribeKey`; moving an alias requires a restart.
     ///
     /// # Errors
     ///
     /// Rejects invalid ARNs, KMS lookup failures and inconsistent key metadata.
     pub async fn new(client: &Client, key_arn: String) -> Result<Self, SigningError> {
         validate_key_arn(client, &key_arn).map_err(|_| SigningError::InvalidConfiguration)?;
-        let (key_arn, key_id) = if let Some(key_id) = key_id_from_arn(&key_arn) {
-            let key_id = key_id.to_owned();
-            (key_arn, key_id)
-        } else {
-            let output = tokio::time::timeout(
-                KEY_OPERATION_TIMEOUT,
-                client.describe_key().key_id(&key_arn).send(),
-            )
-            .await
-            .map_err(|_| SigningError::Timeout)?
-            .map_err(|error| signing_failure(&error))?;
-            let metadata = output.key_metadata.ok_or(SigningError::InvalidResponse)?;
-            let resolved_arn = metadata.arn.ok_or(SigningError::InvalidResponse)?;
-            validate_key_arn(client, &resolved_arn).map_err(|_| SigningError::InvalidResponse)?;
-            if key_id_from_arn(&resolved_arn) != Some(metadata.key_id.as_str()) {
-                return Err(SigningError::InvalidResponse);
-            }
-            (resolved_arn, metadata.key_id)
-        };
+        let output = tokio::time::timeout(
+            KEY_OPERATION_TIMEOUT,
+            client.describe_key().key_id(&key_arn).send(),
+        )
+        .await
+        .map_err(|_| SigningError::Timeout)?
+        .map_err(|error| signing_failure(&error))?;
+        let metadata = output.key_metadata.ok_or(SigningError::InvalidResponse)?;
+        let key_arn = metadata.arn.ok_or(SigningError::InvalidResponse)?;
+        validate_key_arn(client, &key_arn).map_err(|_| SigningError::InvalidResponse)?;
+        if key_id_from_arn(&key_arn) != Some(metadata.key_id.as_str()) {
+            return Err(SigningError::InvalidResponse);
+        }
         Ok(Self {
             client: client.clone(),
             key_arn,
-            key_id,
+            key_id: metadata.key_id,
         })
     }
 
