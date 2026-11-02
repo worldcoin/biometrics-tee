@@ -324,10 +324,18 @@
             "object",
             "null"
           ]
+        },
+        "worker_failure": {
+          "description": "Complete worker failure summary, including detailed reason codes and extensions. Null when the worker omits it, returns null or supplies a non-object value.",
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "required": [
-        "migration_error"
+        "migration_error",
+        "worker_failure"
       ],
       "type": "object"
     },
