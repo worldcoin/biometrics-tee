@@ -19,6 +19,10 @@ SHA-256 of its exact bytes supplies the top-level `version`.
   `invalid_request_reason`. The component is `Face`, `LeftIris`, `RightIris`,
   `IrisPair`, or null when unavailable. Detailed engine errors remain in `face`
   and `iris`.
+- `pipeline_errors.worker_failure` preserves the worker's complete failure
+  summary, including detailed quality, spoof and internal reason codes. It is
+  null when the worker omits it, returns null or supplies a non-object value.
+  Engine execution-error messages remain in the complete `iris` diagnostics.
 
 `metadata.environment.tee.attestation.measurements_zeroed` is true when PCR0,
 PCR1 and PCR2 are all present as 48-byte zero digests. These image measurements

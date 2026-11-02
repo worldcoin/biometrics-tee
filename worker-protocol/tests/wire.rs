@@ -37,6 +37,27 @@ fn migration_failures_use_outcome_3_and_kind_3() {
 }
 
 #[test]
+fn additive_migration_failure_details_preserve_known_outcomes_and_reports() {
+    for (code, value, detail_tag) in [
+        (migration::FailureCode::QualityRejected, 3, 0x28),
+        (migration::FailureCode::SpoofDetected, 4, 0x30),
+        (migration::FailureCode::Internal, 5, 0x38),
+    ] {
+        // Migration failure fields 5/6/7 carry optional detailed reasons.
+        let bytes = [
+            0x08, 1, 0x10, 1, 0x1a, 12, 0x1a, 10, 0x08, value, 0x10, 2, 0x22, 2, b'{', b'}',
+            detail_tag, 1,
+        ];
+        let mut expected = migration::Failure::new(code).at_image(migration::ImageRole::LeftIris);
+        expected.debug_report = Some("{}".to_owned());
+        assert_eq!(
+            protobuf::decode_response(&bytes).unwrap(),
+            Response::new(1, Outcome::Failure(expected.into()))
+        );
+    }
+}
+
+#[test]
 fn protocol_failures_use_kind_1() {
     let failure = Failure::from(Reason::InvalidOperation(EmptyReason {}));
     let response = Response::new(1, Outcome::Failure(failure));
