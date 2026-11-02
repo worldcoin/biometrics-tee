@@ -56,8 +56,8 @@ pub enum SigningError {
     /// KMS or its transport failed without a more specific classification.
     #[error("KMS PCP manifest signing failed")]
     RequestFailed,
-    /// KMS returned no usable signature.
-    #[error("KMS returned an invalid PCP manifest signature")]
+    /// KMS returned invalid signing-key metadata or no usable signature.
+    #[error("KMS returned invalid PCP manifest signing data")]
     InvalidResponse,
 }
 
@@ -247,6 +247,7 @@ impl di_migration_pcp::BackendKeyDecryptor for KeyWrapper {
 pub struct ManifestSigner {
     client: Client,
     key_arn: String,
+    key_id: String,
 }
 
 impl ManifestSigner {
@@ -256,9 +257,9 @@ impl ManifestSigner {
     ///
     /// # Errors
     ///
-    /// Returns [`SigningError::InvalidConfiguration`] when `key_arn` is not a complete KMS ARN
-    /// for a supported AWS region.
-    pub fn from_parent(key_arn: String) -> Result<Self, SigningError> {
+    /// Returns [`SigningError::InvalidConfiguration`] for an invalid ARN or region, or a
+    /// KMS error when an alias cannot be resolved within the startup deadline.
+    pub async fn from_parent(key_arn: String) -> Result<Self, SigningError> {
         let region = arn_region(&key_arn).ok_or(SigningError::InvalidConfiguration)?;
         parent::hostname(&region).ok_or(SigningError::InvalidConfiguration)?;
         let sdk_config = aws_types::SdkConfig::builder()
@@ -270,8 +271,47 @@ impl ManifestSigner {
             ParentCredentials::new(CREDENTIALS_PORT),
             TLS_PORT,
         );
-        validate_key_arn(&client, &key_arn).map_err(|_| SigningError::InvalidConfiguration)?;
-        Ok(Self { client, key_arn })
+        Self::new(&client, key_arn).await
+    }
+
+    /// Pins the signer to a key ARN and records its bare key ID for migration metadata.
+    /// Alias ARNs are resolved once with `DescribeKey`; moving an alias then requires a restart.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid ARNs, KMS lookup failures and inconsistent key metadata.
+    pub async fn new(client: &Client, key_arn: String) -> Result<Self, SigningError> {
+        validate_key_arn(client, &key_arn).map_err(|_| SigningError::InvalidConfiguration)?;
+        let (key_arn, key_id) = if let Some(key_id) = key_id_from_arn(&key_arn) {
+            let key_id = key_id.to_owned();
+            (key_arn, key_id)
+        } else {
+            let output = tokio::time::timeout(
+                KEY_OPERATION_TIMEOUT,
+                client.describe_key().key_id(&key_arn).send(),
+            )
+            .await
+            .map_err(|_| SigningError::Timeout)?
+            .map_err(|error| signing_failure(&error))?;
+            let metadata = output.key_metadata.ok_or(SigningError::InvalidResponse)?;
+            let resolved_arn = metadata.arn.ok_or(SigningError::InvalidResponse)?;
+            validate_key_arn(client, &resolved_arn).map_err(|_| SigningError::InvalidResponse)?;
+            if key_id_from_arn(&resolved_arn) != Some(metadata.key_id.as_str()) {
+                return Err(SigningError::InvalidResponse);
+            }
+            (resolved_arn, metadata.key_id)
+        };
+        Ok(Self {
+            client: client.clone(),
+            key_arn,
+            key_id,
+        })
+    }
+
+    /// The bare KMS key ID used to sign PCP manifests, without the ARN prefix.
+    #[must_use]
+    pub fn key_id(&self) -> &str {
+        &self.key_id
     }
 
     /// Signs one SHA-256 digest with RSA-PSS, matching the provisioned RSA signing key.
@@ -299,6 +339,14 @@ impl ManifestSigner {
         }
         Ok(signature.into_inner())
     }
+}
+
+fn key_id_from_arn(key_arn: &str) -> Option<&str> {
+    key_arn
+        .splitn(6, ':')
+        .nth(5)?
+        .strip_prefix("key/")
+        .filter(|id| !id.is_empty() && !id.contains('/'))
 }
 
 fn arn_region(key_arn: &str) -> Option<String> {
@@ -337,9 +385,10 @@ fn validate_key_arn(client: &Client, key_arn: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn signing_failure(
-    error: &aws_sdk_kms::error::SdkError<aws_sdk_kms::operation::sign::SignError>,
-) -> SigningError {
+fn signing_failure<E>(error: &SdkError<E>) -> SigningError
+where
+    E: ProvideErrorMetadata,
+{
     match error {
         SdkError::TimeoutError(_) => SigningError::Timeout,
         SdkError::DispatchFailure(error) if error.is_timeout() => SigningError::Timeout,

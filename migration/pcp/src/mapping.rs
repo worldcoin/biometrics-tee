@@ -9,6 +9,8 @@ use crate::{Error, SourcePcp};
 pub struct MigrationContext {
     /// Release version of the TEE software, recorded in `migration.pb`.
     pub tee_software_version: String,
+    /// Bare KMS key ID, without an ARN prefix, used to sign the migrated PCP manifest.
+    pub signing_key_id: String,
     /// Unix seconds; also the archive header time, so it must fit in 32 bits.
     pub migrated_ts: u64,
     /// The new package's signup ID. The build and the final check use this value.
@@ -18,9 +20,15 @@ pub struct MigrationContext {
 impl MigrationContext {
     /// Context for one run, with a new random signup ID for `s3_region`, the
     /// region of this deployment.
-    pub fn new(tee_software_version: String, migrated_ts: u64, s3_region: S3Region) -> Self {
+    pub fn new(
+        tee_software_version: String,
+        signing_key_id: String,
+        migrated_ts: u64,
+        s3_region: S3Region,
+    ) -> Self {
         Self {
             tee_software_version,
+            signing_key_id,
             migrated_ts,
             signup_id: SignupId::new(s3_region),
         }
