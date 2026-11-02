@@ -242,6 +242,137 @@ fn diagnostics_survive_success_and_failures_after_inference() {
 }
 
 #[test]
+fn worker_failure_summaries_and_execution_errors_remain_complete() {
+    let execution_error = "synthetic pipeline execution error";
+    for (code, kind, reason, error) in [
+        (
+            "FAILURE_CODE_QUALITY_REJECTED",
+            "quality",
+            "QUALITY_REASON_IMAGE_UNSHARP",
+            Error::BiometricQualityRejected,
+        ),
+        (
+            "FAILURE_CODE_SPOOF_DETECTED",
+            "spoof",
+            "SPOOF_REASON_SAME_EYE_DETECTED",
+            Error::BiometricSpoofDetected,
+        ),
+        (
+            "FAILURE_CODE_INTERNAL",
+            "internal",
+            "INTERNAL_REASON_PIPELINE_EXECUTION_FAILED",
+            Error::BiometricPipelineFailed,
+        ),
+        (
+            "FAILURE_CODE_INTERNAL",
+            "internal",
+            "999",
+            Error::BiometricPipelineFailed,
+        ),
+    ] {
+        let summary = json!({
+            "code": code,
+            "image": "IMAGE_ROLE_LEFT_IRIS",
+            "detail": {"kind": kind, "reason": reason},
+            "future": {"value": 1}
+        });
+        let summary =
+            summary
+                .to_string()
+                .replacen(r#""value":1"#, r#""value":0.1234567890123456789012"#, 1);
+        let source = WORKER_REPORT
+            .replacen(
+                r#""worker_version":"test-worker","#,
+                &format!(r#""worker_version":"test-worker","failure":{summary},"#),
+                1,
+            )
+            .replacen(
+                r#""side":"Left","outputs":"#,
+                &format!(r#""side":"Left","execution_error_msg":"{execution_error}","outputs":"#),
+                1,
+            );
+        let expected: Value = serde_json::from_str(&source).unwrap();
+        let mut report = report();
+        report.stage = Stage::Biometrics;
+        report.worker_report(Some(Zeroizing::new(source)));
+        let encoded = report
+            .serialize(&test_support::state(), Some(error))
+            .unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            value["pipeline_errors"]["worker_failure"],
+            expected["failure"]
+        );
+        assert!(encoded.contains(r#""future":{"value":0.1234567890123456789012}"#));
+        assert_eq!(value["iris"], expected["iris"]);
+        assert_eq!(
+            value["iris"]["left"]["execution_error_msg"],
+            execution_error
+        );
+        assert_eq!(value["face"]["outputs"], expected["face"]["outputs"]);
+        assert_eq!(
+            value["pipeline_errors"]["migration_error"]["code"],
+            json!(error)
+        );
+        assert!(encoded.contains("0.1234567890123456789012"));
+    }
+}
+
+#[test]
+fn older_and_successful_workers_have_no_failure_summary() {
+    for source in [
+        WORKER_REPORT.to_owned(),
+        WORKER_REPORT.replacen(
+            r#""worker_version":"test-worker","#,
+            r#""worker_version":"test-worker","failure":null,"#,
+            1,
+        ),
+    ] {
+        let mut report = report();
+        report.worker_report(Some(Zeroizing::new(source)));
+        let value = decode(&report, None);
+        assert!(value["pipeline_errors"]["worker_failure"].is_null());
+        assert!(value["pipeline_errors"]["migration_error"].is_null());
+        assert!(value["face"].is_object());
+        assert!(value["iris"].is_object());
+    }
+    let schema: Value = serde_json::from_str(SCHEMA).unwrap();
+    let errors = &schema["properties"]["pipeline_errors"];
+    assert_eq!(
+        errors["properties"]["worker_failure"]["type"],
+        json!(["object", "null"])
+    );
+    assert!(
+        errors["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("worker_failure"))
+    );
+}
+
+#[test]
+fn malformed_worker_failure_summary_keeps_other_diagnostics() {
+    let expected: Value = serde_json::from_str(WORKER_REPORT).unwrap();
+    for summary in ["[]", "true", "7", r#""invalid""#] {
+        let source = WORKER_REPORT.replacen(
+            r#""worker_version":"test-worker","#,
+            &format!(r#""worker_version":"test-worker","failure":{summary},"#),
+            1,
+        );
+        let mut report = report();
+        report.worker_report(Some(Zeroizing::new(source)));
+        let value = decode(&report, Some(Error::BiometricPipelineFailed));
+        assert!(value["pipeline_errors"]["worker_failure"].is_null());
+        assert_eq!(value["iris"], expected["iris"]);
+        assert_eq!(value["face"]["outputs"], expected["face"]["outputs"]);
+        assert_eq!(
+            value["pipeline_errors"]["migration_error"]["code"],
+            "BiometricPipelineFailed"
+        );
+    }
+}
+
+#[test]
 fn extra_face_wrapper_fields_preserve_all_diagnostics_and_numeric_precision() {
     let source = WORKER_REPORT.replacen(
         r#""face":{"#,

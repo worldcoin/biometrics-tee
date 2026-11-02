@@ -1,7 +1,7 @@
 //! Enclave-owned migration diagnostics.
 //!
-//! Worker JSON is borrowed from zeroizing storage and
-//! remains opaque below its face/iris wrappers; diagnostics are only returned after encryption.
+//! Worker diagnostics and failure summaries are borrowed from zeroizing storage
+//! and remain opaque below their wrappers; diagnostics are only returned after encryption.
 
 use std::{collections::BTreeMap, io, sync::LazyLock, time::SystemTime};
 
@@ -268,6 +268,13 @@ impl Report {
             face: worker.face.as_ref(),
             iris: worker.iris,
             pipeline_errors: PipelineErrors {
+                worker_failure: worker.failure.filter(|failure| {
+                    let valid = failure.get().starts_with('{');
+                    if !valid {
+                        tracing::warn!("worker failure summary is not an object");
+                    }
+                    valid
+                }),
                 migration_error: error.map(|code| MigrationError {
                     stage: self.stage,
                     code,
@@ -394,6 +401,7 @@ struct Tee<'a> {
 #[derive(Serialize)]
 struct PipelineErrors<'a> {
     migration_error: Option<MigrationError<'a>>,
+    worker_failure: Option<&'a RawValue>,
 }
 
 #[derive(Serialize)]
@@ -410,6 +418,8 @@ struct WorkerReport<'a> {
     worker_version: Option<&'a str>,
     #[serde(borrow)]
     iris_engine_version: Option<&'a str>,
+    #[serde(borrow)]
+    failure: Option<&'a RawValue>,
     #[serde(borrow)]
     face: Option<FaceReport<'a>>,
     #[serde(borrow, deserialize_with = "object_or_null", default)]
