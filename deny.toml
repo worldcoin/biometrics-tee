@@ -14,6 +14,7 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip SUID/SGID extraction is unreachable with libsodium-sys-stable/use-pkg-config" },
     { id = "RUSTSEC-2026-0368", reason = "zip symlink extraction is unreachable with libsodium-sys-stable/use-pkg-config" },
     { id = "RUSTSEC-2026-0369", reason = "zip permission changes through symlinks are unreachable with libsodium-sys-stable/use-pkg-config" },
+    { id = "RUSTSEC-2026-0429", reason = "zip symlink-target allocation during extraction is unreachable with libsodium-sys-stable/use-pkg-config" },
     # The PCP builder pins the legacy Hyrax implementation for commitment compatibility.
     # These transitive crates have maintenance notices, with no compatible upgrade.
     # Keep vulnerability advisories enforced; remove these exceptions when Hyrax updates.
