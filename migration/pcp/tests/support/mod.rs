@@ -309,6 +309,20 @@ pub fn pipeline() -> PreparedBiometrics<'static> {
                 }),
             }
         }),
+        orbit5_embedding_shares: [1u32, 2, 3, 4, 5].map(|recipient| {
+            let base = 100 * recipient;
+            v1::Orbit5IrisEmbeddingShares {
+                share_v1: Some(v1::Orbit5IrisEmbeddingShareV1 {
+                    model_version: model(),
+                    shares_version: "test-orbit5-shares".into(),
+                    embedding_version: encoding(),
+                    left_share: vec![base + 1, base + 2],
+                    left_mirror_share: vec![base + 3, base + 4],
+                    right_share: vec![base + 5, base + 6],
+                    right_mirror_share: vec![base + 7, base + 8],
+                }),
+            }
+        }),
         left_normalized: normalized(),
         right_normalized: normalized(),
         extra_normalized: Default::default(),

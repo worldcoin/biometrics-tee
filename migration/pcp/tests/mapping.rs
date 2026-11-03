@@ -51,6 +51,7 @@ fn frame(fill: u8) -> orb_pcp::NormalizedIrisFrame<'static> {
     }
 }
 
+// Migrate every supported version while preserving captures and recording migration metadata.
 #[test]
 fn all_supported_versions_preserve_capture_and_fill_absence() {
     for version in VERSIONS {
@@ -80,6 +81,7 @@ fn all_supported_versions_preserve_capture_and_fill_absence() {
                 source_pcp_version: Some(version.into()),
                 migrated_ts: Some(1800000000),
                 biometric_pipeline_version: Some("pipeline-1".into()),
+                signing_key_id: None,
             }
         );
     }
@@ -453,6 +455,95 @@ fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
     }
 }
 
+// Validate all five bundles' metadata, vector lengths and u16 bounds before building.
+#[test]
+fn every_orbit5_bundle_is_required_and_validated_before_building() {
+    type Edit = fn(&mut v1::Orbit5IrisEmbeddingShareV1);
+    let cases: [(Edit, &str); 12] = [
+        (
+            |share| share.model_version = "other".into(),
+            "orbit5_embedding_shares",
+        ),
+        (
+            |share| share.embedding_version = "other".into(),
+            "orbit5_embedding_shares",
+        ),
+        (
+            |share| share.shares_version = "other".into(),
+            "orbit5_embedding_shares",
+        ),
+        (
+            |share| share.shares_version.clear(),
+            "orbit5_shares_version",
+        ),
+        (|share| share.left_share.clear(), "orbit5_embedding_shares"),
+        (
+            |share| share.left_mirror_share.truncate(1),
+            "orbit5_embedding_shares",
+        ),
+        (|share| share.right_share.push(0), "orbit5_embedding_shares"),
+        (
+            |share| share.right_mirror_share.truncate(1),
+            "orbit5_embedding_shares",
+        ),
+        (
+            |share| share.left_share[1] = 65536,
+            "orbit5_embedding_shares",
+        ),
+        (
+            |share| share.left_mirror_share[1] = 65536,
+            "orbit5_embedding_shares",
+        ),
+        (
+            |share| share.right_share[1] = 65536,
+            "orbit5_embedding_shares",
+        ),
+        (
+            |share| share.right_mirror_share[1] = 65536,
+            "orbit5_embedding_shares",
+        ),
+    ];
+    let source = SourcePcp::parse(source_files("2.8")).unwrap();
+    let ctx = context();
+    let mut valid = pipeline();
+    // Each family has its own sharing version; the full u16 range is valid.
+    for bundle in &mut valid.orbit5_embedding_shares {
+        let share = bundle.share_v1.as_mut().unwrap();
+        for vector in [
+            &mut share.left_share,
+            &mut share.left_mirror_share,
+            &mut share.right_share,
+            &mut share.right_mirror_share,
+        ] {
+            vector[1] = u32::from(u16::MAX);
+        }
+    }
+    check_request(&source, &valid, &ctx).unwrap();
+    for recipient in 0..5 {
+        let mut bio = pipeline();
+        bio.orbit5_embedding_shares[recipient].share_v1 = None;
+        assert_eq!(
+            check_request(&source, &bio, &ctx),
+            Err(Error::InvalidField("orbit5_embedding_shares"))
+        );
+        for (edit, field) in cases {
+            let mut bio = pipeline();
+            edit(
+                bio.orbit5_embedding_shares[recipient]
+                    .share_v1
+                    .as_mut()
+                    .unwrap(),
+            );
+            assert_eq!(
+                check_request(&source, &bio, &ctx),
+                Err(Error::InvalidField(field)),
+                "recipient {recipient}: {field}"
+            );
+        }
+    }
+}
+
+// Forward multiframe images and both share families to the builder in recipient order.
 #[test]
 fn builder_bridge_retains_multiframe_images_and_recipient_order() {
     let mut files = source_files("2.8");
@@ -474,6 +565,7 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
                 iris_code_shares,
                 di_embeddings,
                 di_embedding_shares,
+                orbit5_embedding_shares,
                 face_embeddings,
                 ..
             } = &request.biometrics
@@ -491,6 +583,10 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
                 Some("old-share-2")
             );
             assert_eq!(di_embeddings.unwrap(), &bio.di_embeddings);
+            assert_eq!(
+                orbit5_embedding_shares.unwrap(),
+                &bio.orbit5_embedding_shares
+            );
             assert_eq!(
                 di_embedding_shares.map(Option::unwrap),
                 bio.di_embedding_shares.each_ref(),
@@ -614,6 +710,7 @@ fn face_outputs_retain_individual_model_versions_and_backends() {
     assert_eq!(faces[1]["embedding_inference_backend"], "another-runtime");
 }
 
+// An Orb-style PCP produced by the shared builder can be reopened as a migration source.
 #[test]
 fn builder_generated_orb_captures_open_as_sources() {
     // The reader's logical paths must match the shared builder's output.
@@ -630,6 +727,7 @@ fn builder_generated_orb_captures_open_as_sources() {
             iris_code_shares,
             di_embeddings,
             di_embedding_shares,
+            orbit5_embedding_shares,
         } = request.biometrics
         else {
             panic!("must include")
@@ -651,6 +749,7 @@ fn builder_generated_orb_captures_open_as_sources() {
                     iris_code_shares,
                     di_embeddings,
                     di_embedding_shares,
+                    orbit5_embedding_shares,
                 },
                 migration: None,
             },

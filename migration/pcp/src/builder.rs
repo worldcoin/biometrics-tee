@@ -117,6 +117,7 @@ pub fn with_build_request<T>(
                 iris_code_shares: source.iris_code_shares.each_ref().map(Option::as_ref),
                 di_embeddings: Some(&biometrics.di_embeddings),
                 di_embedding_shares: biometrics.di_embedding_shares.each_ref().map(Some),
+                orbit5_embedding_shares: Some(&biometrics.orbit5_embedding_shares),
             },
             migration: Some(migration),
         };
@@ -195,6 +196,7 @@ pub(crate) fn migration(
         source_pcp_version: Some(source.version.as_str().to_owned()),
         migrated_ts: Some(context.migrated_ts),
         biometric_pipeline_version: Some(biometrics.biometric_pipeline_version.clone()),
+        signing_key_id: None,
     }
 }
 
