@@ -15,6 +15,9 @@ use crate::{
     store::{BlobStore, JobStore, StoreError},
 };
 
+/// Report storage is optional and must not monopolize the sequential runner.
+const DEBUG_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Everything a job touches.
 pub struct JobRunner {
     queue: Arc<JobQueue>,
@@ -58,15 +61,14 @@ impl JobRunner {
             tracing::warn!(job_id = %job.job_id, "job passed its deadline in the queue; skipped");
             return;
         }
-        let recorded = match self.migrate(job).await {
+        let (result, debug_report) = self.migrate(job).await;
+        let recorded = match result {
             Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
-            Err((reason, result_key)) => {
+            Err(reason) => {
                 // Count the observed failure even if persisting the outcome fails.
                 metrics::counter!("migration.host.job_failures", "reason" => reason.as_str())
                     .increment(1);
-                self.job_store
-                    .mark_failed(job, reason, result_key.as_deref())
-                    .await
+                self.job_store.mark_failed(job, reason, None).await
             }
         };
 
@@ -84,17 +86,23 @@ impl JobRunner {
                 "failed to record the job outcome"
             ),
         }
+        if let Some(report) = debug_report {
+            self.store_debug_report(job, report).await;
+        }
     }
 
-    async fn migrate(&self, job: &JobRequest) -> Result<String, (Reason, Option<String>)> {
-        let blob = self
+    async fn migrate(&self, job: &JobRequest) -> (Result<String, Reason>, Option<Vec<u8>>) {
+        let blob = match self
             .blob_store
             .get_pcp(&job.object_key)
             .await
             .map_err(|error| {
                 tracing::error!(job_id = %job.job_id, %error, dependency = "s3", "failed to read the sealed PCP");
-                (Reason::S3Error, None)
-            })?;
+                Reason::S3Error
+            }) {
+                Ok(blob) => blob,
+                Err(reason) => return (Err(reason), None),
+            };
 
         let failure_reason = |error: &enclave::Error| {
             let reason = match error {
@@ -130,37 +138,51 @@ impl JobRunner {
             }
         };
 
-        let debug_report_key = if let Some(report) = debug_report {
-            if report.len() < enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
-                || report.len() > enclave_primitives::MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES
-            {
-                tracing::error!(job_id = %job.job_id, diagnostic_bytes = report.len(), "enclave returned an invalid diagnostic response");
-                return Err((Reason::InvalidDebugReport, None));
+        let result = match pcp {
+            Ok(pcp) if pcp.is_empty() => {
+                tracing::error!(job_id = %job.job_id, "enclave returned no result artifact");
+                Err(Reason::EnclaveError)
             }
-            match self.blob_store.put_debug_report(&job.job_id, report).await {
-                Ok(key) => Some(key),
-                Err(error) => {
-                    tracing::warn!(job_id = %job.job_id, %error, dependency = "s3", operation = "put_debug_report", "failed to write the encrypted diagnostic; preserving migration outcome");
-                    metrics::counter!("migration.host.debug_report_failures", "reason" => "storage").increment(1);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let pcp = pcp.map_err(|reason| (reason, debug_report_key))?;
-        if pcp.is_empty() {
-            tracing::error!(job_id = %job.job_id, "enclave returned no result artifact");
-            return Err((Reason::EnclaveError, None));
-        }
-
-        self.blob_store
-            .put_result(&job.job_id, pcp)
-            .await
-            .map_err(|error| {
+            Ok(pcp) => self.blob_store.put_result(&job.job_id, pcp).await.map_err(|error| {
                 tracing::error!(job_id = %job.job_id, %error, dependency = "s3", "failed to write the result");
-                (Reason::S3Error, None)
-            })
+                Reason::S3Error
+            }),
+            Err(reason) => Err(reason),
+        };
+        (result, debug_report)
+    }
+
+    async fn store_debug_report(&self, job: &JobRequest, report: Vec<u8>) {
+        if report.len() < enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
+            || report.len() > enclave_primitives::MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES
+        {
+            tracing::warn!(job_id = %job.job_id, diagnostic_bytes = report.len(), "discarding invalid debug report; preserving migration outcome");
+            metrics::counter!("migration.host.debug_report_failures", "reason" => "invalid_size")
+                .increment(1);
+            return;
+        }
+        let store = Arc::clone(&self.blob_store);
+        let job_id = job.job_id.clone();
+        // The task contains upload panics. Dropping the set aborts it if the runner is cancelled.
+        let mut upload = tokio::task::JoinSet::new();
+        upload.spawn(async move { store.put_debug_report(&job_id, report).await });
+        let reason = match tokio::time::timeout(DEBUG_REPORT_TIMEOUT, upload.join_next()).await {
+            Ok(Some(Ok(Ok(_)))) => return,
+            Ok(Some(Ok(Err(error)))) => {
+                tracing::warn!(job_id = %job.job_id, %error, dependency = "s3", operation = "put_debug_report", "failed to write encrypted diagnostic; preserving migration outcome");
+                "storage"
+            }
+            Ok(Some(Err(_)) | None) => {
+                tracing::error!(job_id = %job.job_id, "debug report upload task failed; preserving migration outcome");
+                "task"
+            }
+            Err(_) => {
+                upload.shutdown().await;
+                tracing::warn!(job_id = %job.job_id, "debug report upload timed out; preserving migration outcome");
+                "timeout"
+            }
+        };
+        metrics::counter!("migration.host.debug_report_failures", "reason" => reason).increment(1);
     }
 }
 
@@ -278,16 +300,10 @@ mod tests {
                 store.outcome(&job(1).job_id),
                 Some(Outcome::Failed(Reason::CredentialSignatureInvalid))
             );
+            assert!(store.error_key(&job(1).job_id).is_none());
             if fail_upload {
-                assert!(store.error_key(&job(1).job_id).is_none());
                 assert!(store.debug_report(&job(1).job_id).is_none());
             } else {
-                assert_eq!(
-                    store.error_key(&job(1).job_id),
-                    Some(di_migration_storage::schema::debug_report_key(
-                        &job(1).job_id
-                    ))
-                );
                 assert_eq!(store.debug_report(&job(1).job_id), Some(ciphertext.clone()));
             }
             assert!(store.result(&job(1).job_id).is_none());
@@ -353,7 +369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_debug_report_sizes_are_rejected_on_success_and_failure() {
+    async fn invalid_debug_report_sizes_preserve_success_and_failure() {
         for error in [
             None,
             Some(enclave_primitives::Error::BiometricPipelineFailed),
@@ -382,12 +398,83 @@ mod tests {
 
                 job_runner(enclave, &store).handle(&job(1)).await;
 
-                assert_eq!(
-                    store.outcome(&job(1).job_id),
-                    Some(Outcome::Failed(Reason::InvalidDebugReport))
-                );
-                assert!(store.result(&job(1).job_id).is_none());
+                if error.is_some() {
+                    assert_eq!(
+                        store.outcome(&job(1).job_id),
+                        Some(Outcome::Failed(Reason::BiometricPipelineFailed))
+                    );
+                    assert!(store.result(&job(1).job_id).is_none());
+                } else {
+                    assert_eq!(
+                        store.outcome(&job(1).job_id),
+                        Some(Outcome::Migrated(result_key(1)))
+                    );
+                    assert_eq!(store.result(&job(1).job_id), Some(b"pcp".to_vec()));
+                }
                 assert!(store.debug_report(&job(1).job_id).is_none());
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn report_panics_and_stalls_preserve_outcomes_and_allow_later_jobs() {
+        use std::time::Duration;
+
+        for stall in [false, true] {
+            for fail_migration in [false, true] {
+                let store = MemoryStore::with_pcp(&job(1), b"sealed").and_pcp(&job(2), b"sealed");
+                let store = Arc::new(if stall {
+                    store.stalling_debug_report_writes()
+                } else {
+                    store.panicking_debug_report_writes()
+                });
+                let report = vec![7; enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES + 48];
+                let enclave: Arc<dyn enclave::EnclaveClient> = if fail_migration {
+                    Arc::new(FailingEnclave(enclave::Error::Migration(
+                        enclave_primitives::MigrateError {
+                            error: enclave_primitives::Error::BiometricPipelineFailed,
+                            debug_report: Some(report),
+                        },
+                    )))
+                } else {
+                    Arc::new(StubEnclave {
+                        response: Some(enclave_primitives::MigrateResponse {
+                            pcp: b"migrated".to_vec(),
+                            debug_report: Some(report),
+                        }),
+                        ..StubEnclave::default()
+                    })
+                };
+                let runner = Arc::new(job_runner(enclave, &store));
+                let task = tokio::spawn({
+                    let runner = Arc::clone(&runner);
+                    async move { runner.handle(&job(1)).await }
+                });
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while store.outcome(&job(1).job_id).is_none() {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .expect("primary outcome must be recorded before waiting for the report");
+                if stall {
+                    assert!(!task.is_finished());
+                    tokio::time::advance(super::DEBUG_REPORT_TIMEOUT).await;
+                }
+                task.await
+                    .expect("report panic must not escape the job runner");
+                runner.handle(&job(2)).await;
+                for n in [1, 2] {
+                    assert_eq!(
+                        store.outcome(&job(n).job_id),
+                        Some(if fail_migration {
+                            Outcome::Failed(Reason::BiometricPipelineFailed)
+                        } else {
+                            Outcome::Migrated(result_key(n))
+                        })
+                    );
+                    assert!(store.debug_report(&job(n).job_id).is_none());
+                }
             }
         }
     }

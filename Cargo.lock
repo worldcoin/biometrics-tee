@@ -2305,6 +2305,7 @@ dependencies = [
  "base64 0.22.1",
  "di-migration-enclave-primitives",
  "di-migration-primitives",
+ "orb-pcp-defs",
  "pontifex",
  "reqwest 0.12.28",
  "serde",
@@ -2339,6 +2340,7 @@ dependencies = [
  "orb-pcp-defs",
  "pontifex",
  "rand 0.8.8",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tabernaculum",
@@ -2690,7 +2692,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4312,7 +4314,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orb-pcp"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=81d013e618cdb424bc134b6e68892945ab96ca60#81d013e618cdb424bc134b6e68892945ab96ca60"
+source = "git+https://github.com/worldcoin/orb-software?rev=c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac#c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac"
 dependencies = [
  "alkali",
  "data-encoding",
@@ -4331,7 +4333,7 @@ dependencies = [
 [[package]]
 name = "orb-pcp-defs"
 version = "0.0.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=81d013e618cdb424bc134b6e68892945ab96ca60#81d013e618cdb424bc134b6e68892945ab96ca60"
+source = "git+https://github.com/worldcoin/orb-software?rev=c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac#c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac"
 dependencies = [
  "pbjson",
  "pbjson-build",
@@ -4343,7 +4345,7 @@ dependencies = [
 [[package]]
 name = "orb-wld-data-id"
 version = "0.0.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=81d013e618cdb424bc134b6e68892945ab96ca60#81d013e618cdb424bc134b6e68892945ab96ca60"
+source = "git+https://github.com/worldcoin/orb-software?rev=c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac#c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac"
 dependencies = [
  "eyre",
  "rand 0.8.8",
@@ -4767,7 +4769,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.11.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -4786,7 +4788,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.11.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4877,7 +4879,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5346,7 +5348,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6333,7 +6335,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -104,7 +104,8 @@ async fn serve(boot: Bootstrap, worker: SandboxWorker) -> anyhow::Result<()> {
         Ok(arn) => {
             state.set_manifest_signer(
                 ManifestSigner::from_parent(arn)
-                    .context("invalid manifest-signing KMS configuration")?,
+                    .await
+                    .context("failed to configure manifest-signing KMS key")?,
             );
             tracing::info!("PCP manifest signing configured");
         }
@@ -121,6 +122,12 @@ async fn serve(boot: Bootstrap, worker: SandboxWorker) -> anyhow::Result<()> {
         .attest(None::<Vec<u8>>, None::<Vec<u8>>, None::<Vec<u8>>)
         .context("failed to read the boot measurements")?;
     attestation::log_boot_measurements(&document);
+    state.set_report_metadata(
+        di_migration_enclave::debug_report::RuntimeMetadata::collect(
+            boot.runtime().sha384.clone(),
+            &document,
+        ),
+    );
 
     state.check_worker();
     // The verified runtime root must outlive the worker, which the server owns.
