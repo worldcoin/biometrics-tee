@@ -9,6 +9,8 @@ fields and compares the result to the authenticated Nitro nonce.
 - `user_data`: byte `0x01`, followed by the worker's 48-byte SHA-384.
 - `public_key`: absent.
 - HTTP `x-tee-attestation`: standard padded base64 of the binary COSE_Sign1 document.
+- Maximum binary document: 12,000 bytes (16,000 base64 bytes), leaving room for
+  the header name below the staging ALB single-header limit of 16 KiB.
 
 ## Canonical digest
 

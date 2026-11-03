@@ -27,8 +27,9 @@ pub const NONCE_BYTES: usize = 32;
 pub const MAX_OWNERSHIP_PROOF_BYTES: usize = 768 * 1024;
 /// Standard base64 of the binary COSE_Sign1 document; never a multipart body field.
 pub const ATTESTATION_HEADER: &str = "x-tee-attestation";
-/// Application bound; the submitting proxy must accept the base64-expanded header.
-pub const MAX_ATTESTATION_DOCUMENT_BYTES: usize = 16 * 1024;
+/// Base64 expands to at most 16,000 bytes, leaving room for the header name under
+/// the staging ALB's 16 KiB single-header limit. Shared with signup-service.
+pub const MAX_ATTESTATION_DOCUMENT_BYTES: usize = 12_000;
 const MAX_IDENTIFIER_BYTES: usize = 128;
 const BINDING_DOMAIN: &[u8] = b"web-authenticator:identity:v1";
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -655,6 +656,14 @@ mod tests {
         }
         let mut rng = StdRng::seed_from_u64(7);
         let fixture = Fixture::new(&mut rng);
+        let largest = assemble(
+            &fixture.inputs(),
+            &SizedDocument(MAX_ATTESTATION_DOCUMENT_BYTES),
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(largest.attestation_header().len(), 16_000);
+        assert!(ATTESTATION_HEADER.len() + 2 + largest.attestation_header().len() + 2 < 16 * 1024);
         for length in [0, MAX_ATTESTATION_DOCUMENT_BYTES + 1] {
             assert!(matches!(
                 assemble(&fixture.inputs(), &SizedDocument(length), &mut rng),
