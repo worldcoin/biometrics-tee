@@ -713,10 +713,12 @@ mod tests {
         assert!(!files.contains_key("credential.json"));
         assert!(!files.contains_key("signed_hashes_attestation_gw.sign"));
         let manifest: serde_json::Value = serde_json::from_slice(&files["manifest.json"]).unwrap();
-        assert_eq!(manifest["format"], custody::FORMAT);
         assert_eq!(
-            manifest["associated_data_hash"],
-            enrollment.form.associated_data_hash
+            manifest,
+            serde_json::json!({
+                "pcp_version": enrollment.form.pcp_version,
+                "associated_data_hash": enrollment.form.associated_data_hash,
+            }),
         );
         let info: serde_json::Value =
             serde_json::from_slice(&files["associated_data/info.json"]).unwrap();
@@ -750,6 +752,10 @@ mod tests {
         );
         let body: serde_json::Value = serde_json::from_slice(&files["enrollment.json"]).unwrap();
         assert_eq!(body["id_commitment"], enrollment.id_commitment);
+        assert_eq!(
+            body["parts"].as_array().unwrap().len(),
+            enrollment.form.parts().len()
+        );
         for ((name, value), part) in enrollment
             .form
             .parts()

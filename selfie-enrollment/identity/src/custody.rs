@@ -1,4 +1,5 @@
-//! Serializes and encrypts custody data inside the enclave. Only ciphertext leaves this API.
+//! Serializes and encrypts a Face PCP with Nitro evidence inside the enclave.
+//! Only ciphertext leaves this API.
 //!
 //! The authenticated enrollment channel must supply the user's custody public key.
 //! This helper checks its cryptographic suitability, not ownership or provenance.
@@ -18,7 +19,6 @@ use crate::{
 };
 use selfie_enrollment_api_types::MAX_IMAGE_BYTES;
 
-pub const FORMAT: &str = "web-face-custody-v1";
 /// Includes image, base64 ownership proof, bounded metadata, archive and encryption overhead.
 pub const MAX_PACKAGE_BYTES: usize = MAX_IMAGE_BYTES + MAX_OWNERSHIP_PROOF_BYTES * 2 + 256 * 1024;
 
@@ -45,7 +45,6 @@ struct Info<'a> {
 
 #[derive(Serialize)]
 struct Manifest<'a> {
-    format: &'static str,
     pcp_version: &'a str,
     associated_data_hash: &'a str,
 }
@@ -114,7 +113,6 @@ pub fn encrypt<R: Rng + CryptoRng>(
         (
             "manifest.json",
             json(&Manifest {
-                format: FORMAT,
                 pcp_version: &data.pcp_version,
                 associated_data_hash: &enrollment.form.associated_data_hash,
             })?,
