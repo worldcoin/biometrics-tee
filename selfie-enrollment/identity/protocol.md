@@ -3,6 +3,12 @@
 The enclave assembles the enrollment form. Signup-service hashes the received
 fields and compares the result to the authenticated Nitro nonce.
 
+Submit to the existing `PUT /api/v1/identity?idComm=...` endpoint. Signup-service
+selects a Nitro-verification middleware branch for `x-tee-attestation` requests;
+this branch replaces mobile device attestation, not subject ownership checks.
+An invalid Nitro attempt must be rejected without falling back to mobile
+verification. No separate web gateway path is required.
+
 ## Attestation
 
 - `nonce`: the 32-byte SHA-256 digest below.

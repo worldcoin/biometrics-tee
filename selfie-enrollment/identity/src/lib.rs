@@ -1,4 +1,4 @@
-//! Assembles `PUT /api/v1/web/identity` for one Selfie Check capture inside the enclave.
+//! Assembles `PUT /api/v1/identity` for one Selfie Check capture inside the enclave.
 //!
 //! The form keeps signup-service's mobile face fields and Oxide's Poseidon2 hashes. One
 //! per-capture Nitro document signs the running worker SHA-384 in [`user_data`] and a

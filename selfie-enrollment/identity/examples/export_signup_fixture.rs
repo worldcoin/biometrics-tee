@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut request = std::fs::File::create_new(output.join("request.http"))?;
     write!(
         request,
-        "PUT /api/v1/web/identity?idComm={} HTTP/1.1\r\nHost: interop.invalid\r\nContent-Type: multipart/form-data; boundary={boundary}\r\nX-Tee-Attestation: {}\r\nContent-Length: {}\r\n\r\n",
+        "PUT /api/v1/identity?idComm={} HTTP/1.1\r\nHost: interop.invalid\r\nContent-Type: multipart/form-data; boundary={boundary}\r\nX-Tee-Attestation: {}\r\nContent-Length: {}\r\n\r\n",
         enrollment.id_commitment,
         enrollment.attestation_header(),
         body.len()
