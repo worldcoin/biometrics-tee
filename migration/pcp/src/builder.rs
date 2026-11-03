@@ -132,6 +132,7 @@ fn with_prepared_inputs<T>(
 ) -> Result<T, Error> {
     biometrics.validate(source)?;
     nonempty(&context.tee_software_version, "tee_software_version")?;
+    nonempty(&context.signing_key_id, "signing_key_id")?;
     u32::try_from(context.migrated_ts).map_err(|_| Error::InvalidField("migrated_ts"))?;
     let signup_id = context.signup_id.to_string();
     if source.info.signup_id.as_deref() == Some(signup_id.as_str()) {
@@ -195,6 +196,7 @@ pub(crate) fn migration(
         source_pcp_version: Some(source.version.as_str().to_owned()),
         migrated_ts: Some(context.migrated_ts),
         biometric_pipeline_version: Some(biometrics.biometric_pipeline_version.clone()),
+        signing_key_id: Some(context.signing_key_id.clone()),
     }
 }
 

@@ -152,8 +152,14 @@ fn build_and_seal_pcp(
         .duration_since(UNIX_EPOCH)
         .map_err(|_| enclave_primitives::Error::InvalidSystemTime)?
         .as_secs();
+
+    let manifest_signer = state.manifest_signer().ok_or_else(|| {
+        tracing::error!("PCP manifest signing is not configured");
+        enclave_primitives::Error::ManifestSignerUnavailable
+    })?;
     let context = MigrationContext {
         tee_software_version: TEE_SOFTWARE_VERSION.to_owned(),
+        signing_key_id: manifest_signer.key_id().to_owned(),
         migrated_ts,
         signup_id: report.signup_id.clone(),
     };
@@ -177,11 +183,6 @@ fn build_and_seal_pcp(
             enclave_primitives::Error::PcpRecipientKeyGenerationFailed
         })?;
     let recipients = backend_keys.recipients(device_public_key);
-    report.stage = Stage::SignManifest;
-    let manifest_signer = state.manifest_signer().ok_or_else(|| {
-        tracing::error!("PCP manifest signing is not configured");
-        enclave_primitives::Error::ManifestSignerUnavailable
-    })?;
     report.stage = Stage::BuildPcp;
     let package = di_migration_pcp::build(
         source_pcp,

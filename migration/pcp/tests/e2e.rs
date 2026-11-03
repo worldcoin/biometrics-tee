@@ -162,6 +162,7 @@ fn round_trip(version: &str, optional: bool) {
         migration.biometric_pipeline_version.as_deref(),
         Some("pipeline-1")
     );
+    assert_eq!(migration.signing_key_id, Some(ctx.signing_key_id.clone()));
 
     assert_ne!(new.files["hashes.json"], old["hashes.json"]);
     assert_eq!(
@@ -728,14 +729,24 @@ fn completion_checks_migration_metadata_against_the_mapping() {
     let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
-    let mut files = new.files.clone();
-    let mut migration = Migration::decode(files["migration.pb"].as_slice()).unwrap();
-    migration.tee_software_version = Some("other-tee".into());
-    files.insert("migration.pb".into(), migration.encode_to_vec());
-    assert_eq!(
-        verify_completed_pcp(&source, &bio, &ctx, &files),
-        Err(Error::OutputMismatch("migration_metadata_mismatch"))
-    );
+    for field in [
+        "tee_software_version",
+        "signing_key_id",
+        "missing_signing_key",
+    ] {
+        let mut files = new.files.clone();
+        let mut migration = Migration::decode(files["migration.pb"].as_slice()).unwrap();
+        match field {
+            "tee_software_version" => migration.tee_software_version = Some("other-tee".into()),
+            "signing_key_id" => migration.signing_key_id = Some("other-key".into()),
+            _ => migration.signing_key_id = None,
+        }
+        files.insert("migration.pb".into(), migration.encode_to_vec());
+        assert_eq!(
+            verify_completed_pcp(&source, &bio, &ctx, &files),
+            Err(Error::OutputMismatch("migration_metadata_mismatch"))
+        );
+    }
 }
 
 #[test]
