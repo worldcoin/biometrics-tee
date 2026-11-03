@@ -25,6 +25,8 @@ use crate::sealing::{EnclaveVerifier, MigrationResponseOpener, SealingError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+// Bulk transfers include the complete response body in their deadline.
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -249,6 +251,7 @@ impl MigrationApiClient {
         let response = self
             .http
             .get(download_url)
+            .timeout(TRANSFER_TIMEOUT)
             .send()
             .await
             .map_err(Error::Transport)?;
@@ -279,6 +282,7 @@ impl MigrationApiClient {
         let mut response = self
             .http
             .get(debug_report_url)
+            .timeout(TRANSFER_TIMEOUT)
             .send()
             .await
             .map_err(Error::Transport)?;
@@ -308,6 +312,7 @@ impl MigrationApiClient {
         let response = self
             .http
             .put(upload_url)
+            .timeout(TRANSFER_TIMEOUT)
             .body(pcp)
             .send()
             .await
@@ -601,6 +606,143 @@ mod tests {
         });
 
         (url, server)
+    }
+
+    #[tokio::test]
+    async fn upload_can_complete_after_ten_seconds() {
+        let (url, server) = serve(Router::new().route(
+            "/",
+            axum::routing::put(|body: String| async move {
+                assert_eq!(body, "sealed input");
+                tokio::time::sleep(Duration::from_secs(12)).await;
+                StatusCode::OK
+            }),
+        ))
+        .await;
+        let client = MigrationApiClient::new(&url).unwrap();
+        client
+            .upload_pcp(url.as_str(), b"sealed input".to_vec())
+            .await
+            .unwrap();
+        server.abort();
+    }
+
+    // Send headers and a partial body immediately, then delay the rest. This exercises
+    // the transfer deadline while reading a body, after send() has already succeeded.
+    async fn delayed_download(
+        delay: Duration,
+    ) -> (
+        reqwest::Url,
+        zeroize::Zeroizing<Vec<u8>>,
+        tokio::task::JoinHandle<std::io::Result<()>>,
+    ) {
+        use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let domain = ChannelDomain::new(di_migration_enclave_primitives::MIGRATION_CHANNEL_DOMAIN);
+        let enclave = ChannelEnclave::generate(domain).unwrap();
+        let consumer =
+            ChannelConsumer::from_unverified_public_key(domain, &enclave.public_key()).unwrap();
+        let (request, opener) = consumer.seal_to_enclave(b"input").unwrap();
+        let (_, sealer) = enclave.open(&request).unwrap();
+        let body = sealer.seal(b"downloaded output").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await?);
+                assert!(request.len() < 8192);
+            }
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await?;
+            socket.write_all(&body[..1]).await?;
+            tokio::time::sleep(delay).await;
+            socket.write_all(&body[1..]).await
+        });
+        (url, opener.to_secret_bytes(), server)
+    }
+
+    async fn check_download_deadline(report: bool, delay: Duration, expect_timeout: bool) {
+        let (url, key, server) = delayed_download(delay).await;
+        let client = MigrationApiClient::new(&url).unwrap();
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(24), async {
+            if report {
+                client.fetch_debug_report(url.as_str(), key).await
+            } else {
+                client.fetch_pcp(url.as_str(), key).await
+            }
+        })
+        .await
+        .expect("transfer must finish within its deadline");
+        if expect_timeout {
+            assert!(
+                matches!(result, Err(Error::Transport(ref error)) if error.is_timeout()),
+                "{result:?}"
+            );
+            assert!(started.elapsed() >= Duration::from_secs(19));
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+        } else {
+            assert_eq!(result.unwrap().as_slice(), b"downloaded output");
+            server.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn downloads_can_read_bodies_after_ten_seconds() {
+        tokio::join!(
+            check_download_deadline(false, Duration::from_secs(12), false),
+            check_download_deadline(true, Duration::from_secs(12), false),
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_download_bodies_time_out_at_twenty_seconds() {
+        tokio::join!(
+            check_download_deadline(false, Duration::from_secs(30), true),
+            check_download_deadline(true, Duration::from_secs(30), true),
+        );
+    }
+
+    #[tokio::test]
+    async fn control_requests_still_time_out_at_ten_seconds() {
+        let (url, server) = serve(Router::new().route(
+            "/v1/migrations/test-sub",
+            axum::routing::get(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                StatusCode::OK
+            }),
+        ))
+        .await;
+        let client = MigrationApiClient::new(&url).unwrap();
+        let signer = Arc::new(test_signer());
+        let token = test_token(&signer);
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(
+            Duration::from_secs(14),
+            client.migration_status(&token, &signer, "test-sub"),
+        )
+        .await
+        .expect("control request must keep its ten-second deadline")
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Transport(ref source) if source.is_timeout()),
+            "{error}"
+        );
+        assert!(started.elapsed() >= Duration::from_secs(9));
+        server.abort();
     }
 
     #[tokio::test]
