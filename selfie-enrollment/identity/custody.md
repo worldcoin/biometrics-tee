@@ -1,4 +1,4 @@
-# Encrypted web face custody package v1
+# Face PCP with Nitro attestation
 
 `custody::encrypt(&enrollment, &custody_key, rng)` consumes the result of
 `assemble` by reference. It generates no new shares and rejects associated data
@@ -15,19 +15,27 @@ gzip tar archive. The archive retains mobile's associated-data paths:
 - `associated_data/face_image.png`: the original PNG supplied to assembly.
 - `associated_data/face_ampc_share_{0,1,2}.json`: the exact plaintext shares.
 
-Web-specific files make the evidence and version explicit:
+The PCP retains its existing `pcp_version`. Additional files carry the
+enrollment binding and Nitro evidence:
 
-- `manifest.json`: format `web-face-custody-v1`, PCP version and associated-data hash.
+- `manifest.json`: PCP version and associated-data hash.
 - `enrollment.json`: `id_commitment` and the canonical form parts, with values
   encoded as standard base64 so the proof remains byte-exact.
 - `attestation/nitro.cose`: the per-capture Nitro document, not a Gateway signature.
 
-This is a versioned web container, not a drop-in legacy Oxide tarball. It does
-not write `signed_hashes_attestation_gw.sign` or manufacture a credential.
-Wallet import must recognize this format, verify the enrollment binding and
-associated-data hash, and attach/import the issued credential after signup-service
-completes enrollment. Existing mobile readers must not silently accept it as
-Gateway-authenticated custody data.
+This is a Face PCP carrying Nitro evidence; it has no separate browser-specific
+format identifier. The evidence entry distinguishes it from the existing
+Gateway-backed Face PCP, which requires `signed_hashes_attestation_gw.sign`.
+It does not write that Gateway signature or manufacture a credential.
+
+Reader support remains required. Oxide's existing `extract_face_credential`
+requires the Gateway signature file and rejects this archive. A Nitro-aware
+reader must explicitly handle `attestation/nitro.cose`, require the manifest and
+enrollment record, verify the attestation and enrollment binding, and compare the
+PCP version and associated-data hash with the attested form. Missing or mixed
+Gateway/Nitro evidence must be rejected. The issued credential is attached/imported
+after signup-service completes enrollment, using the existing `credential.json`
+entry. Removing the browser-specific name does not change these reader requirements.
 
 Plaintext serialization uses fixed backing buffers whose owned contents are
 zeroized when dropped. The archive is bounded before allocation and encryption.
