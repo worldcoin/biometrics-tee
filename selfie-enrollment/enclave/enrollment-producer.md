@@ -1,4 +1,4 @@
-# Native enrollment producer
+# Enclave enrollment preparation
 
 `State::prepare_enrollment` is a blocking enclave operation that reuses the
 existing worker and processing semaphore. It extracts from the supplied PNG,
@@ -6,6 +6,16 @@ creates its capture ID and clock timestamp locally, obtains authorization from
 the enclave-resident identity source, calls `assemble` once and encrypts the
 same associated data for custody. Returned values contain submission fields and
 ciphertext, not the original image, raw embedding or plaintext shares.
+The encrypted custody output is a [Face PCP with Nitro evidence](../identity/custody.md).
+
+`PreparedEnrollment.form.parts()` contains all 17 multipart fields in the
+[signup-service binding contract](../identity/protocol.md). The `id_commitment`
+value is sent as the `idComm` query parameter, `attestation_header` as
+`x-tee-attestation`, and `x_zkp_proof` as the `x-zkp-proof` header. The caller
+supplies `sub`, `world_id_challenge_id` and the binary `world_id_ownership_proof`;
+the enclave binds these bytes to its output, while signup-service verifies the
+subject proof. Producing these fields does not send an HTTP request or issue a
+credential.
 
 `NsmAttestor` implements the per-capture adapter through Pontifex's existing
 `SecureModule::raw_attest`: signed nonce is the request digest, signed user_data
