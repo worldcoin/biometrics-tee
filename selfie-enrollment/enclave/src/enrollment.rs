@@ -2,9 +2,10 @@
 //!
 //! This blocking operation is separate from the existing embedding RPC. A runtime
 //! adapter must obtain requests/custody keys from the authenticated sealed channel
-//! and provision measured AMPC keys, the actual worker measurement and a native
-//! v3 identity/proof source before exposing it. No browser/host-supplied clock,
-//! capture ID, worker hash, AMPC keys or identity are accepted in `CaptureRequest`.
+//! and provision measured AMPC keys and the actual worker measurement before
+//! exposing it. The browser supplies its public commitment and v4 proof; signup
+//! service verifies subject ownership. Clock, capture ID and release keys remain
+//! enclave-controlled.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -19,37 +20,17 @@ use uuid::Uuid;
 use crate::State;
 use selfie_enrollment_sealed_types::Failure;
 
-/// Public outputs of the enclave-held v3 prover. Its secret never enters a response.
-pub struct IdentityAuthorization {
-    pub id_commitment: String,
-    pub x_zkp_proof: String,
-}
-
-/// The runtime must supply a real enclave-resident prover, including its identity
-/// retention/retrieval lifecycle. There is deliberately no default or synthetic implementation.
-pub trait IdentitySource: Send + Sync {
-    /// # Errors
-    /// Fail closed when identity/proof generation is unavailable.
-    fn authorize(&self, capture_id: Uuid, captured_at: u64)
-    -> Result<IdentityAuthorization, Error>;
-}
-
 /// Construct only from the measured enclave's release configuration and verified
 /// bootstrap worker measurement. Never deserialize this from a client or host request.
 pub struct TrustedContext {
     recipient_keys: [PublicKey; 3],
     worker_sha384: [u8; 48],
-    identity: Box<dyn IdentitySource>,
 }
 
 impl TrustedContext {
     /// # Errors
     /// Reject unsuitable AMPC keys or an absent worker measurement.
-    pub fn new(
-        recipient_keys: [PublicKey; 3],
-        worker_sha384: [u8; 48],
-        identity: Box<dyn IdentitySource>,
-    ) -> Result<Self, Error> {
+    pub fn new(recipient_keys: [PublicKey; 3], worker_sha384: [u8; 48]) -> Result<Self, Error> {
         embedding_shares::validate_recipients(&recipient_keys)
             .map_err(|_| Error::InvalidRequest)?;
         if worker_sha384 == [0; 48] {
@@ -58,7 +39,6 @@ impl TrustedContext {
         Ok(Self {
             recipient_keys,
             worker_sha384,
-            identity,
         })
     }
 }
@@ -67,15 +47,17 @@ impl TrustedContext {
 /// must be PNG; JPEG-to-PNG conversion is not silently delegated to the host.
 pub struct CaptureRequest<'a> {
     pub image_png: &'a [u8],
+    /// Public browser-created commitment, bound into the capture and PCP. The
+    /// enclave neither owns its secret nor asserts proof of v3 ownership.
+    pub id_commitment: &'a str,
     pub subject: Subject<'a>,
     pub custody_key: &'a PublicKey,
 }
 
 /// Contains submission metadata and encrypted custody data, never the image,
-/// raw embedding, plaintext shares or v3 identity secret. No Debug implementation.
+/// raw embedding, plaintext shares or identity secrets. No Debug implementation.
 pub struct PreparedEnrollment {
     pub id_commitment: String,
-    pub x_zkp_proof: String,
     pub form: Form,
     pub attestation_header: String,
     pub encrypted_custody: Vec<u8>,
@@ -99,7 +81,7 @@ impl State {
     ///
     /// # Errors
     /// Reject invalid inputs, worker contention, failed extraction or unavailable
-    /// identity, attestation or custody encryption. No partial enrollment is returned.
+    /// attestation or custody encryption. No partial enrollment is returned.
     pub fn prepare_enrollment(
         &self,
         request: CaptureRequest<'_>,
@@ -111,6 +93,11 @@ impl State {
             || request.subject.ownership_proof.is_empty()
             || request.subject.ownership_proof.len()
                 > selfie_enrollment_identity::MAX_OWNERSHIP_PROOF_BYTES
+            || request.id_commitment.len() != 66
+            || !request.id_commitment.starts_with("0x")
+            || !request.id_commitment.as_bytes()[2..]
+                .iter()
+                .all(u8::is_ascii_hexdigit)
         {
             return Err(Error::InvalidRequest);
         }
@@ -127,10 +114,6 @@ impl State {
             .map_err(|_| Error::Unavailable)?
             .as_secs();
         let capture_id = Uuid::new_v4();
-        let identity = context.identity.authorize(capture_id, captured_at)?;
-        if identity.x_zkp_proof.is_empty() || identity.x_zkp_proof.len() > 64 * 1024 {
-            return Err(Error::Unavailable);
-        }
         let inputs = Inputs {
             capture: Capture {
                 capture_id,
@@ -139,7 +122,7 @@ impl State {
                 embedding: &embedding,
             },
             subject: request.subject,
-            id_commitment: &identity.id_commitment,
+            id_commitment: request.id_commitment,
             pcp_version: "1",
             recipient_keys: &context.recipient_keys,
             worker_sha384: &context.worker_sha384,
@@ -150,7 +133,6 @@ impl State {
         let attestation_header = enrollment.attestation_header();
         Ok(PreparedEnrollment {
             id_commitment: enrollment.id_commitment,
-            x_zkp_proof: identity.x_zkp_proof,
             form: enrollment.form,
             attestation_header,
             encrypted_custody,
@@ -202,21 +184,6 @@ mod tests {
             Ok(())
         }
     }
-    struct Identity;
-    impl IdentitySource for Identity {
-        fn authorize(
-            &self,
-            capture: Uuid,
-            captured_at: u64,
-        ) -> Result<IdentityAuthorization, Error> {
-            assert!(!capture.is_nil());
-            assert!(captured_at > 0);
-            Ok(IdentityAuthorization {
-                id_commitment: format!("0x{:064x}", 0x123),
-                x_zkp_proof: "synthetic-test-only".into(),
-            })
-        }
-    }
     #[derive(Default)]
     struct Attestor {
         calls: AtomicUsize,
@@ -243,13 +210,13 @@ mod tests {
         TrustedContext::new(
             std::array::from_fn(|_| SecretKey::generate(&mut OsRng).public_key()),
             [0x5a; 48],
-            Box::new(Identity),
         )
         .unwrap()
     }
     fn request(key: &PublicKey) -> CaptureRequest<'_> {
         CaptureRequest {
             image_png: b"\x89PNG\r\n\x1a\nfixture",
+            id_commitment: "0x0000000000000000000000000000000000000000000000000000000000000123",
             subject: Subject {
                 sub: "0x1f",
                 challenge_id: Uuid::from_u128(0x1234),
@@ -272,7 +239,7 @@ mod tests {
             .prepare_enrollment(request(&key.public_key()), &context(), &attestor)
             .unwrap();
         assert_eq!(prepared.id_commitment, format!("0x{:064x}", 0x123));
-        assert_eq!(prepared.x_zkp_proof, "synthetic-test-only");
+        assert_eq!(prepared.form.world_id_ownership_proof, b"fixture-proof");
         assert!(prepared.form.timestamp.parse::<u64>().unwrap() >= before);
         assert!(!Uuid::parse_str(&prepared.form.capture_id).unwrap().is_nil());
         assert_eq!(
@@ -292,6 +259,32 @@ mod tests {
                 .is_err()
         );
         assert_eq!(attestor.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn invalid_browser_commitments_and_missing_v4_proof_fail_before_extraction() {
+        let state = State::new(Arc::new(BootAttestor), Box::new(Engine { reject: true })).unwrap();
+        let key = SecretKey::generate(&mut OsRng).public_key();
+        let attestor = Attestor::default();
+        for commitment in [
+            "",
+            "0x1",
+            "0x00000000000000000000000000000000000000000000000000000000000000zz",
+        ] {
+            let mut input = request(&key);
+            input.id_commitment = commitment;
+            assert!(matches!(
+                state.prepare_enrollment(input, &context(), &attestor),
+                Err(Error::InvalidRequest)
+            ));
+        }
+        let mut input = request(&key);
+        input.subject.ownership_proof = b"";
+        assert!(matches!(
+            state.prepare_enrollment(input, &context(), &attestor),
+            Err(Error::InvalidRequest)
+        ));
+        assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
