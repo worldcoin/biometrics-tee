@@ -57,6 +57,10 @@ fn all_supported_versions_preserve_capture_and_fill_absence() {
         let files = source_files(version);
         let source = SourcePcp::parse(files.clone()).unwrap();
         assert_eq!(source.version().as_str(), version);
+        assert_eq!(
+            source.iris_codes().unwrap().left_iris_code.as_deref(),
+            Some("old-left-code")
+        );
         assert_eq!(version.parse::<SourceVersion>().unwrap(), source.version());
         let (bio, ctx) = (pipeline(), context());
         let new = build_and_open(&source, &bio, &ctx);

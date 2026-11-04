@@ -138,6 +138,7 @@ pub(crate) struct Report {
     pub stage: Stage,
     worker_json: Option<Zeroizing<String>>,
     worker_failure: Option<WorkerFailure>,
+    pub(crate) iris_code_comparison: Option<crate::iris_comparison::Comparison>,
 }
 
 impl Report {
@@ -150,6 +151,7 @@ impl Report {
             stage: Stage::DecodePayload,
             worker_json: None,
             worker_failure: None,
+            iris_code_comparison: None,
         }
     }
 
@@ -267,6 +269,7 @@ impl Report {
             },
             face: worker.face.as_ref(),
             iris: worker.iris,
+            iris_code_comparison: self.iris_code_comparison.as_ref(),
             pipeline_errors: PipelineErrors {
                 worker_failure: worker.failure.filter(|failure| {
                     let valid = failure.get().starts_with('{');
@@ -354,6 +357,7 @@ struct Envelope<'a> {
     metadata: Metadata<'a>,
     face: Option<&'a FaceReport<'a>>,
     iris: Option<&'a RawValue>,
+    iris_code_comparison: Option<&'a crate::iris_comparison::Comparison>,
     pipeline_errors: PipelineErrors<'a>,
 }
 

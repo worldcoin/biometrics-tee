@@ -237,6 +237,10 @@ fn run_pipeline(
     report.stage = Stage::Biometrics;
     match state.migrate(source_pcp.pipeline_inputs()) {
         Ok(mut output) => {
+            report.iris_code_comparison = Some(crate::iris_comparison::Comparison::new(
+                source_pcp.iris_codes(),
+                &output.result,
+            ));
             report.worker_report(output.debug_report.take());
             report.stage = Stage::PrepareBiometrics;
             prepare_biometrics(output)
