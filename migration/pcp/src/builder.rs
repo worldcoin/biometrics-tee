@@ -38,7 +38,8 @@ pub enum BuildError<E> {
 /// recipients and a manifest signer. Run this synchronous operation on a blocking
 /// worker when called from an asynchronous service. Call [`validate_build_inputs`]
 /// before generating backend keys. Retain `source` until [`crate::verify_completed_pcp`]
-/// passes on the opened result. See [`with_build_request`] for the mapping contract.
+/// passes on the opened result. Source Iris files and captures are preserved;
+/// face, DI and normalized iris outputs come from `biometrics`.
 ///
 /// # Errors
 /// Propagates mapping, archive, encryption and signer failures without returning
@@ -50,10 +51,32 @@ pub fn build<E>(
     recipients: OutputRecipients<'_>,
     sign_digest: impl FnOnce(&[u8; 32]) -> Result<Vec<u8>, E>,
 ) -> Result<orb_pcp::Package, BuildError<E>> {
-    with_build_request(source, biometrics, context, recipients, |request| {
-        orb_pcp::build(request, &mut rand::rngs::OsRng, sign_digest)
+    validate_user_key(recipients.user_public_key)?;
+    let timestamp =
+        u32::try_from(context.migrated_ts).map_err(|_| Error::InvalidField("migrated_ts"))?;
+    with_prepared_inputs(source, biometrics, context, |info, images, migration| {
+        let iris = source.iris()?;
+        let di = orb_pcp::Di::embeddings(&biometrics.di_embeddings)
+            .shares(biometrics.di_embedding_shares.each_ref())
+            .map_err(|_| Error::InvalidField("di_embedding_shares"))?;
+        let biometrics = orb_pcp::Biometrics::images(images)
+            .iris(iris)
+            .di(di)
+            .face_embeddings(&biometrics.face_embeddings);
+        orb_pcp::Builder::timestamp(timestamp)
+            .info(info)
+            .user_public_key(recipients.user_public_key)
+            .backend_keys(recipients.backend_keys)
+            .biometrics(orb_pcp::BiometricPolicy::Included(biometrics))
+            // Source Iris files and version fields may be absent. Present payloads
+            // are validated by Iris construction; fresh DI is validated separately.
+            .strict(false)
+            .migration(migration)
+            .rng(rand::rngs::OsRng)
+            .signer(sign_digest)
+            .build()
+            .map_err(BuildError::Build)
     })?
-    .map_err(BuildError::Build)
 }
 
 /// Checks mapping inputs and the user's encryption key without backend keys.
@@ -85,51 +108,13 @@ fn validate_user_key(user_public_key: &[u8; 32]) -> Result<(), Error> {
         })
 }
 
-/// Validate one migration run and pass its build request to `consume`,
-/// normally `orb_pcp::build` with a CSPRNG and the enclave signer.
-///
-/// `info.json` is the source's with the context's signup ID. Raw images and
-/// available iris code files come from `source` unchanged; face, DI and
-/// normalized iris outputs are required from `biometrics`.
-/// Fails without calling `consume` when the prepared biometrics are incomplete or
-/// inconsistent, the context reuses the source signup ID, a multiframe image ID
-/// is not a canonical image ID, a raw image has no builder input, the user key is
-/// unusable, or `migrated_ts` exceeds 32-bit archive seconds.
-/// Retain `source` until [`crate::verify_completed_pcp`] has passed on the built package.
-pub fn with_build_request<T>(
-    source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
-    context: &MigrationContext,
-    recipients: OutputRecipients<'_>,
-    consume: impl FnOnce(&orb_pcp::BuildRequest<'_>) -> T,
-) -> Result<T, Error> {
-    validate_user_key(recipients.user_public_key)?;
-    with_prepared_inputs(source, biometrics, context, |info, images, migration| {
-        let request = orb_pcp::BuildRequest {
-            timestamp: context.migrated_ts,
-            info,
-            user_public_key: recipients.user_public_key,
-            backend_keys: recipients.backend_keys,
-            biometrics: orb_pcp::BiometricPolicy::Included {
-                images,
-                face_embeddings: &biometrics.face_embeddings,
-                iris_codes: source.iris_codes.as_ref(),
-                iris_code_shares: source.iris_code_shares.each_ref().map(Option::as_ref),
-                di_embeddings: Some(&biometrics.di_embeddings),
-                di_embedding_shares: biometrics.di_embedding_shares.each_ref().map(Some),
-            },
-            migration: Some(migration),
-        };
-        consume(&request)
-    })
-}
-
 fn with_prepared_inputs<T>(
     source: &SourcePcp,
     biometrics: &PreparedBiometrics<'_>,
     context: &MigrationContext,
     consume: impl FnOnce(&v1::Info, &orb_pcp::PackageImages<'_>, &v1::Migration) -> T,
 ) -> Result<T, Error> {
+    source.validate_iris()?;
     biometrics.validate(source)?;
     nonempty(&context.tee_software_version, "tee_software_version")?;
     nonempty(&context.signing_key_id, "signing_key_id")?;

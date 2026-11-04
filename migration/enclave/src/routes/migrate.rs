@@ -127,6 +127,10 @@ fn migrate_payload(
     })?;
     let source_pcp = parse_source_pcp(state, files)?;
     report.source(&source_pcp);
+    source_pcp.validate_iris().map_err(|error| {
+        tracing::warn!(%error, "source Iris validation failed");
+        enclave_primitives::Error::InvalidSourceIrisData
+    })?;
     let biometrics = run_pipeline(state, &source_pcp, report)?;
     build_and_seal_pcp(
         state,
@@ -171,8 +175,8 @@ fn build_and_seal_pcp(
         device_public_key,
     )
     .map_err(|error| {
-        tracing::warn!(%error, "invalid biometric pipeline output for PCP build");
-        enclave_primitives::Error::FailedToBuildPcp
+        tracing::warn!(%error, "invalid PCP build inputs");
+        pcp_mapping_error(&error)
     })?;
 
     report.stage = Stage::GenerateRecipients;
@@ -200,7 +204,10 @@ fn build_and_seal_pcp(
     )
     .map_err(|error| {
         tracing::warn!(%error, "failed to build output PCP");
-        enclave_primitives::Error::FailedToBuildPcp
+        match &error {
+            di_migration_pcp::BuildError::Mapping(error) => pcp_mapping_error(error),
+            di_migration_pcp::BuildError::Build(_) => enclave_primitives::Error::FailedToBuildPcp,
+        }
     })?;
 
     report.stage = Stage::SealPcp;
@@ -208,6 +215,15 @@ fn build_and_seal_pcp(
         tracing::error!(?error, "failed to seal the migrated PCP");
         enclave_primitives::Error::PcpResponseSealingFailed
     })
+}
+
+const fn pcp_mapping_error(error: &di_migration_pcp::Error) -> enclave_primitives::Error {
+    match error {
+        di_migration_pcp::Error::InvalidSourceIrisData => {
+            enclave_primitives::Error::InvalidSourceIrisData
+        }
+        _ => enclave_primitives::Error::FailedToBuildPcp,
+    }
 }
 
 fn seal_debug_report(
@@ -834,6 +850,18 @@ mod tests {
         let failure = handler(state, empty).await.unwrap_err();
         assert_eq!(failure.error, enclave_primitives::Error::InvalidInput);
         assert!(failure.debug_report.is_none());
+    }
+
+    #[test]
+    fn source_iris_errors_are_distinct_from_fresh_output_errors() {
+        assert_eq!(
+            super::pcp_mapping_error(&di_migration_pcp::Error::InvalidSourceIrisData),
+            enclave_primitives::Error::InvalidSourceIrisData
+        );
+        assert_eq!(
+            super::pcp_mapping_error(&di_migration_pcp::Error::InvalidField("di_embeddings")),
+            enclave_primitives::Error::FailedToBuildPcp
+        );
     }
 
     #[test]

@@ -40,7 +40,7 @@ impl MigrationContext {
 ///
 /// The sandbox adapter must validate model-specific dimensions and encodings;
 /// the sharing stage must bind every share to these exact outputs.
-/// `with_build_request` checks availability and consistency before building.
+/// `crate::validate_build_inputs` checks availability and consistency before building.
 pub struct PreparedBiometrics<'a> {
     /// Release version of the executed biometric pipeline, recorded in `migration.pb`.
     pub biometric_pipeline_version: String,

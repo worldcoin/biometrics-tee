@@ -101,6 +101,7 @@ fn attempt_id_is_stable_across_failure_stages_and_distinct_between_attempts() {
         (Stage::DecodePayload, Error::InvalidInput),
         (Stage::VerifyCredential, Error::CredentialClaimsMismatch),
         (Stage::OpenPcp, Error::PcpKeyDecryptionFailed),
+        (Stage::OpenPcp, Error::InvalidSourceIrisData),
         (Stage::Biometrics, Error::BiometricQualityRejected),
         (Stage::Biometrics, Error::BiometricSpoofDetected),
         (

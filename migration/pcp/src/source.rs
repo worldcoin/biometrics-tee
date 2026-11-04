@@ -152,6 +152,22 @@ impl SourcePcp {
         })
     }
 
+    /// Validate payload fields and matching versions within present source Iris records.
+    /// Files and version fields may be absent. Run after source authentication and
+    /// integrity verification, before executing the biometric pipeline.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidSourceIrisData`] without exposing source contents.
+    pub fn validate_iris(&self) -> Result<(), Error> {
+        self.iris().map(|_| ())
+    }
+
+    pub(crate) fn iris(&self) -> Result<orb_pcp::Iris<'_>, Error> {
+        orb_pcp::Iris::codes(self.iris_codes.as_ref())
+            .shares(self.iris_code_shares.each_ref().map(Option::as_ref))
+            .map_err(|_| Error::InvalidSourceIrisData)
+    }
+
     pub const fn version(&self) -> SourceVersion {
         self.version
     }

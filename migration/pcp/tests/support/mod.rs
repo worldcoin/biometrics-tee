@@ -128,7 +128,7 @@ pub const FRAME_B: &str = "0012a0b1c2d3e4f5a6b7c8d902000000";
 pub const NEW_SIGNUP_ID: &str = "0012a0b1c2d3e4f5a6b7c8d900000000";
 
 /// Source iris code files, in the compact sorted encoding real sources use.
-pub const IRIS_CODES: &[u8] = br#"{"IRIS_version":"old","left_iris_code":"old-left-code"}"#;
+pub const IRIS_CODES: &[u8] = br#"{"IRIS_version":"old","left_iris_code":"old-left-code","left_mask_code":"old-left-mask","right_iris_code":"old-right-code","right_mask_code":"old-right-mask"}"#;
 
 pub fn iris_code_share(index: usize, with_shares_version: bool) -> Vec<u8> {
     let version = if with_shares_version {
@@ -136,7 +136,7 @@ pub fn iris_code_share(index: usize, with_shares_version: bool) -> Vec<u8> {
     } else {
         ""
     };
-    format!(r#"{{{version}"IRIS_version":"old","left_iris_code_shares":"old-share-{index}"}}"#)
+    format!(r#"{{{version}"IRIS_version":"old","left_iris_code_shares":"old-share-{index}","left_mask_code_shares":"old-mask-{index}","right_iris_code_shares":"old-right-{index}","right_mask_code_shares":"old-right-mask-{index}"}}"#)
         .into_bytes()
 }
 
@@ -385,7 +385,7 @@ pub fn build_and_open(
     }
 }
 
-/// The checks `with_build_request` runs before building, without building.
+/// The checks `validate_build_inputs` runs before building, without building.
 pub fn check_request(
     source: &SourcePcp,
     biometrics: &PreparedBiometrics<'_>,
