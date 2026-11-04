@@ -601,3 +601,83 @@ fn deeply_nested_worker_diagnostics_stay_opaque() {
     let encoded = report.serialize(&test_support::state(), None).unwrap();
     assert!(encoded.contains(&nested));
 }
+
+#[test]
+fn iris_comparison_survives_later_failure_without_worker_json() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use di_worker_protocol::migration::{EyeResult, MigrationResult};
+    use orb_pcp_defs::v1::IrisCodes;
+
+    let code = STANDARD.encode([0; 1600]);
+    let mask = STANDARD.encode([255; 1600]);
+    let source = IrisCodes {
+        iris_version: Some("2.10.0".into()),
+        left_iris_code: Some(code.clone()),
+        left_mask_code: Some(mask.clone()),
+        ..IrisCodes::default()
+    };
+    let worker = MigrationResult {
+        iris_code_version: "v2.1".into(),
+        left_iris: Some(EyeResult {
+            iris_code: code.clone(),
+            mask_code: mask.clone(),
+            ..EyeResult::default()
+        }),
+        ..MigrationResult::default()
+    };
+    let mut report = Report::new(SystemTime::now());
+    assert!(
+        decode(&report, Some(Error::BiometricPipelineFailed))["iris_code_comparison"].is_null()
+    );
+    report.iris_code_comparison = Some(crate::iris_comparison::Comparison::new(
+        Some(&source),
+        &worker,
+    ));
+    let comparison = decode(&report, None)["iris_code_comparison"].clone();
+    assert_eq!(comparison["left"]["status"], "compared");
+    assert_eq!(comparison["left"]["zero_shift"]["hamming_distance"], 0.0);
+    assert_eq!(comparison["right"]["status"], "missing_source");
+    assert_eq!(
+        decode(&report, Some(Error::FailedToBuildPcp))["iris_code_comparison"],
+        comparison
+    );
+    let encoded = report.serialize(&test_support::state(), None).unwrap();
+    assert!(!encoded.contains(&code));
+    assert!(!encoded.contains(&mask));
+}
+
+#[test]
+fn comparison_engine_version_uses_the_envelope_version_resolution() {
+    let mut report = Report::new(SystemTime::now());
+    report.iris_code_comparison = Some(crate::iris_comparison::Comparison::new(
+        None,
+        &di_worker_protocol::migration::MigrationResult::default(),
+    ));
+    for (worker, expected) in [
+        (r#"{"iris_engine_version":"3.6.0"}"#, json!("3.6.0")),
+        (WORKER_REPORT, json!("3.5.0")),
+        ("{}", Value::Null),
+        (r#"{"iris_engine_version":""}"#, Value::Null),
+        (
+            r#"{"iris_engine_version":"3.6.0","iris":{"left":{"outputs":{"capture_qa":{"metadata":{"library_version":"3.5.0"}}}}}}"#,
+            Value::Null,
+        ),
+        (r#"{"iris_engine_version":42}"#, Value::Null),
+    ] {
+        report.worker_report(Some(Zeroizing::new(worker.to_owned())));
+        let value = decode(&report, None);
+        assert!(
+            value["iris_code_comparison"]
+                .get("worker_iris_engine_version")
+                .is_none()
+        );
+        assert_eq!(
+            value["iris_code_comparison"]["worker_iris_version"],
+            expected
+        );
+        assert_eq!(
+            value["iris_code_comparison"]["worker_iris_version"],
+            value["metadata"]["software_version"]["iris_engine_version"]
+        );
+    }
+}
