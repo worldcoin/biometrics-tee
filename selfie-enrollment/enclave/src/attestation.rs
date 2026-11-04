@@ -50,13 +50,28 @@ impl selfie_enrollment_identity::CaptureAttestor for NsmAttestor {
         user_data: &[u8; selfie_enrollment_identity::USER_DATA_BYTES],
     ) -> Result<Vec<u8>, selfie_enrollment_identity::AttestationFailed> {
         SecureModule::try_global()
-            .ok_or(selfie_enrollment_identity::AttestationFailed)?
+            .ok_or_else(|| {
+                tracing::error!(
+                    dependency = "nsm",
+                    operation = "capture_attestation",
+                    "Nitro Secure Module is not initialized"
+                );
+                selfie_enrollment_identity::AttestationFailed
+            })?
             .raw_attest(
                 Some(user_data.to_vec()),
                 Some(nonce.to_vec()),
                 None::<Vec<u8>>,
             )
-            .map_err(|_| selfie_enrollment_identity::AttestationFailed)
+            .map_err(|error| {
+                tracing::error!(
+                    dependency = "nsm",
+                    operation = "capture_attestation",
+                    ?error,
+                    "failed to attest enrollment capture"
+                );
+                selfie_enrollment_identity::AttestationFailed
+            })
     }
 }
 
