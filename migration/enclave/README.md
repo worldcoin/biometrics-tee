@@ -62,6 +62,9 @@ The supported worker code version is `v2.1`: 16 rows, 200 columns, two filters a
 two phase bits, packed MSB-first into 1,600 bytes. All four decoded buffers must
 have that size. Source `IRIS_version` is pipeline provenance, not a code-format
 identifier, and is recorded separately from `worker_iris_code_version`.
+`worker_iris_engine_version` uses the same agreed worker diagnostic version as
+`metadata.software_version.iris_engine_version`; it is null when the version is
+unavailable, malformed or inconsistent.
 Additional template formats require an explicit layout and compatibility check.
 A distance with no common valid bits is null; an eye with no valid rotation has
 status `no_valid_overlap`. Missing data, unsupported versions and invalid

@@ -645,3 +645,34 @@ fn iris_comparison_survives_later_failure_without_worker_json() {
     assert!(!encoded.contains(&code));
     assert!(!encoded.contains(&mask));
 }
+
+#[test]
+fn comparison_engine_version_uses_the_envelope_version_resolution() {
+    let mut report = Report::new(SystemTime::now());
+    report.iris_code_comparison = Some(crate::iris_comparison::Comparison::new(
+        None,
+        &di_worker_protocol::migration::MigrationResult::default(),
+    ));
+    for (worker, expected) in [
+        (r#"{"iris_engine_version":"3.6.0"}"#, json!("3.6.0")),
+        (WORKER_REPORT, json!("3.5.0")),
+        ("{}", Value::Null),
+        (r#"{"iris_engine_version":""}"#, Value::Null),
+        (
+            r#"{"iris_engine_version":"3.6.0","iris":{"left":{"outputs":{"capture_qa":{"metadata":{"library_version":"3.5.0"}}}}}}"#,
+            Value::Null,
+        ),
+        (r#"{"iris_engine_version":42}"#, Value::Null),
+    ] {
+        report.worker_report(Some(Zeroizing::new(worker.to_owned())));
+        let value = decode(&report, None);
+        assert_eq!(
+            value["iris_code_comparison"]["worker_iris_engine_version"],
+            expected
+        );
+        assert_eq!(
+            value["iris_code_comparison"]["worker_iris_engine_version"],
+            value["metadata"]["software_version"]["iris_engine_version"]
+        );
+    }
+}
