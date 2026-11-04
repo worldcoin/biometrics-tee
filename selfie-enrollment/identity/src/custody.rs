@@ -8,7 +8,7 @@ use std::io::{self, Cursor, Write};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use crypto_box::PublicKey;
-use flate2::{Compression, write::GzEncoder};
+use flate2::Crc;
 use rand::{CryptoRng, Rng};
 use serde::Serialize;
 use tar::{Builder, Header};
@@ -62,7 +62,7 @@ struct Enrollment<'a> {
     parts: Vec<Part<'a>>,
 }
 
-/// Creates a libsodium-compatible sealed box containing a gzip-compressed tar archive.
+/// Creates a libsodium-compatible sealed box containing a tar archive in gzip stored blocks.
 /// Reuses the exact data and plaintext shares produced by `assemble`; never generates shares.
 /// No credential or legacy Gateway signature is fabricated. Credential import happens later.
 /// Owned plaintext serialization buffers are erased on drop.
@@ -158,20 +158,27 @@ pub fn encrypt<R: Rng + CryptoRng>(
             })?,
         ),
     ];
-    let raw_bytes = entries.iter().map(|(_, bytes)| bytes.len()).sum::<usize>()
-        + data.image_png.len()
-        + enrollment.tee_attestation_document.len();
-    // Fixed backing storage prevents a growing Vec from leaving abandoned plaintext copies.
-    let capacity = raw_bytes + raw_bytes / 100 + 64 * 1024;
-    if capacity > MAX_PACKAGE_BYTES {
+    // Each fixed, short entry name needs one tar header and 512-byte data padding.
+    // The archive ends with two zero blocks.
+    let tar_bytes = entries
+        .iter()
+        .map(|(_, bytes)| bytes.len())
+        .chain([
+            data.image_png.len(),
+            enrollment.tee_attestation_document.len(),
+        ])
+        .map(|length| 512 + length.div_ceil(512) * 512)
+        .sum::<usize>()
+        + 1024;
+    let capacity = StoredGzip::encoded_len(tar_bytes);
+    if capacity + crypto_box::SEALBYTES > MAX_PACKAGE_BYTES {
         return Err(Error::TooLarge);
     }
+    // Fixed backing storage prevents a growing Vec from leaving abandoned plaintext copies.
     let mut plaintext = Zeroizing::new(vec![0; capacity]);
     let length = {
-        let encoder = GzEncoder::new(
-            Cursor::new(plaintext.as_mut_slice()),
-            Compression::default(),
-        );
+        let encoder =
+            StoredGzip::new(plaintext.as_mut_slice()).map_err(|_| Error::Serialization)?;
         let mut archive = Builder::new(encoder);
         for (name, bytes) in &mut entries {
             append(&mut archive, name, bytes)?;
@@ -191,11 +198,80 @@ pub fn encrypt<R: Rng + CryptoRng>(
             .map_err(|_| Error::Serialization)?
             .finish()
             .map_err(|_| Error::Serialization)?
-            .position() as usize
     };
     custody_key
         .seal(rng, &plaintext[..length])
         .map_err(|_| Error::Encryption)
+}
+
+// RFC 1951 stored blocks keep gzip compatibility without a compressor's unwiped
+// history/work buffers. Payload bytes go directly into the caller's fixed buffer.
+struct StoredGzip<'a> {
+    output: Cursor<&'a mut [u8]>,
+    crc: Crc,
+    block_start: usize,
+    block_len: u16,
+}
+
+impl<'a> StoredGzip<'a> {
+    const BLOCK_BYTES: usize = u16::MAX as usize;
+
+    fn encoded_len(input_len: usize) -> usize {
+        10 + input_len + input_len.div_ceil(Self::BLOCK_BYTES).max(1) * 5 + 8
+    }
+
+    fn new(buffer: &'a mut [u8]) -> io::Result<Self> {
+        let mut output = Cursor::new(buffer);
+        // Gzip: DEFLATE, no optional fields, zero timestamp, unspecified OS.
+        output.write_all(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255])?;
+        output.write_all(&[0; 5])?;
+        Ok(Self {
+            output,
+            crc: Crc::new(),
+            block_start: 10,
+            block_len: 0,
+        })
+    }
+
+    fn finish_block(&mut self, last: bool) {
+        let header = &mut self.output.get_mut()[self.block_start..self.block_start + 5];
+        header[0] = u8::from(last); // BFINAL and BTYPE=00, padded to a byte.
+        header[1..3].copy_from_slice(&self.block_len.to_le_bytes());
+        header[3..5].copy_from_slice(&(!self.block_len).to_le_bytes());
+    }
+
+    fn finish(mut self) -> io::Result<usize> {
+        self.finish_block(true);
+        self.output.write_all(&self.crc.sum().to_le_bytes())?;
+        self.output.write_all(&self.crc.amount().to_le_bytes())?;
+        Ok(self.output.position() as usize)
+    }
+}
+
+impl Write for StoredGzip<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if self.block_len == u16::MAX {
+            self.finish_block(false);
+            let next = self.output.position() as usize;
+            self.output.write_all(&[0; 5])?;
+            self.block_start = next;
+            self.block_len = 0;
+        }
+        let count = bytes
+            .len()
+            .min(Self::BLOCK_BYTES - usize::from(self.block_len));
+        let written = self.output.write(&bytes[..count])?;
+        self.crc.update(&bytes[..written]);
+        self.block_len += written as u16;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
 }
 
 fn append<W: Write>(archive: &mut Builder<W>, name: &str, bytes: &[u8]) -> Result<(), Error> {
@@ -231,4 +307,74 @@ fn json(value: &impl Serialize) -> Result<Zeroizing<Vec<u8>>, Error> {
     let mut bytes = Zeroizing::new(vec![0; size.0]);
     serde_json::to_writer(bytes.as_mut_slice(), value).map_err(|_| Error::Serialization)?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn stored_gzip_roundtrips_empty_and_block_boundaries_with_chunked_writes() {
+        for length in [0, 1, 65_534, 65_535, 65_536, 131_070, 131_071] {
+            let input: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            for chunk_size in [1, 511, 65_535, 131_071] {
+                let mut output = Zeroizing::new(vec![0; StoredGzip::encoded_len(length)]);
+                let mut encoder = StoredGzip::new(&mut output).unwrap();
+                encoder.write_all(&[]).unwrap();
+                for chunk in input.chunks(chunk_size) {
+                    encoder.write_all(chunk).unwrap();
+                }
+                encoder.flush().unwrap();
+                let written = encoder.finish().unwrap();
+                assert_eq!(written, output.len());
+                let mut decoded = Vec::new();
+                flate2::read::GzDecoder::new(output.as_slice())
+                    .read_to_end(&mut decoded)
+                    .unwrap();
+                assert_eq!(decoded, input);
+            }
+        }
+    }
+
+    #[test]
+    fn stored_gzip_reports_insufficient_capacity_at_each_stage() {
+        let input = vec![0x5a; 65_536];
+        // Header, payload, next block header, and trailer failures all propagate.
+        for capacity in [
+            0,
+            9,
+            14,
+            15,
+            65_550,
+            65_554,
+            StoredGzip::encoded_len(input.len()) - 1,
+        ] {
+            let mut output = Zeroizing::new(vec![0; capacity]);
+            let result = (|| {
+                let mut encoder = StoredGzip::new(&mut output)?;
+                encoder.write_all(&input)?;
+                encoder.finish()
+            })();
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WriteZero);
+        }
+    }
+
+    #[test]
+    fn stored_gzip_trailer_detects_corrupt_payload_and_length() {
+        let input = b"custody archive contents";
+        let mut output = Zeroizing::new(vec![0; StoredGzip::encoded_len(input.len())]);
+        let mut encoder = StoredGzip::new(&mut output).unwrap();
+        encoder.write_all(input).unwrap();
+        encoder.finish().unwrap();
+        for index in [15, output.len() - 8, output.len() - 4] {
+            output[index] ^= 1;
+            assert!(
+                flate2::read::GzDecoder::new(output.as_slice())
+                    .read_to_end(&mut Vec::new())
+                    .is_err()
+            );
+            output[index] ^= 1;
+        }
+    }
 }
