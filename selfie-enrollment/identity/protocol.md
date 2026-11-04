@@ -4,7 +4,7 @@ The enclave assembles the enrollment form. Signup-service hashes the received
 fields and compares the result to the authenticated Nitro nonce.
 
 Submit to the existing `PUT /api/v1/identity?idComm=...` endpoint. Signup-service
-selects a Nitro-verification middleware branch for `x-tee-attestation` requests;
+selects a Nitro-verification middleware branch for `x-nitro-attestation` requests;
 this branch replaces mobile device attestation, not subject ownership checks.
 An invalid Nitro attempt must be rejected without falling back to mobile
 verification. No separate web gateway path is required.
@@ -14,7 +14,7 @@ verification. No separate web gateway path is required.
 - `nonce`: the 32-byte SHA-256 digest below.
 - `user_data`: byte `0x01`, followed by the worker's 48-byte SHA-384.
 - `public_key`: absent.
-- HTTP `x-tee-attestation`: standard padded base64 of the binary COSE_Sign1 document.
+- HTTP `x-nitro-attestation`: standard padded base64 of the binary COSE_Sign1 document.
 - Maximum binary document: 12,000 bytes (16,000 base64 bytes), leaving room for
   the header name below the staging ALB single-header limit of 16 KiB.
 

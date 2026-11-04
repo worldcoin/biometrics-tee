@@ -26,7 +26,7 @@ pub const NONCE_BYTES: usize = 32;
 /// Matches signup-service's bound and accommodates Oxide's measured 570,464-byte proof.
 pub const MAX_OWNERSHIP_PROOF_BYTES: usize = 768 * 1024;
 /// Standard base64 of the binary COSE_Sign1 document; never a multipart body field.
-pub const ATTESTATION_HEADER: &str = "x-tee-attestation";
+pub const ATTESTATION_HEADER: &str = "x-nitro-attestation";
 /// Base64 expands to at most 16,000 bytes, leaving room for the header name under
 /// the staging ALB's 16 KiB single-header limit. Shared with signup-service.
 pub const MAX_ATTESTATION_DOCUMENT_BYTES: usize = 12_000;
