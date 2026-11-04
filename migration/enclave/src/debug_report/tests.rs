@@ -666,12 +666,17 @@ fn comparison_engine_version_uses_the_envelope_version_resolution() {
     ] {
         report.worker_report(Some(Zeroizing::new(worker.to_owned())));
         let value = decode(&report, None);
+        assert!(
+            value["iris_code_comparison"]
+                .get("worker_iris_engine_version")
+                .is_none()
+        );
         assert_eq!(
-            value["iris_code_comparison"]["worker_iris_engine_version"],
+            value["iris_code_comparison"]["worker_iris_version"],
             expected
         );
         assert_eq!(
-            value["iris_code_comparison"]["worker_iris_engine_version"],
+            value["iris_code_comparison"]["worker_iris_version"],
             value["metadata"]["software_version"]["iris_engine_version"]
         );
     }

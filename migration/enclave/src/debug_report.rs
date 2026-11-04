@@ -272,7 +272,7 @@ impl Report {
             iris_code_comparison: self.iris_code_comparison.as_ref().map(|measurements| {
                 IrisCodeComparison {
                     measurements,
-                    worker_iris_engine_version: versions.iris,
+                    worker_iris_version: versions.iris,
                 }
             }),
             pipeline_errors: PipelineErrors {
@@ -370,7 +370,7 @@ struct Envelope<'a> {
 struct IrisCodeComparison<'a> {
     #[serde(flatten)]
     measurements: &'a crate::iris_comparison::Comparison,
-    worker_iris_engine_version: Option<&'a str>,
+    worker_iris_version: Option<&'a str>,
 }
 
 #[derive(Serialize)]

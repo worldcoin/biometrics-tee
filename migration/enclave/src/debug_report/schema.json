@@ -137,7 +137,7 @@
         "worker_iris_code_version": {
           "type": "string"
         },
-        "worker_iris_engine_version": {
+        "worker_iris_version": {
           "description": "Agreed iris engine version from worker diagnostics, matching metadata.software_version.iris_engine_version; null when unavailable, malformed or inconsistent.",
           "type": [
             "string",
@@ -151,7 +151,7 @@
         "rotation_limit_columns",
         "left",
         "right",
-        "worker_iris_engine_version"
+        "worker_iris_version"
       ],
       "type": [
         "object",
