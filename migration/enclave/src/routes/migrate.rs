@@ -274,7 +274,7 @@ struct OwnedPreparedBiometrics {
     face_embeddings: Vec<v1::FaceEmbedding>,
     di_embeddings: v1::DiIrisEmbeddings,
     shares: [v1::DiIrisEmbeddingShares; 3],
-    orbit5_shares: [v1::Orbit5IrisEmbeddingShares; 5],
+    orbit5_di_embedding_shares: [v1::Orbit5DiIrisEmbeddingShares; 5],
     left_normalized: di_worker_protocol::migration::NormalizedIris,
     left_resized: di_worker_protocol::migration::NormalizedIris,
     right_normalized: di_worker_protocol::migration::NormalizedIris,
@@ -288,7 +288,7 @@ impl OwnedPreparedBiometrics {
             face_embeddings: self.face_embeddings.clone(),
             di_embeddings: self.di_embeddings.clone(),
             di_embedding_shares: self.shares.clone(),
-            orbit5_embedding_shares: self.orbit5_shares.clone(),
+            orbit5_di_embedding_shares: self.orbit5_di_embedding_shares.clone(),
             left_normalized: orb_pcp::NormalizedIrisFrame {
                 image: &self.left_normalized.image,
                 mask: &self.left_normalized.mask,
@@ -325,7 +325,7 @@ fn prepare_biometrics(
     let right = right_iris.ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
 
     let shares = generate_shares(&left, &right, &iris_model_version, &iris_embedding_version)?;
-    let orbit5_shares = generate_orbit5_shares(
+    let orbit5_di_embedding_shares = generate_orbit5_shares(
         &left,
         &right,
         &iris_model_version,
@@ -370,7 +370,7 @@ fn prepare_biometrics(
             }),
         },
         shares,
-        orbit5_shares,
+        orbit5_di_embedding_shares,
         left_normalized,
         left_resized,
         right_normalized,
@@ -454,7 +454,7 @@ fn generate_orbit5_shares<R: Rng + CryptoRng>(
     model_version: &str,
     embedding_version: &str,
     rng: &mut R,
-) -> Result<[v1::Orbit5IrisEmbeddingShares; 5], enclave_primitives::Error> {
+) -> Result<[v1::Orbit5DiIrisEmbeddingShares; 5], enclave_primitives::Error> {
     let mut generate = |embedding: &[u8], eye: &'static str, mirrored: bool| {
         di_migration_shares::generate_orbit5(embedding, rng).map_err(|error| {
             tracing::error!(%error, eye, mirrored, "failed to generate ORBIT5 embedding shares");
@@ -467,8 +467,8 @@ fn generate_orbit5_shares<R: Rng + CryptoRng>(
     let right_mirror_shares = generate(&right.mirror_embedding, "right", true)?;
 
     Ok(std::array::from_fn(|recipient| {
-        v1::Orbit5IrisEmbeddingShares {
-            share_v1: Some(v1::Orbit5IrisEmbeddingShareV1 {
+        v1::Orbit5DiIrisEmbeddingShares {
+            share_v1: Some(v1::Orbit5DiIrisEmbeddingShareV1 {
                 model_version: model_version.to_owned(),
                 shares_version: di_migration_shares::VERSION.to_owned(),
                 embedding_version: embedding_version.to_owned(),
@@ -679,7 +679,7 @@ mod tests {
             assert_eq!(share.left_share.len(), EMBEDDING_SIZE);
             assert_eq!(share.right_mirror_share.len(), EMBEDDING_SIZE);
         }
-        for share in prepared.orbit5_embedding_shares {
+        for share in prepared.orbit5_di_embedding_shares {
             let share = share.share_v1.expect("versioned ORBIT5 share");
             assert_eq!(share.model_version, "di-model");
             assert_eq!(share.embedding_version, "di-embedding");

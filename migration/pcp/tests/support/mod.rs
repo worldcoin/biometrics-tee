@@ -310,10 +310,10 @@ pub fn pipeline() -> PreparedBiometrics<'static> {
                 }),
             }
         }),
-        orbit5_embedding_shares: [1u32, 2, 3, 4, 5].map(|recipient| {
+        orbit5_di_embedding_shares: [1u32, 2, 3, 4, 5].map(|recipient| {
             let base = 100 * recipient;
-            v1::Orbit5IrisEmbeddingShares {
-                share_v1: Some(v1::Orbit5IrisEmbeddingShareV1 {
+            v1::Orbit5DiIrisEmbeddingShares {
+                share_v1: Some(v1::Orbit5DiIrisEmbeddingShareV1 {
                     model_version: model(),
                     shares_version: "test-orbit5-shares".into(),
                     embedding_version: encoding(),

@@ -117,7 +117,7 @@ pub fn with_build_request<T>(
                 iris_code_shares: source.iris_code_shares.each_ref().map(Option::as_ref),
                 di_embeddings: Some(&biometrics.di_embeddings),
                 di_embedding_shares: biometrics.di_embedding_shares.each_ref().map(Some),
-                orbit5_embedding_shares: Some(&biometrics.orbit5_embedding_shares),
+                orbit5_di_embedding_shares: Some(&biometrics.orbit5_di_embedding_shares),
             },
             migration: Some(migration),
         };

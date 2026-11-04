@@ -116,8 +116,8 @@ fn verify_normalized(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Resu
 }
 
 fn verify_orbit5(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Result<(), Error> {
-    for (recipient, expected) in biometrics.orbit5_embedding_shares.iter().enumerate() {
-        let name = format!("orbit5_iris_embeddings_shares_{recipient}.pb");
+    for (recipient, expected) in biometrics.orbit5_di_embedding_shares.iter().enumerate() {
+        let name = format!("orbit5_di_iris_embeddings_shares_{recipient}.pb");
         let actual = files
             .get(&name)
             .ok_or(Error::OutputMismatch("orbit5_share_missing"))?;
@@ -127,9 +127,9 @@ fn verify_orbit5(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Result<(
     }
     if files
         .keys()
-        .filter(|name| name.starts_with("orbit5_iris_embeddings_shares_"))
+        .filter(|name| name.starts_with("orbit5_di_iris_embeddings_shares_"))
         .count()
-        != biometrics.orbit5_embedding_shares.len()
+        != biometrics.orbit5_di_embedding_shares.len()
     {
         return Err(Error::OutputMismatch("orbit5_share_unexpected"));
     }
