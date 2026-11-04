@@ -22,7 +22,7 @@ env:
 jobs:
   cargo-clippy:
     name: clippy
-    # Minijail's pinned revision fails with Ubuntu 26.04's BLKTRACESETUP2 headers.
+    # Minijail's constant generator is incompatible with Ubuntu 26.04's BLKTRACESETUP2 headers.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -43,7 +43,7 @@ jobs:
 
   cargo-tests:
     name: tests
-    # Keep Minijail builds on the same supported headers as cargo-clippy.
+    # Keep the native Minijail build on the same headers as clippy.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -62,7 +62,7 @@ jobs:
 
   localstack:
     name: LocalStack tests
-    # Keep Minijail builds on the same supported headers as cargo-clippy.
+    # The enclave integration tests also compile Minijail against runner headers.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:

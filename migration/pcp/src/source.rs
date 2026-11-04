@@ -156,6 +156,11 @@ impl SourcePcp {
         self.version
     }
 
+    /// Original packed iris templates, when included in the validated source package.
+    pub const fn iris_codes(&self) -> Option<&v1::IrisCodes> {
+        self.iris_codes.as_ref()
+    }
+
     pub const fn info(&self) -> &v1::Info {
         &self.info
     }

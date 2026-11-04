@@ -23,8 +23,8 @@ use zeroize::Zeroizing;
 
 use crate::sealing::{EnclaveVerifier, MigrationResponseOpener, SealingError};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -105,6 +105,7 @@ pub struct StartMigration<'a, S> {
 }
 
 impl MigrationApiClient {
+    /// Allows 30 seconds to connect and five minutes per request, including body transfer.
     pub fn new(base_url: &Url) -> Result<Self, Error> {
         if base_url.cannot_be_a_base() {
             return Err(Error::InvalidBaseUrl {
