@@ -7,8 +7,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use crypto_box::SecretKey;
 use rand::{SeedableRng, rngs::StdRng};
 use selfie_enrollment_identity::{
-    AttestationFailed, Capture, CaptureAttestor, Inputs, Subject, assemble, binding_digest,
-    user_data,
+    AttestationFailed, Capture, CaptureAttestor, Inputs, Subject, USER_AGENT, assemble,
+    binding_digest, user_data,
 };
 use selfie_enrollment_sealed_types::FaceEmbedding;
 use uuid::Uuid;
@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut request = std::fs::File::create_new(output.join("request.http"))?;
     write!(
         request,
-        "PUT /api/v1/identity?idComm={} HTTP/1.1\r\nHost: interop.invalid\r\nContent-Type: multipart/form-data; boundary={boundary}\r\nX-Nitro-Attestation: {}\r\nContent-Length: {}\r\n\r\n",
+        "PUT /api/v1/identity?idComm={} HTTP/1.1\r\nHost: interop.invalid\r\nUser-Agent: {USER_AGENT}\r\nContent-Type: multipart/form-data; boundary={boundary}\r\nX-Nitro-Attestation: {}\r\nContent-Length: {}\r\n\r\n",
         enrollment.id_commitment,
         enrollment.attestation_header(),
         body.len()
