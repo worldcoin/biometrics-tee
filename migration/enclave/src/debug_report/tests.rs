@@ -37,6 +37,98 @@ fn decode(report: &Report, error: Option<Error>) -> Value {
 }
 
 #[test]
+fn observation_failure_preserves_the_verified_worker_digest() {
+    let mut state = test_support::state();
+    state.set_report_metadata(RuntimeMetadata::collect_observations(
+        "ab".repeat(48),
+        || panic!("injected observation failure"),
+    ));
+    let encoded = report()
+        .serialize(&state, Some(Error::BiometricQualityRejected))
+        .unwrap();
+    let actual: Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        actual["metadata"]["software_version"]["worker_sha384"],
+        "ab".repeat(48)
+    );
+    assert!(actual["metadata"].get("hardware").is_none());
+    assert!(
+        actual["metadata"]["environment"]["tee"]
+            .get("attestation")
+            .is_none()
+    );
+}
+
+#[test]
+fn zeroed_image_measurements_ignore_parent_pcrs_and_require_complete_digests() {
+    let mut document: AttestationDoc = serde_json::from_value(json!({
+        "module_id": "synthetic", "digest": "SHA384", "timestamp": 0,
+        "pcrs": {}, "certificate": [], "cabundle": [],
+        "public_key": null, "user_data": null, "nonce": null
+    }))
+    .unwrap();
+    assert!(!crate::attestation::has_zeroed_measurements(&document));
+    for index in 0..=4 {
+        document
+            .pcrs
+            .insert(index, vec![u8::from(index > 2); 48].into());
+    }
+    let mut state = test_support::state();
+    state.set_report_metadata(RuntimeMetadata::collect("ab".repeat(48), &document));
+    let value: Value = serde_json::from_str(&report().serialize(&state, None).unwrap()).unwrap();
+    let attestation = &value["metadata"]["environment"]["tee"]["attestation"];
+    assert_eq!(attestation["measurements_zeroed"], true);
+    assert_eq!(attestation["pcrs"].as_object().unwrap().len(), 3);
+    for index in 0..=2 {
+        assert_eq!(attestation["pcrs"][index.to_string()], "00".repeat(48));
+        let mut invalid = document.clone();
+        invalid.pcrs.remove(&index);
+        assert!(!crate::attestation::has_zeroed_measurements(&invalid));
+        for digest in [vec![], vec![0; 47], vec![0; 49], vec![1; 48]] {
+            invalid.pcrs.insert(index, digest.into());
+            assert!(!crate::attestation::has_zeroed_measurements(&invalid));
+        }
+    }
+}
+
+#[test]
+fn attempt_id_is_stable_across_failure_stages_and_distinct_between_attempts() {
+    let mut report = Report::new(SystemTime::now());
+    let id = json!(report.signup_id);
+    assert!(id.is_object());
+    assert_ne!(id, json!(Report::new(SystemTime::now()).signup_id));
+    for (stage, error) in [
+        (Stage::DecodePayload, Error::InvalidInput),
+        (Stage::VerifyCredential, Error::CredentialClaimsMismatch),
+        (Stage::OpenPcp, Error::PcpKeyDecryptionFailed),
+        (Stage::Biometrics, Error::BiometricQualityRejected),
+        (Stage::Biometrics, Error::BiometricSpoofDetected),
+        (
+            Stage::PrepareBiometrics,
+            Error::IncompleteBiometricPipelineResult,
+        ),
+        (
+            Stage::PrepareBiometrics,
+            Error::EmbeddingShareGenerationFailed,
+        ),
+        (Stage::BuildPcp, Error::FailedToBuildPcp),
+        (
+            Stage::GenerateRecipients,
+            Error::PcpRecipientKeyGenerationFailed,
+        ),
+        (Stage::SignManifest, Error::ManifestSignerUnavailable),
+        (Stage::SealPcp, Error::PcpResponseSealingFailed),
+    ] {
+        report.stage = stage;
+        let value = decode(&report, Some(error));
+        assert_eq!(value["signup_id"], id);
+        assert!(value["src_signup_id"].is_null());
+    }
+    let schema: Value = serde_json::from_str(SCHEMA).unwrap();
+    assert_eq!(schema["properties"]["signup_id"]["type"], "object");
+}
+
+#[test]
 fn envelope_records_runtime_metadata_and_migration_provenance() {
     let mut state = test_support::state();
     state.set_report_metadata(RuntimeMetadata {
@@ -52,7 +144,7 @@ fn envelope_records_runtime_metadata_and_migration_provenance() {
         }),
     });
     let mut report = report();
-    report.signup_id = Some("00000000000000000000000100000000".parse().unwrap());
+    report.signup_id = "00000000000000000000000100000000".parse().unwrap();
     report.src_signup_id = Some("00000000000000000000000000000000".parse().unwrap());
     report.source_pcp_version = Some("2.7");
     let encoded = report.serialize(&state, None).unwrap();
@@ -145,6 +237,137 @@ fn diagnostics_survive_success_and_failures_after_inference() {
             value["metadata"]["software_version"]
                 .get("main_program")
                 .is_none()
+        );
+    }
+}
+
+#[test]
+fn worker_failure_summaries_and_execution_errors_remain_complete() {
+    let execution_error = "synthetic pipeline execution error";
+    for (code, kind, reason, error) in [
+        (
+            "FAILURE_CODE_QUALITY_REJECTED",
+            "quality",
+            "QUALITY_REASON_IMAGE_UNSHARP",
+            Error::BiometricQualityRejected,
+        ),
+        (
+            "FAILURE_CODE_SPOOF_DETECTED",
+            "spoof",
+            "SPOOF_REASON_SAME_EYE_DETECTED",
+            Error::BiometricSpoofDetected,
+        ),
+        (
+            "FAILURE_CODE_INTERNAL",
+            "internal",
+            "INTERNAL_REASON_PIPELINE_EXECUTION_FAILED",
+            Error::BiometricPipelineFailed,
+        ),
+        (
+            "FAILURE_CODE_INTERNAL",
+            "internal",
+            "999",
+            Error::BiometricPipelineFailed,
+        ),
+    ] {
+        let summary = json!({
+            "code": code,
+            "image": "IMAGE_ROLE_LEFT_IRIS",
+            "detail": {"kind": kind, "reason": reason},
+            "future": {"value": 1}
+        });
+        let summary =
+            summary
+                .to_string()
+                .replacen(r#""value":1"#, r#""value":0.1234567890123456789012"#, 1);
+        let source = WORKER_REPORT
+            .replacen(
+                r#""worker_version":"test-worker","#,
+                &format!(r#""worker_version":"test-worker","failure":{summary},"#),
+                1,
+            )
+            .replacen(
+                r#""side":"Left","outputs":"#,
+                &format!(r#""side":"Left","execution_error_msg":"{execution_error}","outputs":"#),
+                1,
+            );
+        let expected: Value = serde_json::from_str(&source).unwrap();
+        let mut report = report();
+        report.stage = Stage::Biometrics;
+        report.worker_report(Some(Zeroizing::new(source)));
+        let encoded = report
+            .serialize(&test_support::state(), Some(error))
+            .unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            value["pipeline_errors"]["worker_failure"],
+            expected["failure"]
+        );
+        assert!(encoded.contains(r#""future":{"value":0.1234567890123456789012}"#));
+        assert_eq!(value["iris"], expected["iris"]);
+        assert_eq!(
+            value["iris"]["left"]["execution_error_msg"],
+            execution_error
+        );
+        assert_eq!(value["face"]["outputs"], expected["face"]["outputs"]);
+        assert_eq!(
+            value["pipeline_errors"]["migration_error"]["code"],
+            json!(error)
+        );
+        assert!(encoded.contains("0.1234567890123456789012"));
+    }
+}
+
+#[test]
+fn older_and_successful_workers_have_no_failure_summary() {
+    for source in [
+        WORKER_REPORT.to_owned(),
+        WORKER_REPORT.replacen(
+            r#""worker_version":"test-worker","#,
+            r#""worker_version":"test-worker","failure":null,"#,
+            1,
+        ),
+    ] {
+        let mut report = report();
+        report.worker_report(Some(Zeroizing::new(source)));
+        let value = decode(&report, None);
+        assert!(value["pipeline_errors"]["worker_failure"].is_null());
+        assert!(value["pipeline_errors"]["migration_error"].is_null());
+        assert!(value["face"].is_object());
+        assert!(value["iris"].is_object());
+    }
+    let schema: Value = serde_json::from_str(SCHEMA).unwrap();
+    let errors = &schema["properties"]["pipeline_errors"];
+    assert_eq!(
+        errors["properties"]["worker_failure"]["type"],
+        json!(["object", "null"])
+    );
+    assert!(
+        errors["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("worker_failure"))
+    );
+}
+
+#[test]
+fn malformed_worker_failure_summary_keeps_other_diagnostics() {
+    let expected: Value = serde_json::from_str(WORKER_REPORT).unwrap();
+    for summary in ["[]", "true", "7", r#""invalid""#] {
+        let source = WORKER_REPORT.replacen(
+            r#""worker_version":"test-worker","#,
+            &format!(r#""worker_version":"test-worker","failure":{summary},"#),
+            1,
+        );
+        let mut report = report();
+        report.worker_report(Some(Zeroizing::new(source)));
+        let value = decode(&report, Some(Error::BiometricPipelineFailed));
+        assert!(value["pipeline_errors"]["worker_failure"].is_null());
+        assert_eq!(value["iris"], expected["iris"]);
+        assert_eq!(value["face"]["outputs"], expected["face"]["outputs"]);
+        assert_eq!(
+            value["pipeline_errors"]["migration_error"]["code"],
+            "BiometricPipelineFailed"
         );
     }
 }
@@ -246,8 +469,10 @@ fn an_explicit_worker_engine_version_is_available_before_eye_processing() {
 }
 
 #[test]
-fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
+fn partial_worker_failure_keeps_its_component_reason_and_available_diagnostics() {
     let mut report = report();
+    report.src_signup_id = Some("00000000000000000000000000000000".parse().unwrap());
+    report.source_pcp_version = Some("2.1");
     report.stage = Stage::Biometrics;
     let failure = Failure::invalid(invalid_request_reason::Reason::ImageTooLarge(
         ByteLimitExceeded { limit_bytes: 1024 },
@@ -258,7 +483,7 @@ fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
     assert_eq!(
         value["pipeline_errors"]["migration_error"],
         json!({
-            "stage":"biometrics", "code":"BiometricInvalidRequest", "image":"RightIris",
+            "stage":"biometrics", "code":"BiometricInvalidRequest", "component":"RightIris",
             "invalid_request_reason":{"image_too_large":{"limit_bytes":1024}}
         })
     );
@@ -268,11 +493,15 @@ fn partial_worker_failure_keeps_its_image_reason_and_available_diagnostics() {
     assert_eq!(value["metadata"]["signup_status"], "Fraud");
     assert_eq!(value["metadata"]["signup_reason"], "Fraud");
     assert_eq!(
-        value["pipeline_errors"]["migration_error"]["image"],
+        value["pipeline_errors"]["migration_error"]["component"],
         "IrisPair"
     );
     let quality = decode(&report, Some(Error::BiometricQualityRejected));
     assert_eq!(quality["metadata"]["signup_status"], "Failure");
+    assert!(quality["signup_id"].is_object());
+    assert_eq!(quality["signup_id"], json!(report.signup_id));
+    assert_eq!(quality["src_signup_id"], json!(report.src_signup_id));
+    assert_eq!(quality["metadata"]["source_pcp_version"], "2.1");
 }
 
 #[test]

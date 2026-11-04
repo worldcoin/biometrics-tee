@@ -104,7 +104,8 @@ async fn serve(boot: Bootstrap, worker: SandboxWorker) -> anyhow::Result<()> {
         Ok(arn) => {
             state.set_manifest_signer(
                 ManifestSigner::from_parent(arn)
-                    .context("invalid manifest-signing KMS configuration")?,
+                    .await
+                    .context("failed to configure manifest-signing KMS key")?,
             );
             tracing::info!("PCP manifest signing configured");
         }

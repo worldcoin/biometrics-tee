@@ -50,7 +50,7 @@ fn infallible_client_fn(
 }
 use base64::{Engine, engine::general_purpose::STANDARD};
 use di_migration_enclave::{
-    kms::{Error, KeyWrapper},
+    kms::{Error, KeyWrapper, ManifestSigner, SigningError},
     pcp_keys::{self, BackendKeys},
 };
 use di_migration_pcp::{validate_build_inputs, verify_completed_pcp};
@@ -111,6 +111,122 @@ fn mock_kms() -> (KeyWrapper, Arc<sealedbox::Keypair>) {
         .unwrap(),
         master,
     )
+}
+
+#[tokio::test]
+async fn manifest_key_arns_resolve_once_and_record_the_key_id() {
+    for key_id in ["00000000-0000-0000-0000-000000000001", "mrk-synthetic"] {
+        let arn = format!("arn:aws:kms:us-east-1:000000000000:key/{key_id}");
+        let expected_arn = arn.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let http = infallible_client_fn(move |request| {
+            count.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                request.headers()["x-amz-target"],
+                "TrentService.DescribeKey"
+            );
+            let body: Value = serde_json::from_slice(request.body().bytes().unwrap()).unwrap();
+            assert_eq!(body["KeyId"], expected_arn);
+            response(json!({"KeyMetadata": {"KeyId": key_id, "Arn": expected_arn}}))
+        });
+        let signer =
+            ManifestSigner::new(&Client::from_conf(config().http_client(http).build()), arn)
+                .await
+                .unwrap();
+        assert_eq!(signer.key_id(), key_id);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn manifest_aliases_resolve_once_and_sign_with_the_recorded_key() {
+    const ALIAS_ARN: &str = "arn:aws:kms:us-east-1:000000000000:alias/synthetic";
+    const KEY_ID: &str = "00000000-0000-0000-0000-000000000001";
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let http = infallible_client_fn(move |request| {
+        let body: Value = serde_json::from_slice(request.body().bytes().unwrap()).unwrap();
+        if count.fetch_add(1, Ordering::SeqCst) == 0 {
+            assert_eq!(
+                request.headers()["x-amz-target"],
+                "TrentService.DescribeKey"
+            );
+            assert_eq!(body["KeyId"], ALIAS_ARN);
+            response(json!({"KeyMetadata": {"KeyId": KEY_ID, "Arn": KEY_ARN}}))
+        } else {
+            assert_eq!(request.headers()["x-amz-target"], "TrentService.Sign");
+            assert_eq!(body["KeyId"], KEY_ARN);
+            assert_eq!(body["MessageType"], "DIGEST");
+            assert_eq!(body["SigningAlgorithm"], "RSASSA_PSS_SHA_256");
+            response(json!({"Signature": "AQ=="}))
+        }
+    });
+    let signer = ManifestSigner::new(
+        &Client::from_conf(config().http_client(http).build()),
+        ALIAS_ARN.into(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(signer.key_id(), KEY_ID);
+    assert_eq!(signer.sign(&[1; 32]).await.unwrap(), vec![1]);
+    assert_eq!(signer.sign(&[2; 32]).await.unwrap(), vec![1]);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn manifest_aliases_reject_invalid_metadata() {
+    for metadata in [
+        json!(null),
+        json!({"KeyId": "synthetic"}),
+        json!({"KeyId": "", "Arn": KEY_ARN}),
+        json!({"KeyId": "other-key", "Arn": KEY_ARN}),
+        json!({"KeyId": "synthetic", "Arn": "arn:aws:kms:us-east-1:000000000000:alias/synthetic"}),
+        json!({"KeyId": "synthetic", "Arn": "arn:aws:kms:eu-west-1:000000000000:key/synthetic"}),
+    ] {
+        let http = infallible_client_fn(move |_| response(json!({"KeyMetadata": metadata})));
+        let result = ManifestSigner::new(
+            &Client::from_conf(config().http_client(http).build()),
+            "arn:aws:kms:us-east-1:000000000000:alias/synthetic".into(),
+        )
+        .await;
+        assert_eq!(result.err(), Some(SigningError::InvalidResponse));
+    }
+}
+
+#[tokio::test]
+async fn manifest_alias_resolution_propagates_access_denial() {
+    let http = infallible_client_fn(move |_| {
+        http::Response::builder()
+            .status(400)
+            .body(json!({"__type": "AccessDeniedException"}).to_string())
+            .unwrap()
+    });
+    let result = ManifestSigner::new(
+        &Client::from_conf(config().http_client(http).build()),
+        "arn:aws:kms:us-east-1:000000000000:alias/synthetic".into(),
+    )
+    .await;
+    assert_eq!(result.err(), Some(SigningError::AccessDenied));
+}
+
+#[tokio::test(start_paused = true)]
+async fn manifest_alias_resolution_has_a_startup_deadline() {
+    let client = Client::from_conf(
+        config()
+            .http_client(test_client(|_| {
+                HttpConnectorFuture::new(std::future::pending())
+            }))
+            .build(),
+    );
+    let started = tokio::time::Instant::now();
+    let result = ManifestSigner::new(
+        &client,
+        "arn:aws:kms:us-east-1:000000000000:alias/synthetic".into(),
+    )
+    .await;
+    assert_eq!(result.err(), Some(SigningError::Timeout));
+    assert!(started.elapsed() <= std::time::Duration::from_secs(10));
 }
 
 fn recover_key(bytes: &[u8], public_key: &[u8]) -> sealedbox::Keypair {

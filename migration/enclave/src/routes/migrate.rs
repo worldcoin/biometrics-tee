@@ -11,7 +11,7 @@ use di_migration_enclave_primitives::{
     self as enclave_primitives, MAX_MIGRATION_DIAGNOSTIC_BYTES, MigrateError, MigrateRequest,
     MigrateResponse, pcp_payload,
 };
-use di_migration_pcp::{MigrationContext, PreparedBiometrics, S3Region, SourcePcp};
+use di_migration_pcp::{MigrationContext, PreparedBiometrics, SourcePcp};
 use di_worker_protocol::migration::{FailureCode, MigrationResult};
 use flate2::read::GzDecoder;
 use orb_pcp_defs::v1;
@@ -152,12 +152,17 @@ fn build_and_seal_pcp(
         .duration_since(UNIX_EPOCH)
         .map_err(|_| enclave_primitives::Error::InvalidSystemTime)?
         .as_secs();
-    let context = MigrationContext::new(
-        TEE_SOFTWARE_VERSION.to_owned(),
+
+    let manifest_signer = state.manifest_signer().ok_or_else(|| {
+        tracing::error!("PCP manifest signing is not configured");
+        enclave_primitives::Error::ManifestSignerUnavailable
+    })?;
+    let context = MigrationContext {
+        tee_software_version: TEE_SOFTWARE_VERSION.to_owned(),
+        signing_key_id: manifest_signer.key_id().to_owned(),
         migrated_ts,
-        S3Region::UsEast1,
-    );
-    report.signup_id = Some(context.signup_id.clone());
+        signup_id: report.signup_id.clone(),
+    };
 
     di_migration_pcp::validate_build_inputs(
         source_pcp,
@@ -178,11 +183,6 @@ fn build_and_seal_pcp(
             enclave_primitives::Error::PcpRecipientKeyGenerationFailed
         })?;
     let recipients = backend_keys.recipients(device_public_key);
-    report.stage = Stage::SignManifest;
-    let manifest_signer = state.manifest_signer().ok_or_else(|| {
-        tracing::error!("PCP manifest signing is not configured");
-        enclave_primitives::Error::ManifestSignerUnavailable
-    })?;
     report.stage = Stage::BuildPcp;
     let package = di_migration_pcp::build(
         source_pcp,
@@ -852,13 +852,13 @@ mod tests {
             .open_from_enclave(&failure.debug_report.unwrap())
             .unwrap();
         let report: serde_json::Value = serde_json::from_slice(&report).unwrap();
+        assert!(report["signup_id"].is_object());
+        assert!(report["src_signup_id"].is_null());
         assert_eq!(report["metadata"]["signup_status"], "Failure");
         assert_eq!(
             report["pipeline_errors"]["migration_error"]["stage"],
             "open_pcp"
         );
-        assert!(report["signup_id"].is_null());
-        assert!(report["src_signup_id"].is_null());
         assert!(report["face"].is_null());
         assert!(report["iris"].is_null());
     }
@@ -885,6 +885,8 @@ mod tests {
             .open_from_enclave(&failure.debug_report.unwrap())
             .unwrap();
         let report: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+        assert!(report["signup_id"].is_object());
+        assert!(report["src_signup_id"].is_null());
         assert_eq!(
             report["pipeline_errors"]["migration_error"]["stage"],
             "verify_credential"

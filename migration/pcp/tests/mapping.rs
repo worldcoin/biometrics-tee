@@ -81,7 +81,7 @@ fn all_supported_versions_preserve_capture_and_fill_absence() {
                 source_pcp_version: Some(version.into()),
                 migrated_ts: Some(1800000000),
                 biometric_pipeline_version: Some("pipeline-1".into()),
-                signing_key_id: None,
+                signing_key_id: Some(context().signing_key_id),
             }
         );
     }
@@ -667,8 +667,18 @@ fn multiframe_ids_must_be_canonical_image_ids() {
 
 #[test]
 fn the_new_signup_id_comes_from_the_context() {
-    let ctx = MigrationContext::new("0.1.0-test".into(), 1800000000, S3Region::EuCentral1);
-    let other = MigrationContext::new("0.1.0-test".into(), 1800000000, S3Region::EuCentral1);
+    let ctx = MigrationContext::new(
+        "0.1.0-test".into(),
+        context().signing_key_id,
+        1800000000,
+        S3Region::EuCentral1,
+    );
+    let other = MigrationContext::new(
+        "0.1.0-test".into(),
+        context().signing_key_id,
+        1800000000,
+        S3Region::EuCentral1,
+    );
     assert_ne!(ctx.signup_id, other.signup_id);
     let source = SourcePcp::parse(source_files("2.8")).unwrap();
     let bio = pipeline();
@@ -689,6 +699,17 @@ fn the_new_signup_id_comes_from_the_context() {
     assert_eq!(
         check_request(&source, &bio, &context()),
         Err(Error::InvalidField("signup_id"))
+    );
+}
+
+#[test]
+fn an_empty_signing_key_id_fails_preflight() {
+    let source = SourcePcp::parse(source_files("2.8")).unwrap();
+    let mut ctx = context();
+    ctx.signing_key_id.clear();
+    assert_eq!(
+        check_request(&source, &pipeline(), &ctx),
+        Err(Error::InvalidField("signing_key_id"))
     );
 }
 

@@ -257,6 +257,7 @@ fn try_refresh_source_manifest(files: &mut Files) -> Result<(), ()> {
 pub fn context() -> MigrationContext {
     MigrationContext {
         tee_software_version: "0.1.0-test".into(),
+        signing_key_id: "00000000-0000-0000-0000-000000000001".into(),
         migrated_ts: 1800000000,
         signup_id: NEW_SIGNUP_ID.parse().unwrap(),
     }

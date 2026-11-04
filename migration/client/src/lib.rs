@@ -2,6 +2,8 @@
 
 pub mod sealing;
 
+pub use orb_pcp_defs::v1::Migration;
+
 use std::{sync::Arc, time::Duration};
 
 use attested_request::{
@@ -12,6 +14,7 @@ use di_migration_primitives::app_api::{
     DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
     MigrateResponse, MigrationStatus,
 };
+use orb_pcp_defs::prost::Message;
 use reqwest::{
     Request, RequestBuilder, StatusCode, Url,
     header::{CONTENT_TYPE, HeaderName, HeaderValue},
@@ -49,10 +52,20 @@ pub enum Error {
     Api { status: StatusCode, code: String },
     #[error("failed to decode the migration API response: {0}")]
     Decode(#[source] reqwest::Error),
+    #[error("failed to decode migration.pb: {0}")]
+    DecodeMigration(#[source] orb_pcp_defs::prost::DecodeError),
     #[error("the sealed debug report exceeds the {limit} byte limit")]
     DebugReportTooLarge { limit: usize },
     #[error(transparent)]
     Sealing(#[from] SealingError),
+}
+
+/// Decodes the binary `migration.pb` contents extracted from a PCP.
+///
+/// This only parses metadata; it does not verify the package's manifest or signature.
+/// Missing optional fields remain unset, and unknown protobuf fields are ignored.
+pub fn parse_migration_pb(bytes: &[u8]) -> Result<Migration, Error> {
+    Migration::decode(bytes).map_err(Error::DecodeMigration)
 }
 
 #[derive(Debug, Clone)]
@@ -469,7 +482,46 @@ mod tests {
     };
     use axum::{Json, Router, http::StatusCode, routing::post};
 
-    use super::{Error, MigrationApiClient, sign};
+    use super::{Error, Migration, MigrationApiClient, parse_migration_pb, sign};
+    use orb_pcp_defs::prost::Message;
+
+    #[test]
+    fn parses_migration_pb_metadata() {
+        let expected = Migration {
+            tee_software_version: Some("0.1.0-test".into()),
+            src_signup_id: Some("previous-signup".into()),
+            source_pcp_version: Some("2.8".into()),
+            migrated_ts: Some(1800000000),
+            biometric_pipeline_version: Some("pipeline-1".into()),
+            signing_key_id: Some("00000000-0000-0000-0000-000000000001".into()),
+        };
+        assert_eq!(
+            parse_migration_pb(&expected.encode_to_vec()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn migration_pb_accepts_absent_and_unknown_fields() {
+        assert_eq!(parse_migration_pb(&[]).unwrap(), Migration::default());
+        let legacy = Migration {
+            tee_software_version: Some("0.1.0-test".into()),
+            ..Default::default()
+        };
+        let mut bytes = legacy.encode_to_vec();
+        bytes.extend_from_slice(&[0x48, 0x01]);
+        assert_eq!(parse_migration_pb(&bytes).unwrap(), legacy);
+    }
+
+    #[test]
+    fn migration_pb_reports_malformed_protobuf() {
+        for bytes in [&b"\x42\x03ab"[..], &b"\x42\x01\xff"[..]] {
+            assert!(matches!(
+                parse_migration_pb(bytes),
+                Err(Error::DecodeMigration(_))
+            ));
+        }
+    }
 
     struct BlockingSigner {
         signing_thread: Arc<Mutex<Option<ThreadId>>>,
