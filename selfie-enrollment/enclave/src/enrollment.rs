@@ -90,10 +90,10 @@ impl State {
     ) -> Result<PreparedEnrollment, Error> {
         if request.image_png.len() > MAX_IMAGE_BYTES
             || !request.image_png.starts_with(b"\x89PNG\r\n\x1a\n")
-            || request.subject.ownership_proof.is_empty()
-            || request.subject.ownership_proof.len()
-                > selfie_enrollment_identity::MAX_OWNERSHIP_PROOF_BYTES
-            || request.id_commitment.len() != 66
+        {
+            return Err(Error::InvalidRequest);
+        }
+        if request.id_commitment.len() != 66
             || !request.id_commitment.starts_with("0x")
             || !request.id_commitment.as_bytes()[2..]
                 .iter()
@@ -101,6 +101,10 @@ impl State {
         {
             return Err(Error::InvalidRequest);
         }
+        request
+            .subject
+            .validate()
+            .map_err(|_| Error::InvalidRequest)?;
         embedding_shares::validate_recipients(std::slice::from_ref(request.custody_key))
             .map_err(|_| Error::InvalidRequest)?;
         let _permit = self.processing.try_acquire().map_err(|_| Error::Busy)?;
@@ -284,6 +288,53 @@ mod tests {
             state.prepare_enrollment(input, &context(), &attestor),
             Err(Error::InvalidRequest)
         ));
+        assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn malformed_subjects_fail_before_acquiring_a_slot_or_running_extraction() {
+        struct NeverExtract;
+        impl crate::engine::Engine for NeverExtract {
+            fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
+                panic!("malformed subjects must not reach extraction");
+            }
+            fn check_health(&self) -> Result<(), EnclaveError> {
+                Ok(())
+            }
+        }
+        let state = State::new(Arc::new(BootAttestor), Box::new(NeverExtract)).unwrap();
+        let key = SecretKey::generate(&mut OsRng).public_key();
+        let attestor = Attestor::default();
+        let context = context();
+        let oversized_sub = "a".repeat(129);
+        let oversized_proof = vec![1; selfie_enrollment_identity::MAX_OWNERSHIP_PROOF_BYTES + 1];
+
+        // Repeat with the slot occupied: invalid inputs must not be reported as Busy.
+        for busy in [false, true] {
+            let _permit = busy.then(|| state.processing.try_acquire().unwrap());
+            for sub in ["", "0x1f\r\n", "0x 1f", "é", oversized_sub.as_str()] {
+                let mut input = request(&key);
+                input.subject.sub = sub;
+                assert!(matches!(
+                    state.prepare_enrollment(input, &context, &attestor),
+                    Err(Error::InvalidRequest)
+                ));
+            }
+            let mut input = request(&key);
+            input.subject.challenge_id = Uuid::nil();
+            assert!(matches!(
+                state.prepare_enrollment(input, &context, &attestor),
+                Err(Error::InvalidRequest)
+            ));
+            for proof in [b"".as_slice(), oversized_proof.as_slice()] {
+                let mut input = request(&key);
+                input.subject.ownership_proof = proof;
+                assert!(matches!(
+                    state.prepare_enrollment(input, &context, &attestor),
+                    Err(Error::InvalidRequest)
+                ));
+            }
+        }
         assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
     }
 
