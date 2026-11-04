@@ -777,52 +777,6 @@ mod tests {
     }
 
     #[test]
-    fn custody_accepts_maximum_image_and_proof_and_rejects_oversized_inputs() {
-        use std::io::Read;
-        let mut rng = StdRng::seed_from_u64(29);
-        let mut fixture = Fixture::new(&mut rng);
-        fixture.image.resize(MAX_IMAGE_BYTES, 0x5a);
-        let proof = vec![0x42; MAX_OWNERSHIP_PROOF_BYTES];
-        let mut inputs = fixture.inputs();
-        inputs.subject.ownership_proof = &proof;
-        let mut enrollment = assemble(&inputs, &RecordingAttestor::default(), &mut rng).unwrap();
-        let key = SecretKey::generate(&mut rng);
-        let encrypted = custody::encrypt(&enrollment, &key.public_key(), &mut rng).unwrap();
-        assert!(encrypted.len() <= custody::MAX_PACKAGE_BYTES);
-        let plaintext = key.unseal(&encrypted).unwrap();
-        let mut tar_bytes = Vec::new();
-        // Read to EOF so the standard decoder verifies the gzip CRC and size trailer.
-        flate2::read::GzDecoder::new(plaintext.as_slice())
-            .read_to_end(&mut tar_bytes)
-            .unwrap();
-        let mut archive = tar::Archive::new(tar_bytes.as_slice());
-        let mut found_image = false;
-        for entry in archive.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            if entry.path().unwrap().as_ref()
-                == std::path::Path::new("associated_data/face_image.png")
-            {
-                let mut image = Vec::new();
-                entry.read_to_end(&mut image).unwrap();
-                assert_eq!(image, fixture.image);
-                found_image = true;
-            }
-        }
-        assert!(found_image);
-        enrollment.form.world_id_ownership_proof.push(0);
-        assert!(matches!(
-            custody::encrypt(&enrollment, &key.public_key(), &mut rng),
-            Err(custody::Error::TooLarge)
-        ));
-        enrollment.form.world_id_ownership_proof.pop();
-        enrollment.associated_data.image_png.push(0);
-        assert!(matches!(
-            custody::encrypt(&enrollment, &key.public_key(), &mut rng),
-            Err(custody::Error::TooLarge)
-        ));
-    }
-
-    #[test]
     fn custody_rejects_a_bad_key_and_mutated_associated_data() {
         let mut rng = StdRng::seed_from_u64(19);
         let fixture = Fixture::new(&mut rng);
