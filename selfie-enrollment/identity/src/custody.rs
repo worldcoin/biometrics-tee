@@ -12,7 +12,7 @@ use flate2::{Compression, write::GzEncoder};
 use rand::{CryptoRng, Rng};
 use serde::Serialize;
 use tar::{Builder, Header};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
     IdentityEnrollment, MAX_ATTESTATION_DOCUMENT_BYTES, MAX_OWNERSHIP_PROOF_BYTES, poseidon,
@@ -49,8 +49,9 @@ struct Manifest<'a> {
     associated_data_hash: &'a str,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Zeroize, ZeroizeOnDrop)]
 struct Part<'a> {
+    #[zeroize(skip)]
     name: &'a str,
     value_base64: String,
 }
