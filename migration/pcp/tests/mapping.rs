@@ -560,56 +560,46 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
     refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
-    with_build_request(
-        &source,
-        &bio,
-        &ctx,
-        OutputKeys::generate().recipients(),
-        |request| {
-            let orb_pcp::BiometricPolicy::Included {
-                images,
-                iris_code_shares,
-                di_embeddings,
-                di_embedding_shares,
-                orbit5_di_embedding_shares,
-                face_embeddings,
-                ..
-            } = &request.biometrics
-            else {
-                panic!("must include")
-            };
-            assert_eq!(images.left.multiframe[0].ir_png, &[9]);
-            assert_eq!(images.left.multiframe[0].image_id.to_string(), FRAME_A);
-            assert_eq!(images.left.primary.normalized.image, &[1; 16]);
-            assert_eq!(
-                iris_code_shares[2]
-                    .unwrap()
-                    .left_iris_code_shares
-                    .as_deref(),
-                Some("old-share-2")
-            );
-            assert_eq!(di_embeddings.unwrap(), &bio.di_embeddings);
-            assert_eq!(
-                orbit5_di_embedding_shares.unwrap(),
-                &bio.orbit5_di_embedding_shares
-            );
-            assert_eq!(
-                di_embedding_shares.map(Option::unwrap),
-                bio.di_embedding_shares.each_ref(),
-            );
-            assert_eq!(
-                di_embedding_shares[2]
-                    .unwrap()
-                    .share_v1
-                    .as_ref()
-                    .unwrap()
-                    .left_share,
-                [31, 32]
-            );
-            assert_eq!(face_embeddings[0].embedding.as_deref(), Some("new-face"));
-        },
-    )
-    .unwrap();
+    let new = build_and_open(&source, &bio, &ctx);
+    verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
+    assert_eq!(new.files[&format!("iris/{FRAME_A}.png")], [9]);
+    let info: v1::Info = serde_json::from_slice(&new.files["info.json"]).unwrap();
+    assert_eq!(info.left_ir_multiframe_image_ids, [FRAME_A]);
+    assert_eq!(
+        new.files["normalized_iris/left_normalized_image.bin"],
+        [1; 16]
+    );
+    let iris_share: v1::IrisCodeShares =
+        serde_json::from_slice(&new.files["iris_code_shares_2.json"]).unwrap();
+    assert_eq!(
+        iris_share.left_iris_code_shares.as_deref(),
+        Some("old-share-2")
+    );
+    assert_eq!(
+        v1::DiIrisEmbeddings::decode(new.files["di_iris_embeddings.pb"].as_slice()).unwrap(),
+        bio.di_embeddings
+    );
+    for (recipient, expected) in bio.di_embedding_shares.iter().enumerate() {
+        let name = format!("di_iris_embeddings_shares_{recipient}.pb");
+        assert_eq!(
+            v1::DiIrisEmbeddingShares::decode(new.files[&name].as_slice()).unwrap(),
+            *expected
+        );
+    }
+    for (recipient, expected) in bio.orbit5_di_embedding_shares.iter().enumerate() {
+        let name = format!("orbit5_di_iris_embeddings_shares_{recipient}.pb");
+        assert_eq!(
+            v1::Orbit5DiIrisEmbeddingShares::decode(new.files[&name].as_slice()).unwrap(),
+            *expected
+        );
+    }
+    let share =
+        v1::DiIrisEmbeddingShares::decode(new.files["di_iris_embeddings_shares_2.pb"].as_slice())
+            .unwrap();
+    assert_eq!(share.share_v1.unwrap().left_share, [31, 32]);
+    let face: Vec<v1::FaceEmbedding> =
+        serde_json::from_slice(&new.files["face_embeddings.json"]).unwrap();
+    assert_eq!(face[0].embedding.as_deref(), Some("new-face"));
 }
 
 #[test]
@@ -745,47 +735,25 @@ fn builder_generated_orb_captures_open_as_sources() {
     let (bio, ctx) = (pipeline(), context());
     let keys = OutputKeys::generate();
     let mut signed_digest = None;
-    let package = with_build_request(&source, &bio, &ctx, keys.recipients(), |request| {
+    let package = with_build_inputs(&source, &bio, &ctx, |info, biometrics, _| {
         // Reuse the migration inputs as an Orb capture.
-        let orb_pcp::BiometricPolicy::Included {
-            images,
-            face_embeddings,
-            iris_codes,
-            iris_code_shares,
-            di_embeddings,
-            di_embedding_shares,
-            orbit5_di_embedding_shares,
-        } = request.biometrics
-        else {
-            panic!("must include")
-        };
         let info = v1::Info {
             device_public_key: Some("device".into()),
-            ..request.info.clone()
+            ..info.clone()
         };
-        orb_pcp::build(
-            &orb_pcp::BuildRequest {
-                timestamp: request.timestamp,
-                info: &info,
-                user_public_key: request.user_public_key,
-                backend_keys: keys.recipients().backend_keys,
-                biometrics: orb_pcp::BiometricPolicy::Included {
-                    images,
-                    face_embeddings,
-                    iris_codes,
-                    iris_code_shares,
-                    di_embeddings,
-                    di_embedding_shares,
-                    orbit5_di_embedding_shares,
-                },
-                migration: None,
-            },
-            &mut rand::rngs::OsRng,
-            |digest| {
+        orb_pcp::Builder::timestamp(u32::try_from(ctx.migrated_ts).unwrap())
+            .info(&info)
+            .user_public_key(&keys.user.public_key)
+            .backend_keys(keys.recipients().backend_keys)
+            .biometrics(orb_pcp::BiometricPolicy::Included(biometrics))
+            .strict(false)
+            .rng(rand::rngs::OsRng)
+            .sealer(support::seal)
+            .signer(|digest| {
                 signed_digest = Some(*digest);
                 Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
-            },
-        )
+            })
+            .build()
     })
     .unwrap()
     .unwrap();
@@ -824,25 +792,14 @@ fn builder_bridge_carries_fresh_multiframe_normalization_and_rejects_unmapped_ou
     refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let ctx = context();
-    with_build_request(
-        &source,
-        &bio,
-        &ctx,
-        OutputKeys::generate().recipients(),
-        |request| {
-            let orb_pcp::BiometricPolicy::Included { images, .. } = &request.biometrics else {
-                panic!("must include")
-            };
-            let [first, second] = images.left.multiframe else {
-                panic!("two frames")
-            };
-            assert_eq!(first.normalized.as_ref().unwrap().image, &[5; 16]);
-            assert!(second.normalized.is_none());
-        },
-    )
-    .unwrap();
     let new = build_and_open(&source, &bio, &ctx);
     verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
+    assert_eq!(new.files[&format!("iris/{FRAME_A}.png")], [9]);
+    assert_eq!(new.files[&format!("iris/{FRAME_B}.png")], [8]);
+    assert!(
+        !new.files
+            .contains_key(&format!("normalized_iris/{FRAME_B}_normalized_image.bin"))
+    );
     assert_eq!(
         new.files[&format!("normalized_iris/{FRAME_A}_normalized_image.bin")],
         [5; 16]
@@ -903,4 +860,54 @@ fn source_shares_without_a_sharing_version_are_carried_as_they_are() {
         new.files["iris_code_shares_1.json"],
         files["iris_code_shares_1.json"]
     );
+}
+
+// Present legacy iris records still need all values required by the new constructor.
+#[test]
+fn shared_builder_rejects_incomplete_iris_records_during_preflight() {
+    for (artifact, field) in [
+        ("iris_codes.json", "right_iris_code"),
+        ("iris_code_shares_1.json", "right_mask_code_shares"),
+    ] {
+        let mut files = source_files("2.1");
+        let mut record: Value = serde_json::from_slice(&files[artifact]).unwrap();
+        record.as_object_mut().unwrap().remove(field);
+        files.insert(artifact.into(), serde_json::to_vec(&record).unwrap());
+        refresh_source_manifest(&mut files);
+        let source = SourcePcp::parse(files).unwrap();
+        let (bio, ctx) = (pipeline(), context());
+        assert_eq!(
+            check_request(&source, &bio, &ctx),
+            Err(Error::InvalidField("iris_codes_or_shares"))
+        );
+        assert_eq!(
+            with_build_inputs::<()>(&source, &bio, &ctx, |_, _, _| {
+                panic!("invalid iris records must not reach the builder")
+            }),
+            Err(Error::InvalidField("iris_codes_or_shares"))
+        );
+    }
+}
+
+// The caller-provided sealer must propagate encryption failure before manifest signing.
+#[test]
+fn shared_builder_sealing_errors_propagate_without_signing() {
+    let source = SourcePcp::parse(source_files("2.8")).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    let keys = OutputKeys::generate();
+    let mut recipients = keys.recipients();
+    recipients.backend_keys.face.public_key = &[0; 32];
+    let result = di_migration_pcp::build(
+        &source,
+        &bio,
+        &ctx,
+        recipients,
+        |_| -> Result<Vec<u8>, std::convert::Infallible> {
+            panic!("failed encryption must not reach the signer")
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(BuildError::Build(orb_pcp::BuildError::Encryption(_)))
+    ));
 }
