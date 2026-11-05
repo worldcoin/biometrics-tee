@@ -25,6 +25,10 @@ ignore = [
     # elliptic-curve 0.13 through attested-request and world-id-primitives, and has no
     # compatible patched release. Remove this when both upstreams use RustCrypto 0.14.
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 is pinned by upstream RustCrypto 0.13 users; no patched 0.5 release exists" },
+    # pin-utils was archived upstream; the advisory is informational and has no patched release.
+    # It is a transitive aws-smithy-http dependency of the migration host/API AWS SDK clients.
+    # Remove this exception when the AWS SDK replaces pin-utils with core::pin::pin!.
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils 0.1.0 is an unmaintained transitive AWS SDK dependency with no patched release" },
 ]
 
 [bans]
