@@ -8,6 +8,6 @@ publish.workspace = true
 description = "Secret shares of quantized DeepIdentifier embeddings"
 
 [dependencies]
-ampc-secret-sharing = { git = "https://github.com/worldcoin/ampc-common", rev = "f27c39547b75b6ab7b87dd64c513cc70b003b83a" }
+ampc-secret-sharing = { git = "https://github.com/worldcoin/ampc-common", rev = "3dfb4aacd8152329d03c4fe71dd81ee05589f360" }
 rand = "0.8"
 thiserror.workspace = true
