@@ -1,11 +1,12 @@
-//! Native enclave producer: extract, assemble, attest and encrypt custody data.
+//! Native enclave producer: extract, assemble, attest and encrypt custody data for
+//! signup-service's v4-only web enrollment, `PUT /api/v2/identity`.
 //!
 //! This blocking operation is separate from the existing embedding RPC. A runtime
 //! adapter must obtain requests/custody keys from the authenticated sealed channel
 //! and provision measured AMPC keys and the actual worker measurement before
-//! exposing it. The browser supplies its public commitment and v4 proof; signup
-//! service verifies subject ownership. Clock, capture ID and release keys remain
-//! enclave-controlled.
+//! exposing it. The browser supplies its v4 subject and ownership proof; there is no
+//! v3 identity. Signup-service verifies subject ownership. Clock, capture ID and
+//! release keys remain enclave-controlled.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -47,17 +48,15 @@ impl TrustedContext {
 /// must be PNG; JPEG-to-PNG conversion is not silently delegated to the host.
 pub struct CaptureRequest<'a> {
     pub image_png: &'a [u8],
-    /// Public browser-created commitment, bound into the capture and PCP. The
-    /// enclave neither owns its secret nor asserts proof of v3 ownership.
-    pub id_commitment: &'a str,
+    /// The canonical v4 subject is attested; the challenge and proof are forwarded.
     pub subject: Subject<'a>,
     pub custody_key: &'a PublicKey,
 }
 
 /// Contains submission metadata and encrypted custody data, never the image,
 /// raw embedding, plaintext shares or identity secrets. No Debug implementation.
+/// Submit `form` to `PUT /api/v2/identity` with `attestation_header`.
 pub struct PreparedEnrollment {
-    pub id_commitment: String,
     pub form: Form,
     pub attestation_header: String,
     pub encrypted_custody: Vec<u8>,
@@ -93,14 +92,6 @@ impl State {
         {
             return Err(Error::InvalidRequest);
         }
-        if request.id_commitment.len() != 66
-            || !request.id_commitment.starts_with("0x")
-            || !request.id_commitment.as_bytes()[2..]
-                .iter()
-                .all(u8::is_ascii_hexdigit)
-        {
-            return Err(Error::InvalidRequest);
-        }
         request
             .subject
             .validate()
@@ -126,7 +117,6 @@ impl State {
                 embedding: &embedding,
             },
             subject: request.subject,
-            id_commitment: request.id_commitment,
             pcp_version: "1",
             recipient_keys: &context.recipient_keys,
             worker_sha384: &context.worker_sha384,
@@ -136,7 +126,6 @@ impl State {
             .map_err(|_| Error::Unavailable)?;
         let attestation_header = enrollment.attestation_header();
         Ok(PreparedEnrollment {
-            id_commitment: enrollment.id_commitment,
             form: enrollment.form,
             attestation_header,
             encrypted_custody,
@@ -220,7 +209,6 @@ mod tests {
     fn request(key: &PublicKey) -> CaptureRequest<'_> {
         CaptureRequest {
             image_png: b"\x89PNG\r\n\x1a\nfixture",
-            id_commitment: "0x0000000000000000000000000000000000000000000000000000000000000123",
             subject: Subject {
                 sub: "0x1f",
                 challenge_id: Uuid::from_u128(0x1234),
@@ -242,13 +230,14 @@ mod tests {
         let prepared = state
             .prepare_enrollment(request(&key.public_key()), &context(), &attestor)
             .unwrap();
-        assert_eq!(prepared.id_commitment, format!("0x{:064x}", 0x123));
+        assert_eq!(prepared.form.contract_version, "2");
+        assert_eq!(prepared.form.sub, "0x1f");
         assert_eq!(prepared.form.world_id_ownership_proof, b"fixture-proof");
         assert!(prepared.form.timestamp.parse::<u64>().unwrap() >= before);
         assert!(!Uuid::parse_str(&prepared.form.capture_id).unwrap().is_nil());
         assert_eq!(
             *attestor.nonce.lock().unwrap(),
-            binding_digest(&prepared.id_commitment, &prepared.form)
+            binding_digest(&prepared.form).unwrap()
         );
         assert_eq!(*attestor.user_data.lock().unwrap(), user_data(&[0x5a; 48]));
         assert_eq!(
@@ -266,22 +255,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_browser_commitments_and_missing_v4_proof_fail_before_extraction() {
+    fn missing_v4_proof_fails_before_extraction() {
         let state = State::new(Arc::new(BootAttestor), Box::new(Engine { reject: true })).unwrap();
         let key = SecretKey::generate(&mut OsRng).public_key();
         let attestor = Attestor::default();
-        for commitment in [
-            "",
-            "0x1",
-            "0x00000000000000000000000000000000000000000000000000000000000000zz",
-        ] {
-            let mut input = request(&key);
-            input.id_commitment = commitment;
-            assert!(matches!(
-                state.prepare_enrollment(input, &context(), &attestor),
-                Err(Error::InvalidRequest)
-            ));
-        }
         let mut input = request(&key);
         input.subject.ownership_proof = b"";
         assert!(matches!(
@@ -312,7 +289,18 @@ mod tests {
         // Repeat with the slot occupied: invalid inputs must not be reported as Busy.
         for busy in [false, true] {
             let _permit = busy.then(|| state.processing.try_acquire().unwrap());
-            for sub in ["", "0x1f\r\n", "0x 1f", "é", oversized_sub.as_str()] {
+            // Non-canonical subjects, including a padded field element, are never attested.
+            for sub in [
+                "",
+                "0x1f\r\n",
+                "0x 1f",
+                "é",
+                "0x0",
+                "0x01f",
+                "0x1F",
+                "0x000000000000000000000000000000000000000000000000000000000000001f",
+                oversized_sub.as_str(),
+            ] {
                 let mut input = request(&key);
                 input.subject.sub = sub;
                 assert!(matches!(
