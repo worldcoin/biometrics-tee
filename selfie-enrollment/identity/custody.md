@@ -20,10 +20,12 @@ The PCP retains its existing `pcp_version`. Additional files carry the
 enrollment binding and Nitro evidence:
 
 - `manifest.json`: PCP version and associated-data hash.
-- `enrollment.json`: the v2 form parts in submission order (`contract_version`
-  and `sub` included), with values encoded as standard base64 so the proof remains
-  byte-exact. A reader recomputes the attested digest from the 12 capture parts
-  with `@method` `PUT` and `@path` `/api/v2/identity`, as `protocol.md` defines.
+- `enrollment.json`: the 12 attested v2 form parts in submission order
+  (`contract_version` and `sub` included), with values encoded as standard base64
+  so they remain byte-exact. A reader recomputes the attested digest from them with
+  `@method` `PUT` and `@path` `/api/v2/identity`, as `protocol.md` defines. The v4
+  challenge and ownership proof are not included: the browser adds them when it
+  submits, and they are not attested.
 - `attestation/nitro.cose`: the per-capture Nitro document, not a Gateway signature.
 
 This is a Face PCP carrying Nitro evidence; it has no separate browser-specific
@@ -44,7 +46,9 @@ entry. Removing the browser-specific name does not change these reader requireme
 Plaintext serialization uses fixed backing buffers whose owned contents are
 zeroized when dropped. The archive is bounded before allocation and encryption.
 Private input types have no Debug implementation; errors contain no payloads.
-The sealed ciphertext can be relayed/stored by the host without revealing the
+The enclave returns the sealed PCP to the user's browser, which owns and stores it
+with the credential signup-service later issues. The sealed ciphertext can be
+relayed/stored by the host without revealing the
 image, embedding or plaintext shares.
 
 Integration remains separate: the enclave must call this while it holds the
