@@ -724,8 +724,12 @@ mod tests {
             serde_json::from_slice(&files["associated_data/info.json"]).unwrap();
         let mut embeddings: Vec<FaceEmbedding> =
             serde_json::from_slice(&files["associated_data/face_embeddings.json"]).unwrap();
+        assert_eq!(
+            info.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["capture_id", "captured_at"],
+            "the web PCP carries no v3 identity commitment"
+        );
         let data = AssociatedData {
-            id_commitment: info["id_commitment"].as_str().unwrap().into(),
             pcp_version: manifest["pcp_version"].as_str().unwrap().into(),
             embedding: embeddings.remove(0),
             image_png: files["associated_data/face_image.png"].clone(),
@@ -751,7 +755,10 @@ mod tests {
             enrollment.form.associated_data_hash
         );
         let body: serde_json::Value = serde_json::from_slice(&files["enrollment.json"]).unwrap();
-        assert_eq!(body["id_commitment"], enrollment.id_commitment);
+        assert_eq!(
+            body.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["parts"]
+        );
         assert_eq!(
             body["parts"].as_array().unwrap().len(),
             enrollment.form.parts().len()
