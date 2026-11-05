@@ -14,13 +14,12 @@ use serde::Serialize;
 use tar::{Builder, Header};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::{
-    IdentityEnrollment, MAX_ATTESTATION_DOCUMENT_BYTES, MAX_OWNERSHIP_PROOF_BYTES, poseidon,
-};
+use crate::{IdentityEnrollment, MAX_ATTESTATION_DOCUMENT_BYTES, poseidon};
 use selfie_enrollment_api_types::MAX_IMAGE_BYTES;
 
-/// Includes image, base64 ownership proof, bounded metadata, archive and encryption overhead.
-pub const MAX_PACKAGE_BYTES: usize = MAX_IMAGE_BYTES + MAX_OWNERSHIP_PROOF_BYTES * 2 + 256 * 1024;
+/// Includes the image, bounded metadata, archive and encryption overhead. The v4 ownership
+/// proof never reaches the enclave, so the PCP does not contain it.
+pub const MAX_PACKAGE_BYTES: usize = MAX_IMAGE_BYTES + 256 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -79,13 +78,12 @@ pub fn encrypt<R: Rng + CryptoRng>(
         .map_err(|_| Error::InvalidRecipient)?;
     let data = &enrollment.associated_data;
     if data.image_png.len() > MAX_IMAGE_BYTES
-        || enrollment.form.world_id_ownership_proof.len() > MAX_OWNERSHIP_PROOF_BYTES
         || enrollment.tee_attestation_document.len() > MAX_ATTESTATION_DOCUMENT_BYTES
         || enrollment
             .form
             .parts()
             .iter()
-            .any(|(name, value)| *name != "world_id_ownership_proof" && value.len() > 8192)
+            .any(|(_, value)| value.len() > 8192)
         || data.embedding.embedding.len() > 4096
         || data
             .shares
