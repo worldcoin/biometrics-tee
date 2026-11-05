@@ -1,8 +1,11 @@
 # Overview
 
-The enclave assembles signup-service's v4-only web enrollment for one capture.
-Signup-service hashes the received capture fields and compares the result to the
-authenticated Nitro nonce (signup-service#2400, contract version `2`).
+The enclave assembles signup-service's v4-only web enrollment for one capture
+and returns it, with the attestation document and the user's encrypted PCP, to
+the browser. The browser adds its v4 challenge and ownership proof and submits
+the request itself. Signup-service hashes the received capture fields and
+compares the result to the authenticated Nitro nonce (signup-service#2400,
+contract version `2`).
 
 Submit to `PUT /api/v2/identity`. There is no v3 identity: no `idComm` query
 parameter, commitment hash or v3 proof. Signup-service verifies the Nitro
@@ -21,7 +24,8 @@ disabled until signup-service enables `ENABLE_WEB_IDENTITY_V2`.
 
 ## Request body
 
-Multipart fields, in submission order:
+Multipart fields, in submission order. The enclave returns fields 1–12; the
+browser adds 13 and 14.
 
 | # | Field | Value | Attested |
 |---|---|---|---|
@@ -36,9 +40,10 @@ Multipart fields, in submission order:
 | 13 | `world_id_challenge_id` | Canonical UUID of the enrollment-purpose v4 challenge | no |
 | 14 | `world_id_ownership_proof` | Raw proof bytes, as a binary file part, at most 768 KiB | no |
 
-The v4 challenge and proof are mandatory, but they are outside the digest. A
-retry can then send a fresh proof for the same capture without another capture
-or attestation. Signup-service still enforces the challenge's purpose,
+The v4 challenge and proof are mandatory, but they are outside the digest and
+never pass through the enclave. The browser generates the proof (WIP-103) for the
+attested `sub`. A retry can then send a fresh proof for the same capture without
+another capture or attestation. Signup-service still enforces the challenge's purpose,
 freshness and replay rules, and requires the proof to cover the attested `sub`.
 
 The subject is signed, so the enclave rejects a non-canonical value instead of
@@ -62,13 +67,15 @@ framing, the attestation header, the challenge and the proof are excluded.
 signup-service `face/app-api/nitro/testdata/web-v2.json` at
 `88b1fb3d510b9e25710ba1dc4403017464c4f306`. The Rust test reproduces its nonce.
 
-## Response
+## Submission and response
 
-Signup-service answers `202` with the `capture_id`, its processing status and a
-random `polling_token` with its expiry (15 minutes by default). Give the token
-to the browser. It polls `GET /api/v2/identity?sub=<sub>` with a single
+The browser sends the `PUT` and the attestation header directly to
+signup-service, so its v2 routes must allow the web authenticator origins
+through CORS. Signup-service answers `202` with the `capture_id`, its processing
+status and a random `polling_token` with its expiry (15 minutes by default).
+The browser polls `GET /api/v2/identity?sub=<sub>` with a single
 `Authorization: Bearer <polling_token>` header, and receives the capture status
-and, on success, the issued v4 credential.
+and, on success, the issued v4 credential, which it stores with its PCP.
 
 Retrying the same capture with the same digest returns the same result without
 another MPC insertion. Reusing a `capture_id` with different evidence or

@@ -4,10 +4,11 @@
 //! There is no v3 identity: the capture is bound to the browser's World ID 4.0 subject. One
 //! per-capture Nitro document signs the running worker SHA-384 in [`user_data`] and a
 //! canonical capture digest in its `nonce`. The document travels in an HTTP header,
-//! outside the body it binds, so the relaying host cannot change capture fields. The v4
-//! challenge and ownership proof are submitted but not attested, so a retry can carry a fresh
-//! proof for the same capture. Share recipients, the capture clock and the attestor are
-//! supplied by the caller. Sensitive types deliberately do not implement `Debug`.
+//! outside the body it binds, so no relay can change capture fields. The enclave produces
+//! only the attested capture fields. The browser adds its v4 challenge and ownership proof,
+//! which are not attested, and submits the request itself; a retry can carry a fresh proof
+//! for the same capture. Share recipients, the capture clock and the attestor are supplied
+//! by the caller. Sensitive types deliberately do not implement `Debug`.
 
 mod poseidon;
 
@@ -25,12 +26,8 @@ pub const USER_DATA_VERSION: u8 = 1;
 /// Version byte and running-worker SHA-384. The request digest is the signed nonce.
 pub const USER_DATA_BYTES: usize = 1 + 48;
 pub const NONCE_BYTES: usize = 32;
-/// Matches signup-service's bound and accommodates Oxide's measured 570,464-byte proof.
-pub const MAX_OWNERSHIP_PROOF_BYTES: usize = 768 * 1024;
 /// Standard base64 of the binary COSE_Sign1 document; never a multipart body field.
 pub const ATTESTATION_HEADER: &str = "x-nitro-attestation";
-/// Enrollment HTTP user agent for ingress classification, not authentication.
-pub const USER_AGENT: &str = concat!("BiometricsTEE/", env!("CARGO_PKG_VERSION"));
 /// Base64 expands to at most 16,000 bytes, leaving room for the header name under
 /// the staging ALB's 16 KiB single-header limit. Shared with signup-service.
 pub const MAX_ATTESTATION_DOCUMENT_BYTES: usize = 12_000;
@@ -49,7 +46,9 @@ const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 pub struct Inputs<'a> {
     pub capture: Capture<'a>,
-    pub subject: Subject<'a>,
+    /// The browser's World ID 4.0 subject, in canonical form only (see [`validate_sub`]).
+    /// The subject is signed, so it is never normalized here; strip leading zeros beforehand.
+    pub sub: &'a str,
     pub pcp_version: &'a str,
     /// Face-AMPC party keys 0, 1, 2. The caller authenticates their provenance.
     pub recipient_keys: &'a [PublicKey; 3],
@@ -64,16 +63,6 @@ pub struct Capture<'a> {
     /// The PNG image `embedding` was extracted from; retained in the associated data.
     pub image_png: &'a [u8],
     pub embedding: &'a FaceEmbedding,
-}
-
-/// The browser's World ID 4.0 subject and enrollment-purpose ownership proof. Forwarded
-/// unverified; signup-service verifies the proof.
-pub struct Subject<'a> {
-    /// Canonical form only: `0x`, then minimal lowercase hex, nonzero (for example `0x1f`).
-    /// The subject is signed, so it is never normalized here; strip leading zeros beforehand.
-    pub sub: &'a str,
-    pub challenge_id: Uuid,
-    pub ownership_proof: &'a [u8],
 }
 
 /// Produces a fresh per-capture Nitro attestation over both signed fields.
@@ -125,7 +114,9 @@ impl IdentityEnrollment {
     }
 }
 
-/// Enrollment body fields. The attestation document is transported separately in a header.
+/// The attested capture fields. The attestation document is transported separately in a
+/// header. The browser adds `world_id_challenge_id` and the `world_id_ownership_proof` file
+/// part after these when it submits; neither is part of the attested digest.
 #[derive(Clone)]
 pub struct Form {
     pub contract_version: String,
@@ -139,14 +130,12 @@ pub struct Form {
     pub face_embedding_inference_backend: String,
     pub pcp_version: String,
     pub associated_data_hash: String,
-    pub world_id_challenge_id: String,
-    pub world_id_ownership_proof: Vec<u8>,
 }
 
 impl Form {
-    /// The attested capture fields, in [`binding_digest`] order.
+    /// The attested fields in submission and [`binding_digest`] order.
     #[must_use]
-    pub fn capture_parts(&self) -> [(&'static str, &[u8]); 12] {
+    pub fn parts(&self) -> [(&'static str, &[u8]); 12] {
         let [share_0, share_1, share_2] = &self.face_embedding_shares;
         [
             ("contract_version", self.contract_version.as_bytes()),
@@ -168,24 +157,6 @@ impl Form {
             ("pcp_version", self.pcp_version.as_bytes()),
             ("associated_data_hash", self.associated_data_hash.as_bytes()),
         ]
-    }
-
-    /// Parts in submission order: the capture fields, then the unattested v4 authorization.
-    /// `world_id_ownership_proof` is a binary file part.
-    #[must_use]
-    pub fn parts(&self) -> [(&'static str, &[u8]); 14] {
-        let capture = self.capture_parts();
-        std::array::from_fn(|index| match index {
-            12 => (
-                "world_id_challenge_id",
-                self.world_id_challenge_id.as_bytes(),
-            ),
-            13 => (
-                "world_id_ownership_proof",
-                self.world_id_ownership_proof.as_slice(),
-            ),
-            _ => capture[index],
-        })
     }
 }
 
@@ -214,9 +185,7 @@ pub fn assemble<R: Rng + CryptoRng>(
     rng: &mut R,
 ) -> Result<IdentityEnrollment, Error> {
     validate(inputs)?;
-    let Inputs {
-        capture, subject, ..
-    } = inputs;
+    let capture = &inputs.capture;
     let shares = embedding_shares::generate(capture.embedding, inputs.pcp_version, rng)?;
     let face_embedding_shares = embedding_shares::encrypt(&shares, inputs.recipient_keys, rng)?;
     let associated_data = AssociatedData {
@@ -234,7 +203,7 @@ pub fn assemble<R: Rng + CryptoRng>(
     };
     let form = Form {
         contract_version: CONTRACT_VERSION.to_owned(),
-        sub: subject.sub.to_owned(),
+        sub: inputs.sub.to_owned(),
         capture_id: associated_data.capture_id.clone(),
         timestamp: capture.captured_at.to_string(),
         face_embedding_shares,
@@ -246,8 +215,6 @@ pub fn assemble<R: Rng + CryptoRng>(
         associated_data_hash: poseidon::associated_data(&associated_data)
             .ok_or(Error::Hash("associated data"))?
             .to_string(),
-        world_id_challenge_id: subject.challenge_id.to_string(),
-        world_id_ownership_proof: subject.ownership_proof.to_vec(),
     };
     let tee_attestation_document =
         attestor.attest(&binding_digest(&form)?, &user_data(inputs.worker_sha384))?;
@@ -264,8 +231,7 @@ pub fn assemble<R: Rng + CryptoRng>(
 }
 
 /// Canonical capture SHA-256, carried in the Nitro document's signed `nonce`.
-/// Hash [`BINDING_DOMAIN`], then `@method` and `@path`, then each [`Form::capture_parts`]
-/// entry. Each name and value is prefixed by its big-endian `u32` byte length. Shares are
+/// Hash [`BINDING_DOMAIN`], then `@method` and `@path`, then each [`Form::parts`] entry. Each name and value is prefixed by its big-endian `u32` byte length. Shares are
 /// bound as their decoded ciphertext bytes. The v4 challenge and proof, multipart
 /// boundaries, header encoding and the attestation document itself are excluded.
 ///
@@ -284,7 +250,7 @@ pub fn binding_digest(form: &Form) -> Result<[u8; NONCE_BYTES], Error> {
     };
     write(b"@method", IDENTITY_METHOD.as_bytes());
     write(b"@path", IDENTITY_PATH.as_bytes());
-    for (name, value) in form.capture_parts() {
+    for (name, value) in form.parts() {
         if name.starts_with("face_embedding_shares_") {
             let sealed = STANDARD
                 .decode(value)
@@ -311,24 +277,24 @@ pub fn user_data(worker_sha384: &[u8; 48]) -> [u8; USER_DATA_BYTES] {
     value
 }
 
+/// Checks a v4 subject before extraction or assembly: signup-service's canonical form only.
+///
+/// # Errors
+/// Returns [`Error::InvalidInput`] for a non-canonical subject.
+pub fn validate_sub(sub: &str) -> Result<(), Error> {
+    if is_canonical_sub(sub) {
+        Ok(())
+    } else {
+        Err(Error::InvalidInput("sub"))
+    }
+}
+
 fn validate(inputs: &Inputs<'_>) -> Result<(), Error> {
-    let Inputs {
-        capture, subject, ..
-    } = inputs;
+    let capture = &inputs.capture;
     if !is_identifier(inputs.pcp_version) {
         return Err(Error::InvalidInput("pcp_version"));
     }
-    if !is_canonical_sub(subject.sub) {
-        return Err(Error::InvalidInput("sub"));
-    }
-    if subject.challenge_id.is_nil() {
-        return Err(Error::InvalidInput("world_id_challenge_id"));
-    }
-    if subject.ownership_proof.is_empty()
-        || subject.ownership_proof.len() > MAX_OWNERSHIP_PROOF_BYTES
-    {
-        return Err(Error::InvalidInput("world_id_ownership_proof"));
-    }
+    validate_sub(inputs.sub)?;
     if capture.capture_id.is_nil() {
         return Err(Error::InvalidInput("capture_id"));
     }
@@ -424,11 +390,7 @@ mod tests {
                     image_png: &self.image,
                     embedding: &self.embedding,
                 },
-                subject: Subject {
-                    sub: "0x1f",
-                    challenge_id: Uuid::from_u128(0x1234),
-                    ownership_proof: b"proof",
-                },
+                sub: "0x1f",
                 pcp_version: "1",
                 recipient_keys: &self.public_keys,
                 worker_sha384: &WORKER,
@@ -467,10 +429,6 @@ mod tests {
         assert_eq!(form.timestamp, "1700000000");
         assert_eq!(form.face_embedding_type, "ghostfacenet_flipped_mean");
         assert_eq!(
-            form.world_id_challenge_id,
-            Uuid::from_u128(0x1234).to_string()
-        );
-        assert_eq!(
             form.associated_data_hash,
             poseidon::associated_data(&enrollment.associated_data)
                 .unwrap()
@@ -506,18 +464,16 @@ mod tests {
                 "face_embedding_inference_backend",
                 "pcp_version",
                 "associated_data_hash",
-                "world_id_challenge_id",
-                "world_id_ownership_proof",
             ]
         );
     }
 
     #[test]
-    fn every_capture_part_is_attested_but_the_v4_authorization_is_not() {
+    fn every_returned_part_is_attested() {
         let (_, form) = assembled();
         let original = binding_digest(&form).unwrap();
         assert_ne!(user_data(&[0; 48]), user_data(&WORKER));
-        for index in 0..form.capture_parts().len() {
+        for index in 0..form.parts().len() {
             let mut changed = form.clone();
             match index {
                 0 => changed.contract_version.push('0'),
@@ -540,14 +496,9 @@ mod tests {
                 binding_digest(&changed).unwrap(),
                 original,
                 "{}",
-                form.capture_parts()[index].0
+                form.parts()[index].0
             );
         }
-        // A retry may carry a fresh challenge and proof for the same attested capture.
-        let mut retry = form.clone();
-        retry.world_id_challenge_id = Uuid::from_u128(0x5678).to_string();
-        retry.world_id_ownership_proof.push(0);
-        assert_eq!(binding_digest(&retry).unwrap(), original);
     }
 
     #[test]
@@ -568,11 +519,10 @@ mod tests {
             face_embedding_inference_backend: field("face_embedding_inference_backend"),
             pcp_version: field("pcp_version"),
             associated_data_hash: field("associated_data_hash"),
-            world_id_challenge_id: "00000000-0000-0000-0000-000000001234".into(),
-            world_id_ownership_proof: b"proof".to_vec(),
         };
-        assert_eq!(fields.len(), form.capture_parts().len());
-        for (name, _) in form.capture_parts() {
+        // signup-service's fixture lists exactly the attested fields the enclave returns.
+        assert_eq!(fields.len(), form.parts().len());
+        for (name, _) in form.parts() {
             assert!(fields.contains_key(name), "{name}");
         }
         assert_eq!(form.contract_version, CONTRACT_VERSION);
@@ -605,6 +555,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_sub_matches_the_assembly_check() {
+        assert!(validate_sub("0x1f").is_ok());
+        assert!(matches!(
+            validate_sub("0x01f"),
+            Err(Error::InvalidInput("sub"))
+        ));
+    }
+
+    #[test]
     fn only_canonical_subjects_are_accepted() {
         let max = format!("0x{}", "f".repeat(64));
         for sub in ["0x1", "0x1f", "0xabcdef0123456789", max.as_str()] {
@@ -634,7 +593,6 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(7);
         let fixture = Fixture::new(&mut rng);
         let attestor = RecordingAttestor::default();
-        let oversized_proof = vec![1; MAX_OWNERSHIP_PROOF_BYTES + 1];
         macro_rules! rejects {
             ($field:literal, |$inputs:ident| $change:expr) => {{
                 let mut $inputs = fixture.inputs();
@@ -649,20 +607,13 @@ mod tests {
             }};
         }
         rejects!("pcp_version", |i| i.pcp_version = "1 2");
-        rejects!("sub", |i| i.subject.sub = "0x1f\r\n");
+        rejects!("sub", |i| i.sub = "0x1f\r\n");
         // A padded field-element subject must be minimized before it is attested.
         rejects!(
             "sub",
-            |i| i.subject.sub =
-                "0x000000000000000000000000000000000000000000000000000000000000001f"
+            |i| i.sub = "0x000000000000000000000000000000000000000000000000000000000000001f"
         );
-        rejects!("sub", |i| i.subject.sub = "0x0");
-        rejects!("world_id_challenge_id", |i| i.subject.challenge_id =
-            Uuid::nil());
-        rejects!("world_id_ownership_proof", |i| i.subject.ownership_proof =
-            b"");
-        rejects!("world_id_ownership_proof", |i| i.subject.ownership_proof =
-            &oversized_proof);
+        rejects!("sub", |i| i.sub = "0x0");
         rejects!("capture_id", |i| i.capture.capture_id = Uuid::nil());
         rejects!("timestamp", |i| i.capture.captured_at = 0);
         rejects!("image_png", |i| i.capture.image_png = b"\xff\xd8\xff");
@@ -701,33 +652,6 @@ mod tests {
             assemble(&fixture.inputs(), &Failing, &mut rng),
             Err(Error::Attestation(_))
         ));
-    }
-
-    #[test]
-    fn real_size_proofs_and_the_agreed_boundary_are_accepted() {
-        let mut rng = StdRng::seed_from_u64(7);
-        let fixture = Fixture::new(&mut rng);
-        for size in [
-            570_464,
-            MAX_OWNERSHIP_PROOF_BYTES,
-            MAX_OWNERSHIP_PROOF_BYTES + 1,
-        ] {
-            let proof = vec![0xa0; size];
-            let mut inputs = fixture.inputs();
-            inputs.subject.ownership_proof = &proof;
-            let attestor = RecordingAttestor::default();
-            let result = assemble(&inputs, &attestor, &mut rng);
-            if size <= MAX_OWNERSHIP_PROOF_BYTES {
-                assert_eq!(result.unwrap().form.world_id_ownership_proof, proof);
-                assert_eq!(attestor.calls.get(), 1);
-            } else {
-                assert!(matches!(
-                    result,
-                    Err(Error::InvalidInput("world_id_ownership_proof"))
-                ));
-                assert_eq!(attestor.calls.get(), 0);
-            }
-        }
     }
 
     #[test]
