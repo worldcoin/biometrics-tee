@@ -36,9 +36,9 @@ pub enum Error {
     Encryption,
 }
 
+/// Commitment-free: the web enrollment has no v3 identity (signup-service#2400).
 #[derive(Serialize)]
 struct Info<'a> {
-    id_commitment: &'a str,
     capture_id: &'a str,
     captured_at: u64,
 }
@@ -56,9 +56,10 @@ struct Part<'a> {
     value_base64: String,
 }
 
+/// The submitted v2 form parts. A reader recomputes the attested digest from them with the
+/// method and path in `protocol.md`.
 #[derive(Serialize)]
 struct Enrollment<'a> {
-    id_commitment: &'a str,
     parts: Vec<Part<'a>>,
 }
 
@@ -93,9 +94,7 @@ pub fn encrypt<R: Rng + CryptoRng>(
     {
         return Err(Error::TooLarge);
     }
-    if data.id_commitment.len() > 128
-        || data.id_commitment != enrollment.id_commitment
-        || data.embedding.embedding_type != enrollment.form.face_embedding_type
+    if data.embedding.embedding_type != enrollment.form.face_embedding_type
         || data.embedding.embedding_version != enrollment.form.face_embedding_version
         || data.embedding.embedding_inference_backend
             != enrollment.form.face_embedding_inference_backend
@@ -121,7 +120,6 @@ pub fn encrypt<R: Rng + CryptoRng>(
         (
             "associated_data/info.json",
             json(&Info {
-                id_commitment: &data.id_commitment,
                 capture_id: &data.capture_id,
                 captured_at: data.captured_at,
             })?,
@@ -145,7 +143,6 @@ pub fn encrypt<R: Rng + CryptoRng>(
         (
             "enrollment.json",
             json(&Enrollment {
-                id_commitment: &enrollment.id_commitment,
                 parts: enrollment
                     .form
                     .parts()
