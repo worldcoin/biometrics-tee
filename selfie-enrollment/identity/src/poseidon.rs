@@ -8,9 +8,8 @@ use world_id_primitives::{FieldElement, sponge::bytes_to_field_elements};
 
 use crate::AssociatedData;
 
-// DO NOT CHANGE: these tags are part of the deployed hash definitions.
+// DO NOT CHANGE: this tag is part of the deployed hash definitions.
 const FACE_SHARE_HASH_V1: &[u8] = b"FACE_SHARE_HASH_V1";
-const ID_COMMITMENT_HASH_V1: &[u8] = b"ID_COMMITMENT_HASH_V1";
 
 pub(crate) fn share(share: &FaceShare) -> Option<FieldElement> {
     sequence(
@@ -20,10 +19,6 @@ pub(crate) fn share(share: &FaceShare) -> Option<FieldElement> {
             bytes(share.share_data.as_bytes())?,
         ],
     )
-}
-
-pub(crate) fn id_commitment(id_commitment: &str) -> Option<FieldElement> {
-    sponge(ID_COMMITMENT_HASH_V1, id_commitment.as_bytes())
 }
 
 pub(crate) fn associated_data(data: &AssociatedData) -> Option<FieldElement> {
@@ -108,8 +103,6 @@ mod tests {
     const EMPTY_TAG_1000: &str =
         "0x2f471e19998d39f17b1b43ef1eef7fde0303ad4563537da1fc3a2328221783e6";
     const SHARE: &str = "0x12589d0dfa9e6a3a676d0fe9d02ff1b2a440e3101dffc874b6fecb443f17af79";
-    const ID_COMMITMENT: &str =
-        "0x078088c8dee297e721db84524f18ff1e1ec7d8cd33fba1a72055aed9f1c95f19";
     const ASSOCIATED_DATA: &str =
         "0x2cf18909b0d502f5a402d104587f2092c68e7c2ea334080057f980864cbb4f4d";
 
@@ -126,25 +119,14 @@ mod tests {
 
     #[test]
     fn the_sponge_matches_world_id_primitives_for_non_empty_tags() {
-        const TAGS: [(&[u8], VariableLengthDomainSeparator); 2] = [
-            (
-                FACE_SHARE_HASH_V1,
-                VariableLengthDomainSeparator::new(FACE_SHARE_HASH_V1),
-            ),
-            (
-                ID_COMMITMENT_HASH_V1,
-                VariableLengthDomainSeparator::new(ID_COMMITMENT_HASH_V1),
-            ),
-        ];
+        let separator = VariableLengthDomainSeparator::new(FACE_SHARE_HASH_V1);
         let data = long();
-        for (tag, separator) in TAGS {
-            for length in [1, 31, 32, 465, 466, 1000] {
-                assert_eq!(
-                    sponge(tag, &data[..length]),
-                    Some(hash_bytes_to_field_element(separator, &data[..length]).unwrap()),
-                    "{length}"
-                );
-            }
+        for length in [1, 31, 32, 465, 466, 1000] {
+            assert_eq!(
+                sponge(FACE_SHARE_HASH_V1, &data[..length]),
+                Some(hash_bytes_to_field_element(separator, &data[..length]).unwrap()),
+                "{length}"
+            );
         }
         assert_eq!(sponge(b"", b""), None);
     }
@@ -154,14 +136,7 @@ mod tests {
         assert_eq!(bytes(b"a").unwrap().to_string(), EMPTY_TAG_1);
         assert_eq!(bytes(&long()).unwrap().to_string(), EMPTY_TAG_1000);
         assert_eq!(share(&face_share(0)).unwrap().to_string(), SHARE);
-        assert_eq!(
-            id_commitment("0x0000000000000000000000000000000000000000000000000000000000000123")
-                .unwrap()
-                .to_string(),
-            ID_COMMITMENT
-        );
         let data = AssociatedData {
-            id_commitment: "excluded from the hash".into(),
             pcp_version: "1".into(),
             embedding: FaceEmbedding {
                 embedding: "AQ==".into(),

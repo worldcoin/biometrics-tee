@@ -1,11 +1,13 @@
-//! Assembles `PUT /api/v1/identity` for one Selfie Check capture inside the enclave.
+//! Assembles signup-service's v4-only web enrollment, `PUT /api/v2/identity`, for one
+//! Selfie Check capture inside the enclave (signup-service#2400, contract version 2).
 //!
-//! The form keeps signup-service's mobile face fields and Oxide's Poseidon2 hashes. One
+//! There is no v3 identity: the capture is bound to the browser's World ID 4.0 subject. One
 //! per-capture Nitro document signs the running worker SHA-384 in [`user_data`] and a
-//! canonical request digest in its `nonce`. The document travels in an HTTP header,
-//! outside the body it binds, so the relaying host cannot change enrollment fields.
-//! Share recipients, the capture clock, the v3 identity and the attestor are supplied by the
-//! caller. Sensitive types deliberately do not implement `Debug`.
+//! canonical capture digest in its `nonce`. The document travels in an HTTP header,
+//! outside the body it binds, so the relaying host cannot change capture fields. The v4
+//! challenge and ownership proof are submitted but not attested, so a retry can carry a fresh
+//! proof for the same capture. Share recipients, the capture clock and the attestor are
+//! supplied by the caller. Sensitive types deliberately do not implement `Debug`.
 
 mod poseidon;
 
@@ -33,14 +35,21 @@ pub const USER_AGENT: &str = concat!("BiometricsTEE/", env!("CARGO_PKG_VERSION")
 /// the staging ALB's 16 KiB single-header limit. Shared with signup-service.
 pub const MAX_ATTESTATION_DOCUMENT_BYTES: usize = 12_000;
 const MAX_IDENTIFIER_BYTES: usize = 128;
-const BINDING_DOMAIN: &[u8] = b"web-authenticator:identity:v1";
+/// signup-service's v2 web identity route; the method and path are part of the signed digest.
+pub const IDENTITY_METHOD: &str = "PUT";
+pub const IDENTITY_PATH: &str = "/api/v2/identity";
+/// The `contract_version` form value for this payload layout.
+pub const CONTRACT_VERSION: &str = "2";
+const BINDING_DOMAIN: &[u8] = b"web-authenticator:face-enrollment:v2";
+/// signup-service accepts `0x` plus up to 64 hex digits and requires its minimal lowercase form.
+const MAX_SUB_HEX_DIGITS: usize = 64;
+/// A sealed box's ephemeral public key and tag; signup-service rejects shorter shares.
+const SEALED_BOX_OVERHEAD_BYTES: usize = 48;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 pub struct Inputs<'a> {
     pub capture: Capture<'a>,
     pub subject: Subject<'a>,
-    /// The enclave-held v3 identity commitment, in Oxide's `Identity::commitment()` string form.
-    pub id_commitment: &'a str,
     pub pcp_version: &'a str,
     /// Face-AMPC party keys 0, 1, 2. The caller authenticates their provenance.
     pub recipient_keys: &'a [PublicKey; 3],
@@ -60,6 +69,8 @@ pub struct Capture<'a> {
 /// The browser's World ID 4.0 subject and enrollment-purpose ownership proof. Forwarded
 /// unverified; signup-service verifies the proof.
 pub struct Subject<'a> {
+    /// Canonical form only: `0x`, then minimal lowercase hex, nonzero (for example `0x1f`).
+    /// The subject is signed, so it is never normalized here; strip leading zeros beforehand.
     pub sub: &'a str,
     pub challenge_id: Uuid,
     pub ownership_proof: &'a [u8],
@@ -99,8 +110,6 @@ pub enum Error {
 }
 
 pub struct IdentityEnrollment {
-    /// The `idComm` query parameter.
-    pub id_commitment: String,
     pub form: Form,
     /// COSE_Sign1 document, sent as standard base64 in [`ATTESTATION_HEADER`].
     pub tee_attestation_document: Vec<u8>,
@@ -119,36 +128,34 @@ impl IdentityEnrollment {
 /// Enrollment body fields. The attestation document is transported separately in a header.
 #[derive(Clone)]
 pub struct Form {
+    pub contract_version: String,
+    pub sub: String,
     pub capture_id: String,
     pub timestamp: String,
+    /// Standard padded base64 of each party's sealed share; the digest binds the decoded bytes.
     pub face_embedding_shares: [String; 3],
-    pub face_embedding_shares_hashes: [String; 3],
     pub face_embedding_version: String,
     pub face_embedding_type: String,
     pub face_embedding_inference_backend: String,
     pub pcp_version: String,
-    pub id_commitment_hash: String,
     pub associated_data_hash: String,
-    pub sub: String,
     pub world_id_challenge_id: String,
     pub world_id_ownership_proof: Vec<u8>,
 }
 
 impl Form {
-    /// Parts in submission order. `world_id_ownership_proof` is a binary file part.
+    /// The attested capture fields, in [`binding_digest`] order.
     #[must_use]
-    pub fn parts(&self) -> [(&'static str, &[u8]); 17] {
+    pub fn capture_parts(&self) -> [(&'static str, &[u8]); 12] {
         let [share_0, share_1, share_2] = &self.face_embedding_shares;
-        let [hash_0, hash_1, hash_2] = &self.face_embedding_shares_hashes;
         [
+            ("contract_version", self.contract_version.as_bytes()),
+            ("sub", self.sub.as_bytes()),
             ("capture_id", self.capture_id.as_bytes()),
             ("timestamp", self.timestamp.as_bytes()),
             ("face_embedding_shares_0", share_0.as_bytes()),
             ("face_embedding_shares_1", share_1.as_bytes()),
             ("face_embedding_shares_2", share_2.as_bytes()),
-            ("face_embedding_shares_0_hash", hash_0.as_bytes()),
-            ("face_embedding_shares_1_hash", hash_1.as_bytes()),
-            ("face_embedding_shares_2_hash", hash_2.as_bytes()),
             (
                 "face_embedding_version",
                 self.face_embedding_version.as_bytes(),
@@ -159,22 +166,32 @@ impl Form {
                 self.face_embedding_inference_backend.as_bytes(),
             ),
             ("pcp_version", self.pcp_version.as_bytes()),
-            ("id_commitment_hash", self.id_commitment_hash.as_bytes()),
             ("associated_data_hash", self.associated_data_hash.as_bytes()),
-            ("sub", self.sub.as_bytes()),
-            (
+        ]
+    }
+
+    /// Parts in submission order: the capture fields, then the unattested v4 authorization.
+    /// `world_id_ownership_proof` is a binary file part.
+    #[must_use]
+    pub fn parts(&self) -> [(&'static str, &[u8]); 14] {
+        let capture = self.capture_parts();
+        std::array::from_fn(|index| match index {
+            12 => (
                 "world_id_challenge_id",
                 self.world_id_challenge_id.as_bytes(),
             ),
-            ("world_id_ownership_proof", &self.world_id_ownership_proof),
-        ]
+            13 => (
+                "world_id_ownership_proof",
+                self.world_id_ownership_proof.as_slice(),
+            ),
+            _ => capture[index],
+        })
     }
 }
 
-/// Oxide's `FaceAssociatedData` with its single embedding. The hash excludes `id_commitment`.
+/// Oxide's `FaceAssociatedData` with its single embedding, without a v3 identity commitment.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct AssociatedData {
-    pub id_commitment: String,
     pub pcp_version: String,
     pub embedding: FaceEmbedding,
     pub image_png: Vec<u8>,
@@ -203,7 +220,6 @@ pub fn assemble<R: Rng + CryptoRng>(
     let shares = embedding_shares::generate(capture.embedding, inputs.pcp_version, rng)?;
     let face_embedding_shares = embedding_shares::encrypt(&shares, inputs.recipient_keys, rng)?;
     let associated_data = AssociatedData {
-        id_commitment: inputs.id_commitment.to_owned(),
         pcp_version: inputs.pcp_version.to_owned(),
         embedding: FaceEmbedding {
             embedding: capture.embedding.embedding.clone(),
@@ -216,68 +232,74 @@ pub fn assemble<R: Rng + CryptoRng>(
         captured_at: capture.captured_at,
         shares,
     };
-    let share_hash = |share| {
-        poseidon::share(share)
-            .map(|hash| hash.to_string())
-            .ok_or(Error::Hash("face embedding share"))
-    };
     let form = Form {
+        contract_version: CONTRACT_VERSION.to_owned(),
+        sub: subject.sub.to_owned(),
         capture_id: associated_data.capture_id.clone(),
         timestamp: capture.captured_at.to_string(),
         face_embedding_shares,
-        face_embedding_shares_hashes: [
-            share_hash(&associated_data.shares[0])?,
-            share_hash(&associated_data.shares[1])?,
-            share_hash(&associated_data.shares[2])?,
-        ],
         face_embedding_version: capture.embedding.embedding_version.clone(),
         face_embedding_type: capture.embedding.embedding_type.clone(),
         face_embedding_inference_backend: capture.embedding.embedding_inference_backend.clone(),
         pcp_version: inputs.pcp_version.to_owned(),
-        id_commitment_hash: poseidon::id_commitment(inputs.id_commitment)
-            .ok_or(Error::Hash("identity commitment"))?
-            .to_string(),
+        // `0x` plus 64 lowercase hex digits, as signup-service requires.
         associated_data_hash: poseidon::associated_data(&associated_data)
             .ok_or(Error::Hash("associated data"))?
             .to_string(),
-        sub: subject.sub.to_owned(),
         world_id_challenge_id: subject.challenge_id.to_string(),
         world_id_ownership_proof: subject.ownership_proof.to_vec(),
     };
-    let tee_attestation_document = attestor.attest(
-        &binding_digest(inputs.id_commitment, &form),
-        &user_data(inputs.worker_sha384),
-    )?;
+    let tee_attestation_document =
+        attestor.attest(&binding_digest(&form)?, &user_data(inputs.worker_sha384))?;
     if tee_attestation_document.is_empty()
         || tee_attestation_document.len() > MAX_ATTESTATION_DOCUMENT_BYTES
     {
         return Err(Error::InvalidAttestationDocument);
     }
     Ok(IdentityEnrollment {
-        id_commitment: inputs.id_commitment.to_owned(),
         form,
         tee_attestation_document,
         associated_data,
     })
 }
 
-/// Canonical enrollment-body SHA-256, carried in the Nitro document's signed `nonce`.
-/// Hash [`BINDING_DOMAIN`], then `idComm` and each [`Form::parts`] entry. Each name
-/// and value is prefixed by its big-endian `u32` byte length. Multipart boundaries,
-/// header encoding and the attestation document itself are excluded.
-#[must_use]
-pub fn binding_digest(id_commitment: &str, form: &Form) -> [u8; NONCE_BYTES] {
+/// Canonical capture SHA-256, carried in the Nitro document's signed `nonce`.
+/// Hash [`BINDING_DOMAIN`], then `@method` and `@path`, then each [`Form::capture_parts`]
+/// entry. Each name and value is prefixed by its big-endian `u32` byte length. Shares are
+/// bound as their decoded ciphertext bytes. The v4 challenge and proof, multipart
+/// boundaries, header encoding and the attestation document itself are excluded.
+///
+/// # Errors
+/// Returns [`Error::InvalidInput`] if a share is not canonical standard base64 of at least a
+/// sealed box's overhead.
+pub fn binding_digest(form: &Form) -> Result<[u8; NONCE_BYTES], Error> {
     let mut binding = Sha256::new();
     binding.update(BINDING_DOMAIN);
-    let parts = std::iter::once(("idComm", id_commitment.as_bytes())).chain(form.parts());
-    for (name, value) in parts {
-        for field in [name.as_bytes(), value] {
+    let mut write = |name: &[u8], value: &[u8]| {
+        for field in [name, value] {
             // Every field is bounded far below `u32::MAX` by validation and the share format.
             binding.update((field.len() as u32).to_be_bytes());
             binding.update(field);
         }
+    };
+    write(b"@method", IDENTITY_METHOD.as_bytes());
+    write(b"@path", IDENTITY_PATH.as_bytes());
+    for (name, value) in form.capture_parts() {
+        if name.starts_with("face_embedding_shares_") {
+            let sealed = STANDARD
+                .decode(value)
+                .ok()
+                .filter(|sealed| {
+                    sealed.len() >= SEALED_BOX_OVERHEAD_BYTES
+                        && STANDARD.encode(sealed).as_bytes() == value
+                })
+                .ok_or(Error::InvalidInput("face_embedding_shares"))?;
+            write(name.as_bytes(), &sealed);
+        } else {
+            write(name.as_bytes(), value);
+        }
     }
-    binding.finalize().into()
+    Ok(binding.finalize().into())
 }
 
 /// Signed release metadata, checked with PCR0/1/2 against one approved release.
@@ -293,13 +315,10 @@ fn validate(inputs: &Inputs<'_>) -> Result<(), Error> {
     let Inputs {
         capture, subject, ..
     } = inputs;
-    if !is_identifier(inputs.id_commitment) {
-        return Err(Error::InvalidInput("id_commitment"));
-    }
     if !is_identifier(inputs.pcp_version) {
         return Err(Error::InvalidInput("pcp_version"));
     }
-    if !is_identifier(subject.sub) {
+    if !is_canonical_sub(subject.sub) {
         return Err(Error::InvalidInput("sub"));
     }
     if subject.challenge_id.is_nil() {
@@ -322,6 +341,18 @@ fn validate(inputs: &Inputs<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// signup-service's canonical v4 subject: `0x`, then 1 to 64 lowercase hex digits without a
+/// leading zero, and nonzero, so its `ValidateAndNormalizeSub` returns the value unchanged.
+fn is_canonical_sub(sub: &str) -> bool {
+    sub.strip_prefix("0x").is_some_and(|digits| {
+        (1..=MAX_SUB_HEX_DIGITS).contains(&digits.len())
+            && !digits.starts_with('0')
+            && digits
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
 /// Non-empty printable ASCII, so a value cannot escape its multipart part.
 fn is_identifier(value: &str) -> bool {
     !value.is_empty()
@@ -337,8 +368,9 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     const WORKER: [u8; 48] = [0x5a; 48];
-    const ID_COMMITMENT: &str =
-        "0x0000000000000000000000000000000000000000000000000000000000000123";
+    /// `face/app-api/nitro/testdata/web-v2.json` from signup-service#2400 at
+    /// `88b1fb3d510b9e25710ba1dc4403017464c4f306`.
+    const SIGNUP_FIXTURE: &str = include_str!("../tests/fixtures/enrollment-v2.json");
 
     #[derive(Default)]
     struct RecordingAttestor {
@@ -397,7 +429,6 @@ mod tests {
                     challenge_id: Uuid::from_u128(0x1234),
                     ownership_proof: b"proof",
                 },
-                id_commitment: ID_COMMITMENT,
                 pcp_version: "1",
                 recipient_keys: &self.public_keys,
                 worker_sha384: &WORKER,
@@ -405,8 +436,17 @@ mod tests {
         }
     }
 
+    fn assembled() -> (Fixture, Form) {
+        let mut rng = StdRng::seed_from_u64(7);
+        let fixture = Fixture::new(&mut rng);
+        let form = assemble(&fixture.inputs(), &RecordingAttestor::default(), &mut rng)
+            .unwrap()
+            .form;
+        (fixture, form)
+    }
+
     #[test]
-    fn the_attestation_signs_the_submitted_parts_and_shares_open_to_their_hashes() {
+    fn the_attestation_signs_the_capture_and_shares_open_to_the_associated_data() {
         let mut rng = StdRng::seed_from_u64(7);
         let fixture = Fixture::new(&mut rng);
         let attestor = RecordingAttestor::default();
@@ -416,15 +456,13 @@ mod tests {
         assert_eq!(attestor.calls.get(), 1);
         assert_eq!(enrollment.tee_attestation_document, b"document");
         assert_eq!(*attestor.user_data.borrow(), user_data(&WORKER));
-        assert_eq!(
-            *attestor.nonce.borrow(),
-            binding_digest(ID_COMMITMENT, form)
-        );
+        assert_eq!(*attestor.nonce.borrow(), binding_digest(form).unwrap());
         assert_eq!(
             STANDARD.decode(enrollment.attestation_header()).unwrap(),
             b"document"
         );
-        assert_eq!(enrollment.id_commitment, ID_COMMITMENT);
+        assert_eq!(form.contract_version, "2");
+        assert_eq!(form.sub, "0x1f");
         assert_eq!(form.capture_id, "6f9619ff-8b86-4d01-b42d-00cf4fc964ff");
         assert_eq!(form.timestamp, "1700000000");
         assert_eq!(form.face_embedding_type, "ghostfacenet_flipped_mean");
@@ -438,115 +476,157 @@ mod tests {
                 .unwrap()
                 .to_string()
         );
+        // signup-service: exactly `0x` plus 32 lowercase hex bytes.
+        let hash = form.associated_data_hash.strip_prefix("0x").unwrap();
+        assert_eq!(hash.len(), 64);
+        assert!(hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
         for party in 0..3 {
             let sealed = STANDARD.decode(&form.face_embedding_shares[party]).unwrap();
+            assert!(sealed.len() >= SEALED_BOX_OVERHEAD_BYTES);
             let opened = fixture.secret_keys[party].unseal(&sealed).unwrap();
             let share = &enrollment.associated_data.shares[party];
             assert_eq!(
                 opened,
                 format!(r#"{{"version":"1","share_data":"{}"}}"#, share.share_data).as_bytes()
             );
-            assert_eq!(
-                form.face_embedding_shares_hashes[party],
-                poseidon::share(share).unwrap().to_string()
-            );
         }
+        let names: Vec<_> = form.parts().iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names,
+            [
+                "contract_version",
+                "sub",
+                "capture_id",
+                "timestamp",
+                "face_embedding_shares_0",
+                "face_embedding_shares_1",
+                "face_embedding_shares_2",
+                "face_embedding_version",
+                "face_embedding_type",
+                "face_embedding_inference_backend",
+                "pcp_version",
+                "associated_data_hash",
+                "world_id_challenge_id",
+                "world_id_ownership_proof",
+            ]
+        );
     }
 
     #[test]
-    fn changing_any_part_or_the_identity_changes_the_attested_binding() {
-        let mut rng = StdRng::seed_from_u64(7);
-        let fixture = Fixture::new(&mut rng);
-        let form = assemble(&fixture.inputs(), &RecordingAttestor::default(), &mut rng)
-            .unwrap()
-            .form;
-        let original = binding_digest(ID_COMMITMENT, &form);
-        assert_ne!(binding_digest("0x1", &form), original);
+    fn every_capture_part_is_attested_but_the_v4_authorization_is_not() {
+        let (_, form) = assembled();
+        let original = binding_digest(&form).unwrap();
         assert_ne!(user_data(&[0; 48]), user_data(&WORKER));
-        for index in 0..form.parts().len() {
+        for index in 0..form.capture_parts().len() {
             let mut changed = form.clone();
-            let field = match index {
-                0 => &mut changed.capture_id,
-                1 => &mut changed.timestamp,
-                2..=4 => &mut changed.face_embedding_shares[index - 2],
-                5..=7 => &mut changed.face_embedding_shares_hashes[index - 5],
-                8 => &mut changed.face_embedding_version,
-                9 => &mut changed.face_embedding_type,
-                10 => &mut changed.face_embedding_inference_backend,
-                11 => &mut changed.pcp_version,
-                12 => &mut changed.id_commitment_hash,
-                13 => &mut changed.associated_data_hash,
-                14 => &mut changed.sub,
-                15 => &mut changed.world_id_challenge_id,
-                _ => {
-                    changed.world_id_ownership_proof.push(0);
-                    assert_ne!(binding_digest(ID_COMMITMENT, &changed), original);
-                    continue;
+            match index {
+                0 => changed.contract_version.push('0'),
+                1 => changed.sub.push('0'),
+                2 => changed.capture_id.push('0'),
+                3 => changed.timestamp.push('0'),
+                4..=6 => {
+                    let share = &mut changed.face_embedding_shares[index - 4];
+                    let mut sealed = STANDARD.decode(&*share).unwrap();
+                    sealed[0] ^= 1;
+                    *share = STANDARD.encode(sealed);
                 }
-            };
-            field.push('0');
+                7 => changed.face_embedding_version.push('0'),
+                8 => changed.face_embedding_type.push('0'),
+                9 => changed.face_embedding_inference_backend.push('0'),
+                10 => changed.pcp_version.push('0'),
+                _ => changed.associated_data_hash.push('0'),
+            }
             assert_ne!(
-                binding_digest(ID_COMMITMENT, &changed),
+                binding_digest(&changed).unwrap(),
                 original,
                 "{}",
-                form.parts()[index].0
+                form.capture_parts()[index].0
             );
         }
+        // A retry may carry a fresh challenge and proof for the same attested capture.
+        let mut retry = form.clone();
+        retry.world_id_challenge_id = Uuid::from_u128(0x5678).to_string();
+        retry.world_id_ownership_proof.push(0);
+        assert_eq!(binding_digest(&retry).unwrap(), original);
     }
 
     #[test]
-    fn the_binding_layout_is_frozen() {
+    fn the_binding_matches_signup_services_v2_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(SIGNUP_FIXTURE).unwrap();
+        let fields = fixture["fields"].as_object().unwrap();
+        let field = |name: &str| fields[name].as_str().unwrap().to_owned();
         let form = Form {
-            capture_id: "6f9619ff-8b86-4d01-b42d-00cf4fc964ff".into(),
-            timestamp: "1700000000".into(),
-            face_embedding_shares: ["c0".into(), "c1".into(), "c2".into()],
-            face_embedding_shares_hashes: ["h0".into(), "h1".into(), "h2".into()],
-            face_embedding_version: "2.0.0".into(),
-            face_embedding_type: "ghostfacenet_flipped_mean".into(),
-            face_embedding_inference_backend: "face-engine".into(),
-            pcp_version: "1".into(),
-            id_commitment_hash: "0x01".into(),
-            associated_data_hash: "0x02".into(),
-            sub: "0x1f".into(),
+            contract_version: field("contract_version"),
+            sub: field("sub"),
+            capture_id: field("capture_id"),
+            timestamp: field("timestamp"),
+            face_embedding_shares: std::array::from_fn(|party| {
+                field(&format!("face_embedding_shares_{party}"))
+            }),
+            face_embedding_version: field("face_embedding_version"),
+            face_embedding_type: field("face_embedding_type"),
+            face_embedding_inference_backend: field("face_embedding_inference_backend"),
+            pcp_version: field("pcp_version"),
+            associated_data_hash: field("associated_data_hash"),
             world_id_challenge_id: "00000000-0000-0000-0000-000000001234".into(),
             world_id_ownership_proof: b"proof".to_vec(),
         };
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures/enrollment-v1.json")).unwrap();
-        assert_eq!(
-            fixture["domain"],
-            std::str::from_utf8(BINDING_DOMAIN).unwrap()
-        );
-        assert_eq!(fixture["id_commitment"], ID_COMMITMENT);
-        assert_eq!(
-            fixture["parts"].as_array().unwrap().len(),
-            form.parts().len()
-        );
-        for ((name, value), part) in form
-            .parts()
-            .iter()
-            .zip(fixture["parts"].as_array().unwrap())
-        {
-            assert_eq!(part["name"], *name);
-            assert_eq!(
-                STANDARD
-                    .decode(part["value_base64"].as_str().unwrap())
-                    .unwrap(),
-                *value
-            );
+        assert_eq!(fields.len(), form.capture_parts().len());
+        for (name, _) in form.capture_parts() {
+            assert!(fields.contains_key(name), "{name}");
         }
+        assert_eq!(form.contract_version, CONTRACT_VERSION);
+        let digest = hex::encode(binding_digest(&form).unwrap());
+        assert_eq!(digest, fixture["nonce_hex"].as_str().unwrap());
         assert_eq!(
-            fixture["nonce_hex"],
-            hex::encode(binding_digest(ID_COMMITMENT, &form))
+            digest,
+            "f572ab09e3f8a451b4b075352b30d29e711274dd0ab4ea4a99a2be95e7a951a5"
         );
-        assert_eq!(fixture["user_data_hex"], hex::encode(user_data(&WORKER)));
         let user_data = user_data(&WORKER);
         assert_eq!(user_data[0], USER_DATA_VERSION);
         assert_eq!(user_data[1..49], WORKER);
-        assert_eq!(
-            hex::encode(binding_digest(ID_COMMITMENT, &form)),
-            "aaea0b04e1c35d62ff90f66898b3f949b7f105ac8d80bd10e7bd824e6815c652"
-        );
+    }
+
+    #[test]
+    fn non_canonical_share_encodings_are_not_attested() {
+        let (_, form) = assembled();
+        let short = STANDARD.encode([1; SEALED_BOX_OVERHEAD_BYTES - 1]);
+        for share in ["", "not base64", "AQ", "AQ==\n", short.as_str()] {
+            let mut changed = form.clone();
+            changed.face_embedding_shares[1] = share.into();
+            assert!(
+                matches!(
+                    binding_digest(&changed),
+                    Err(Error::InvalidInput("face_embedding_shares"))
+                ),
+                "{share:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_canonical_subjects_are_accepted() {
+        let max = format!("0x{}", "f".repeat(64));
+        for sub in ["0x1", "0x1f", "0xabcdef0123456789", max.as_str()] {
+            assert!(is_canonical_sub(sub), "{sub}");
+        }
+        let too_long = format!("0x1{}", "0".repeat(64));
+        for sub in [
+            "",
+            "0x",
+            "0x0",
+            "0x01",
+            "0x001f",
+            "0X1f",
+            "0x1F",
+            "1f",
+            "0x1g",
+            " 0x1f",
+            "0x1f\r\n",
+            too_long.as_str(),
+        ] {
+            assert!(!is_canonical_sub(sub), "{sub:?}");
+        }
     }
 
     #[test]
@@ -568,9 +648,15 @@ mod tests {
                 );
             }};
         }
-        rejects!("id_commitment", |i| i.id_commitment = "");
         rejects!("pcp_version", |i| i.pcp_version = "1 2");
         rejects!("sub", |i| i.subject.sub = "0x1f\r\n");
+        // A padded field-element subject must be minimized before it is attested.
+        rejects!(
+            "sub",
+            |i| i.subject.sub =
+                "0x000000000000000000000000000000000000000000000000000000000000001f"
+        );
+        rejects!("sub", |i| i.subject.sub = "0x0");
         rejects!("world_id_challenge_id", |i| i.subject.challenge_id =
             Uuid::nil());
         rejects!("world_id_ownership_proof", |i| i.subject.ownership_proof =

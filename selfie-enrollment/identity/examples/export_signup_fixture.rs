@@ -7,8 +7,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use crypto_box::SecretKey;
 use rand::{SeedableRng, rngs::StdRng};
 use selfie_enrollment_identity::{
-    AttestationFailed, Capture, CaptureAttestor, Inputs, Subject, USER_AGENT, assemble,
-    binding_digest, user_data,
+    ATTESTATION_HEADER, AttestationFailed, Capture, CaptureAttestor, IDENTITY_METHOD,
+    IDENTITY_PATH, Inputs, Subject, USER_AGENT, assemble, binding_digest, user_data,
 };
 use selfie_enrollment_sealed_types::FaceEmbedding;
 use uuid::Uuid;
@@ -56,7 +56,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 challenge_id: Uuid::from_u128(0x1234),
                 ownership_proof: &proof,
             },
-            id_commitment: "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             pcp_version: "1",
             recipient_keys: &recipients,
             worker_sha384: &worker,
@@ -66,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // The producer currently returns Form::parts, not an HTTP request. This test
     // adapter serializes those exact bytes, including a binary proof file part.
-    let boundary = "nitro-rust-go-interop-v1";
+    let boundary = "nitro-rust-go-interop-v2";
     let mut body = Vec::new();
     for (name, value) in enrollment.form.parts() {
         write!(
@@ -87,14 +86,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut request = std::fs::File::create_new(output.join("request.http"))?;
     write!(
         request,
-        "PUT /api/v1/identity?idComm={} HTTP/1.1\r\nHost: interop.invalid\r\nUser-Agent: {USER_AGENT}\r\nContent-Type: multipart/form-data; boundary={boundary}\r\nX-Nitro-Attestation: {}\r\nContent-Length: {}\r\n\r\n",
-        enrollment.id_commitment,
+        "{IDENTITY_METHOD} {IDENTITY_PATH} HTTP/1.1\r\nHost: interop.invalid\r\nUser-Agent: {USER_AGENT}\r\nContent-Type: multipart/form-data; boundary={boundary}\r\n{ATTESTATION_HEADER}: {}\r\nContent-Length: {}\r\n\r\n",
         enrollment.attestation_header(),
         body.len()
     )?;
     request.write_all(&body)?;
     let expected = serde_json::json!({
-        "nonce_hex": hex::encode(binding_digest(&enrollment.id_commitment, &enrollment.form)),
+        "nonce_hex": hex::encode(binding_digest(&enrollment.form)?),
         "user_data_hex": hex::encode(user_data(&worker)),
         "proof_bytes": proof.len(),
     });
