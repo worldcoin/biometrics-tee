@@ -8,6 +8,10 @@ publish = false
 description = "Assembles the attested web identity enrollment for one Selfie Check capture"
 
 [dependencies]
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
 base64.workspace = true
 crypto_box = "0.9.1"
 embedding-shares = { path = "../shares" }
@@ -23,5 +27,4 @@ world-id-primitives.workspace = true
 zeroize = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-serde_json.workspace = true
 hex.workspace = true
