@@ -5,9 +5,12 @@ use pontifex::{
     attestation::{PcrConfig, VerifiedAttestation, Verifier},
 };
 use selfie_enrollment_api_types::*;
-use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult};
+use selfie_enrollment_sealed_types::{
+    EmbeddingRequest, EmbeddingResult, EnrollmentRequest, EnrollmentResult,
+};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
@@ -136,10 +139,26 @@ impl VerifiedAssignment {
             version: PROTOCOL_VERSION,
             image,
         };
-        let plaintext = request.encode().map_err(|_| Error::Protocol)?;
+        self.seal_plaintext(&request.encode().map_err(|_| Error::Protocol)?)
+    }
+    fn seal_enrollment(
+        &self,
+        image: Vec<u8>,
+        sub: String,
+        custody_public_key: [u8; 32],
+    ) -> Result<(Vec<u8>, PendingResult), Error> {
+        let request = EnrollmentRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            image,
+            sub,
+            custody_public_key: custody_public_key.to_vec(),
+        };
+        self.seal_plaintext(&request.encode().map_err(|_| Error::Protocol)?)
+    }
+    fn seal_plaintext(&self, plaintext: &[u8]) -> Result<(Vec<u8>, PendingResult), Error> {
         let (sealed, opener) = self
             .consumer
-            .seal_to_enclave(&plaintext)
+            .seal_to_enclave(plaintext)
             .map_err(|_| Error::Authentication)?;
         if sealed.len() > MAX_REQUEST_BYTES {
             return Err(Error::Protocol);
@@ -152,15 +171,18 @@ struct PendingResult {
 }
 impl PendingResult {
     fn open(self, ciphertext: &[u8]) -> Result<EmbeddingResult, Error> {
+        EmbeddingResult::decode(&self.open_plaintext(ciphertext)?).map_err(|_| Error::Protocol)
+    }
+    fn open_enrollment(self, ciphertext: &[u8]) -> Result<EnrollmentResult, Error> {
+        EnrollmentResult::decode(&self.open_plaintext(ciphertext)?).map_err(|_| Error::Protocol)
+    }
+    fn open_plaintext(self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error> {
         if ciphertext.len() > MAX_RESPONSE_BYTES {
             return Err(Error::Protocol);
         }
-        let plaintext = self
-            .opener
+        self.opener
             .open_from_enclave(ciphertext)
-            .map_err(|_| Error::Authentication)?;
-        let result = EmbeddingResult::decode(&plaintext).map_err(|_| Error::Protocol)?;
-        Ok(result)
+            .map_err(|_| Error::Authentication)
     }
 }
 
@@ -222,14 +244,35 @@ impl<T: Transport> EnrollmentSession<T> {
     }
 
     /// Consumes the session: one encrypted extraction, followed by socket cleanup on any result.
-    pub async fn extract(mut self, image: Vec<u8>) -> Result<EmbeddingResult, Error> {
+    pub async fn extract(self, image: Vec<u8>) -> Result<EmbeddingResult, Error> {
+        let (request, pending) = self.assignment.seal(image)?;
+        let response = self.round_trip(request).await?;
+        pending.open(&response)
+    }
+
+    /// Consumes the session: one encrypted enrollment. On success the result carries the
+    /// attested capture fields, the attestation header and the user's PCP, sealed to
+    /// `custody_public_key`. The caller adds its v4 challenge and proof and submits.
+    pub async fn enroll(
+        self,
+        image: Vec<u8>,
+        sub: String,
+        custody_public_key: [u8; 32],
+    ) -> Result<EnrollmentResult, Error> {
+        let (request, pending) = self
+            .assignment
+            .seal_enrollment(image, sub, custody_public_key)?;
+        let response = self.round_trip(request).await?;
+        pending.open_enrollment(&response)
+    }
+
+    async fn round_trip(mut self, request: Vec<u8>) -> Result<Vec<u8>, Error> {
         let result = async {
-            let (request, pending) = self.assignment.seal(image)?;
             self.socket
                 .send(Frame::Binary(request), Duration::from_secs(10))
                 .await?;
             match self.socket.receive(Duration::from_secs(40)).await? {
-                Frame::Binary(response) => pending.open(&response),
+                Frame::Binary(response) => Ok(response),
                 frame => {
                     host_message(frame)?;
                     Err(Error::Protocol)

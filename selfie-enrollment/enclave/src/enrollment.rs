@@ -1,25 +1,29 @@
 //! Native enclave producer: extract, assemble, attest and encrypt custody data for
 //! signup-service's v4-only web enrollment, `PUT /api/v2/identity`.
 //!
-//! This blocking operation is separate from the existing embedding RPC. A runtime
-//! adapter must obtain requests/custody keys from the authenticated sealed channel
-//! and provision measured AMPC keys and the actual worker measurement before
-//! exposing it. The browser supplies its v4 subject and ownership proof; there is no
-//! v3 identity. Signup-service verifies subject ownership. Clock, capture ID and
-//! release keys remain enclave-controlled.
+//! The browser sends a capture, its canonical v4 subject and its custody public key over the
+//! attested channel ([`State::enroll_sealed`]). The enclave returns the attested capture fields,
+//! the Nitro attestation header and the user's Face PCP sealed to that custody key. The browser
+//! adds its v4 challenge and ownership proof and submits the request itself; signup-service
+//! verifies subject ownership. There is no v3 identity. Clock, capture ID, AMPC recipient keys
+//! and the worker measurement remain enclave-controlled.
 
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crypto_box::PublicKey;
 use rand::rngs::OsRng;
 use selfie_enrollment_api_types::MAX_IMAGE_BYTES;
+use selfie_enrollment_enclave_types::Error as EnclaveError;
 use selfie_enrollment_identity::{
-    Capture, CaptureAttestor, Form, Inputs, Subject, assemble, custody,
+    Capture, CaptureAttestor, Form, Inputs, assemble, custody, validate_sub,
+};
+use selfie_enrollment_sealed_types::{
+    EnrollmentBundle, EnrollmentField, EnrollmentRequest, EnrollmentResult, Failure,
 };
 use uuid::Uuid;
 
 use crate::State;
-use selfie_enrollment_sealed_types::Failure;
 
 /// Construct only from the measured enclave's release configuration and verified
 /// bootstrap worker measurement. Never deserialize this from a client or host request.
@@ -44,18 +48,32 @@ impl TrustedContext {
     }
 }
 
+/// The enclave's enrollment capability: its trusted context and per-capture attestor.
+pub struct Producer {
+    context: TrustedContext,
+    attestor: Arc<dyn CaptureAttestor + Send + Sync>,
+}
+
+impl Producer {
+    #[must_use]
+    pub fn new(context: TrustedContext, attestor: Arc<dyn CaptureAttestor + Send + Sync>) -> Self {
+        Self { context, attestor }
+    }
+}
+
 /// Obtain these bytes through the verified encrypted enrollment channel. The image
 /// must be PNG; JPEG-to-PNG conversion is not silently delegated to the host.
 pub struct CaptureRequest<'a> {
     pub image_png: &'a [u8],
-    /// The canonical v4 subject is attested; the challenge and proof are forwarded.
-    pub subject: Subject<'a>,
+    /// The browser's canonical v4 subject, bound into the attested capture.
+    pub sub: &'a str,
+    /// The user's custody public key; the PCP is sealed to it.
     pub custody_key: &'a PublicKey,
 }
 
 /// Contains submission metadata and encrypted custody data, never the image,
 /// raw embedding, plaintext shares or identity secrets. No Debug implementation.
-/// Submit `form` to `PUT /api/v2/identity` with `attestation_header`.
+/// The browser submits `form`, plus its challenge and proof, with `attestation_header`.
 pub struct PreparedEnrollment {
     pub form: Form,
     pub attestation_header: String,
@@ -74,6 +92,17 @@ pub enum Error {
     Unavailable,
 }
 
+fn validate(request: &CaptureRequest<'_>) -> Result<(), Error> {
+    if request.image_png.len() > MAX_IMAGE_BYTES
+        || !request.image_png.starts_with(b"\x89PNG\r\n\x1a\n")
+    {
+        return Err(Error::InvalidRequest);
+    }
+    validate_sub(request.sub).map_err(|_| Error::InvalidRequest)?;
+    embedding_shares::validate_recipients(std::slice::from_ref(request.custody_key))
+        .map_err(|_| Error::InvalidRequest)
+}
+
 impl State {
     /// Runs on an enclave blocking thread; holds the existing processing permit
     /// until extraction, attestation and custody encryption all finish.
@@ -87,18 +116,70 @@ impl State {
         context: &TrustedContext,
         attestor: &dyn CaptureAttestor,
     ) -> Result<PreparedEnrollment, Error> {
-        if request.image_png.len() > MAX_IMAGE_BYTES
-            || !request.image_png.starts_with(b"\x89PNG\r\n\x1a\n")
-        {
-            return Err(Error::InvalidRequest);
-        }
-        request
-            .subject
-            .validate()
-            .map_err(|_| Error::InvalidRequest)?;
-        embedding_shares::validate_recipients(std::slice::from_ref(request.custody_key))
-            .map_err(|_| Error::InvalidRequest)?;
+        validate(&request)?;
         let _permit = self.processing.try_acquire().map_err(|_| Error::Busy)?;
+        self.produce(&request, context, attestor)
+    }
+
+    /// Serves one sealed enrollment request. The caller holds the processing permit.
+    /// Invalid input and rejected captures become a sealed failure for the browser;
+    /// a missing capability or an internal failure is a transport-level `Unavailable`.
+    pub(crate) fn enroll_sealed(
+        &self,
+        request: &EnrollmentRequest,
+    ) -> Result<EnrollmentResult, EnclaveError> {
+        let producer = self.enrollment.as_ref().ok_or(EnclaveError::Unavailable)?;
+        let key: [u8; 32] = request
+            .custody_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| EnclaveError::InvalidMessage)?;
+        let custody_key = PublicKey::from(key);
+        let capture = CaptureRequest {
+            image_png: &request.image,
+            sub: &request.sub,
+            custody_key: &custody_key,
+        };
+        let prepared = match validate(&capture)
+            .and_then(|()| self.produce(&capture, &producer.context, producer.attestor.as_ref()))
+        {
+            Ok(prepared) => prepared,
+            Err(Error::InvalidRequest) => {
+                return Ok(EnrollmentResult::Failed {
+                    reason: Failure::InvalidRequest,
+                });
+            }
+            Err(Error::Capture(reason)) => return Ok(EnrollmentResult::Failed { reason }),
+            Err(Error::Busy | Error::Unavailable) => return Err(EnclaveError::Unavailable),
+        };
+        let fields = prepared
+            .form
+            .parts()
+            .into_iter()
+            .map(|(name, value)| {
+                std::str::from_utf8(value).map(|value| EnrollmentField {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                })
+            })
+            .collect::<Result<_, _>>()
+            .map_err(|_| EnclaveError::Unavailable)?;
+        Ok(EnrollmentResult::Success {
+            enrollment: EnrollmentBundle {
+                fields,
+                attestation_header: prepared.attestation_header,
+                encrypted_custody: prepared.encrypted_custody,
+            },
+        })
+    }
+
+    /// Extracts, assembles, attests and seals custody. The caller holds the permit.
+    fn produce(
+        &self,
+        request: &CaptureRequest<'_>,
+        context: &TrustedContext,
+        attestor: &dyn CaptureAttestor,
+    ) -> Result<PreparedEnrollment, Error> {
         let embedding = self
             .engine
             .extract(request.image_png)
@@ -116,7 +197,7 @@ impl State {
                 image_png: request.image_png,
                 embedding: &embedding,
             },
-            subject: request.subject,
+            sub: request.sub,
             pcp_version: "1",
             recipient_keys: &context.recipient_keys,
             worker_sha384: &context.worker_sha384,
@@ -209,11 +290,7 @@ mod tests {
     fn request(key: &PublicKey) -> CaptureRequest<'_> {
         CaptureRequest {
             image_png: b"\x89PNG\r\n\x1a\nfixture",
-            subject: Subject {
-                sub: "0x1f",
-                challenge_id: Uuid::from_u128(0x1234),
-                ownership_proof: b"fixture-proof",
-            },
+            sub: "0x1f",
             custody_key: key,
         }
     }
@@ -232,7 +309,8 @@ mod tests {
             .unwrap();
         assert_eq!(prepared.form.contract_version, "2");
         assert_eq!(prepared.form.sub, "0x1f");
-        assert_eq!(prepared.form.world_id_ownership_proof, b"fixture-proof");
+        // The v4 challenge and proof never reach the enclave; the browser adds them.
+        assert_eq!(prepared.form.parts().len(), 12);
         assert!(prepared.form.timestamp.parse::<u64>().unwrap() >= before);
         assert!(!Uuid::parse_str(&prepared.form.capture_id).unwrap().is_nil());
         assert_eq!(
@@ -255,20 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_v4_proof_fails_before_extraction() {
-        let state = State::new(Arc::new(BootAttestor), Box::new(Engine { reject: true })).unwrap();
-        let key = SecretKey::generate(&mut OsRng).public_key();
-        let attestor = Attestor::default();
-        let mut input = request(&key);
-        input.subject.ownership_proof = b"";
-        assert!(matches!(
-            state.prepare_enrollment(input, &context(), &attestor),
-            Err(Error::InvalidRequest)
-        ));
-        assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
     fn malformed_subjects_fail_before_acquiring_a_slot_or_running_extraction() {
         struct NeverExtract;
         impl crate::engine::Engine for NeverExtract {
@@ -284,7 +348,6 @@ mod tests {
         let attestor = Attestor::default();
         let context = context();
         let oversized_sub = "a".repeat(129);
-        let oversized_proof = vec![1; selfie_enrollment_identity::MAX_OWNERSHIP_PROOF_BYTES + 1];
 
         // Repeat with the slot occupied: invalid inputs must not be reported as Busy.
         for busy in [false, true] {
@@ -302,21 +365,7 @@ mod tests {
                 oversized_sub.as_str(),
             ] {
                 let mut input = request(&key);
-                input.subject.sub = sub;
-                assert!(matches!(
-                    state.prepare_enrollment(input, &context, &attestor),
-                    Err(Error::InvalidRequest)
-                ));
-            }
-            let mut input = request(&key);
-            input.subject.challenge_id = Uuid::nil();
-            assert!(matches!(
-                state.prepare_enrollment(input, &context, &attestor),
-                Err(Error::InvalidRequest)
-            ));
-            for proof in [b"".as_slice(), oversized_proof.as_slice()] {
-                let mut input = request(&key);
-                input.subject.ownership_proof = proof;
+                input.sub = sub;
                 assert!(matches!(
                     state.prepare_enrollment(input, &context, &attestor),
                     Err(Error::InvalidRequest)
