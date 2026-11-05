@@ -171,6 +171,46 @@ pub async fn extract(
     session.extract(std::mem::take(&mut *image)).await
 }
 
+/// One-shot browser enrollment: the result carries the attested capture fields, the
+/// attestation header and the user's PCP sealed to `custody_public_key`.
+pub async fn enroll(
+    config: Config,
+    image: Vec<u8>,
+    sub: String,
+    custody_public_key: [u8; 32],
+    signal: Option<AbortSignal>,
+) -> Result<selfie_enrollment_sealed_types::EnrollmentResult, Error> {
+    let mut image = zeroize::Zeroizing::new(image);
+    let client = EnrollmentClient::new(config)?;
+    let session = client.connect(signal).await?;
+    session
+        .enroll(std::mem::take(&mut *image), sub, custody_public_key)
+        .await
+}
+
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_name=enroll)]
+pub async fn enroll_capture(
+    config_json: String,
+    image: Vec<u8>,
+    sub: String,
+    custody_public_key: Vec<u8>,
+    signal: Option<AbortSignal>,
+) -> Result<JsValue, JsValue> {
+    let mut image = zeroize::Zeroizing::new(image);
+    let operation = async {
+        let config: Config = serde_json::from_str(&config_json).map_err(|_| Error::Config)?;
+        let key: [u8; 32] = custody_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Config)?;
+        let result = enroll(config, std::mem::take(&mut *image), sub, key, signal).await?;
+        serde_wasm_bindgen::to_value(&result).map_err(|_| Error::Protocol)
+    }
+    .await;
+    operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
+}
+
 #[cfg(feature = "js-export")]
 #[wasm_bindgen(js_name=extractEmbedding)]
 pub async fn extract_embedding(
