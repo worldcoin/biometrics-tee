@@ -123,3 +123,32 @@ fn optional_files_and_versions_are_preserved_for_every_presence_combination() {
         }
     }
 }
+
+#[test]
+fn share_versions_are_compared_only_against_a_present_codes_version() {
+    for keep_codes in [false, true] {
+        let mut files = source_files("2.1");
+        if keep_codes {
+            edit_record(&mut files, "iris_codes.json", |value| {
+                value.as_object_mut().unwrap().remove("IRIS_version");
+            });
+        } else {
+            files.remove("iris_codes.json");
+        }
+        for index in 0..3 {
+            edit_record(
+                &mut files,
+                &format!("iris_code_shares_{index}.json"),
+                |value| {
+                    value["IRIS_version"] = format!("iris-{index}").into();
+                    value["IRIS_shares_version"] = format!("shares-{index}").into();
+                },
+            );
+        }
+        let source = parse_source(files).unwrap();
+        source.validate_iris().unwrap();
+        let (bio, ctx) = (pipeline(), context());
+        let result = build_and_open(&source, &bio, &ctx);
+        verify_completed_pcp(&source, &bio, &ctx, &result.files).unwrap();
+    }
+}

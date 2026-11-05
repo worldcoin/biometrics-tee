@@ -2,8 +2,9 @@
 
 Source Iris files are optional. A present `iris_codes.json` must contain both
 iris codes and both mask codes. Each present share file must contain the four
-corresponding share fields. Present code/share Iris versions must agree. Version
-fields, including `IRIS_shares_version`, may be absent. The shared builder's
+corresponding share fields. Each share Iris version must match the codes' Iris
+version when both are present. Share versions are not compared with each other.
+Version fields, including `IRIS_shares_version`, may be absent. The shared builder's
 compatibility mode preserves absent files and version fields; it still validates
 payload fields when constructing Iris inputs.
 
@@ -12,6 +13,12 @@ biometric inference. Invalid source Iris data produces `InvalidSourceIrisData`
 and the job reason `invalid_source_iris_data`. The builder adapter repeats the
 check for direct callers. Fresh face/DI outputs retain their separate validation.
 Required pipeline images remain mandatory.
+
+TEE supplies the shared builder with Alkali sealed-box encryption using
+Curve25519/XSalsa20-Poly1305. Each call uses fresh ephemeral keys and the exact
+recipient bytes, with the standard 48-byte ciphertext overhead. Invalid recipients
+and library failures propagate through `BuildError::Build` as typed encryption
+errors.
 
 The host exposes observed failures through `migration.host.job_failures` with
 `reason=invalid_source_iris_data`, including failures whose job update cannot be

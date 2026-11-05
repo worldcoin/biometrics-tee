@@ -658,6 +658,12 @@ fn builder_generated_orb_captures_open_as_sources() {
         .backend_keys(keys.recipients().backend_keys)
         .biometrics(orb_pcp::BiometricPolicy::Included(biometrics))
         .rng(rand::rngs::OsRng)
+        .sealer(|plaintext, recipient| {
+            use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
+            let mut ciphertext = vec![0; plaintext.len() + sealedbox::OVERHEAD_LENGTH];
+            sealedbox::encrypt(plaintext, recipient, &mut ciphertext)?;
+            Ok::<_, alkali::AlkaliError>(ciphertext)
+        })
         .signer(|digest| {
             signed_digest = Some(*digest);
             Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())

@@ -29,7 +29,27 @@ pub enum BuildError<E> {
     Mapping(#[from] Error),
     /// Archive assembly, encryption or the supplied signer failed.
     #[error(transparent)]
-    Build(orb_pcp::BuildError<E>),
+    Build(orb_pcp::BuildError<E, SealingError>),
+}
+
+/// Failure to seal a PCP tier or inner archive.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SealingError {
+    #[error("recipient public key has unacceptable low order")]
+    InvalidRecipient,
+    #[error("sealed-box encryption failed")]
+    Library(#[source] AlkaliError),
+}
+
+/// Libsodium-compatible sealed boxes with fresh ephemeral keys per call.
+/// Preserve the exact recipient bytes: they are part of the nonce derivation.
+fn seal(plaintext: &[u8], recipient: &[u8; 32]) -> Result<Vec<u8>, SealingError> {
+    let mut ciphertext = vec![0; plaintext.len() + sealedbox::OVERHEAD_LENGTH];
+    sealedbox::encrypt(plaintext, recipient, &mut ciphertext).map_err(|error| match error {
+        AlkaliError::SealError(SealError::PublicKeyUnacceptable) => SealingError::InvalidRecipient,
+        error => SealingError::Library(error),
+    })?;
+    Ok(ciphertext)
 }
 
 /// Builds an encrypted PCP from prepared inputs and recipient keys.
@@ -73,6 +93,7 @@ pub fn build<E>(
             .strict(false)
             .migration(migration)
             .rng(rand::rngs::OsRng)
+            .sealer(seal)
             .signer(sign_digest)
             .build()
             .map_err(BuildError::Build)
@@ -265,5 +286,47 @@ fn normalized<'a>(frame: &orb_pcp::NormalizedIrisFrame<'a>) -> orb_pcp::Normaliz
         mask: frame.mask,
         image_resized: frame.image_resized,
         mask_resized: frame.mask_resized,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sealed_boxes_preserve_recipient_bytes_and_use_fresh_ephemeral_keys() {
+        let mut pair = sealedbox::Keypair::generate().unwrap();
+        // X25519 accepts this alias, but sealed-box nonce derivation uses its exact bytes.
+        for high_bit in [0, 0x80] {
+            pair.public_key[31] = (pair.public_key[31] & 0x7f) | high_bit;
+            for plaintext in [b"".as_slice(), b"synthetic payload".as_slice()] {
+                let first = seal(plaintext, &pair.public_key).unwrap();
+                let second = seal(plaintext, &pair.public_key).unwrap();
+                assert_ne!(&first[..32], &second[..32]);
+                for ciphertext in [first, second] {
+                    assert_eq!(ciphertext.len(), plaintext.len() + 48);
+                    let mut opened = vec![0; plaintext.len()];
+                    sealedbox::decrypt(&ciphertext, &pair, &mut opened).unwrap();
+                    assert_eq!(opened, plaintext);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sealed_boxes_reject_wrong_recipients_and_tampering() {
+        let pair = sealedbox::Keypair::generate().unwrap();
+        let other = sealedbox::Keypair::generate().unwrap();
+        let ciphertext = seal(b"synthetic payload", &pair.public_key).unwrap();
+        let mut opened = vec![0; ciphertext.len() - sealedbox::OVERHEAD_LENGTH];
+        assert!(sealedbox::decrypt(&ciphertext, &other, &mut opened).is_err());
+        for index in 0..ciphertext.len() {
+            let mut altered = ciphertext.clone();
+            altered[index] ^= 1;
+            assert!(sealedbox::decrypt(&altered, &pair, &mut opened).is_err());
+        }
+        for length in 0..ciphertext.len() {
+            assert!(sealedbox::decrypt(&ciphertext[..length], &pair, &mut opened).is_err());
+        }
     }
 }

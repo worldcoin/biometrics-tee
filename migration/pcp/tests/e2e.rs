@@ -796,3 +796,45 @@ fn build_errors_report_the_failed_stage_without_signer_details() {
     let error = result.err().unwrap();
     assert_eq!(error.to_string(), "manifest signing failed");
 }
+
+#[test]
+fn unusable_backend_keys_propagate_typed_encryption_errors_before_signing() {
+    let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    let keys = OutputKeys::generate();
+    for role in 0..4 {
+        for low_order in [0, 1] {
+            for high_bit in [0, 0x80] {
+                let mut public_key = [0; 32];
+                public_key[0] = low_order;
+                public_key[31] = high_bit;
+                let mut recipients = keys.recipients();
+                let key = match role {
+                    0 => &mut recipients.backend_keys.iris,
+                    1 => &mut recipients.backend_keys.normalized_iris,
+                    2 => &mut recipients.backend_keys.face,
+                    _ => &mut recipients.backend_keys.tier2,
+                };
+                key.public_key = &public_key;
+                let error = di_migration_pcp::build(
+                    &source,
+                    &bio,
+                    &ctx,
+                    recipients,
+                    |_| -> Result<Vec<u8>, std::convert::Infallible> {
+                        panic!("invalid backend recipient must not reach the signer")
+                    },
+                )
+                .err()
+                .unwrap();
+                assert!(matches!(
+                    error,
+                    di_migration_pcp::BuildError::Build(orb_pcp::BuildError::Encryption(
+                        di_migration_pcp::SealingError::InvalidRecipient
+                    ))
+                ));
+                assert_eq!(error.to_string(), "encryption failed");
+            }
+        }
+    }
+}

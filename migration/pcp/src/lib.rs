@@ -1,8 +1,8 @@
 //! Migrate opened PCPs with the shared PCP builder.
 //!
 //! [`SourcePcp::parse`] checks and decrypts a source against its manifest.
-//! [`build`] prepares the migration request and delegates encryption and archive
-//! assembly to the shared builder, using the supplied manifest signer.
+//! [`build`] prepares migration inputs and supplies sealed-box encryption and
+//! manifest signing to the shared builder.
 //! [`verify_completed_pcp`] checks the opened result. The caller owns source
 //! authentication, inference, share generation and recipient keys.
 //! Hash consistency does not authenticate the source manifest or unlisted metadata.
@@ -16,7 +16,7 @@ mod preservation;
 mod source;
 
 pub use archive::files_from_tar_gz;
-pub use builder::{BuildError, OutputRecipients, build, validate_build_inputs};
+pub use builder::{BuildError, OutputRecipients, SealingError, build, validate_build_inputs};
 pub use mapping::{MigrationContext, PreparedBiometrics};
 pub use orb_wld_data_id::{S3Region, SignupId};
 pub use preservation::verify_completed_pcp;
