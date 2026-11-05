@@ -40,7 +40,7 @@ impl MigrationContext {
 ///
 /// The sandbox adapter must validate model-specific dimensions and encodings;
 /// the sharing stage must bind every share to these exact outputs.
-/// `with_build_request` checks availability and consistency before building.
+/// `with_build_inputs` checks availability and consistency before building.
 pub struct PreparedBiometrics<'a> {
     /// Release version of the executed biometric pipeline, recorded in `migration.pb`.
     pub biometric_pipeline_version: String,
@@ -48,6 +48,8 @@ pub struct PreparedBiometrics<'a> {
     pub di_embeddings: v1::DiIrisEmbeddings,
     /// Index `i` belongs to recipient `i`.
     pub di_embedding_shares: [v1::DiIrisEmbeddingShares; 3],
+    /// All five ORBIT5 recipients in index order, each carrying both eyes and mirrors.
+    pub orbit5_di_embedding_shares: [v1::Orbit5DiIrisEmbeddingShares; 5],
     pub left_normalized: orb_pcp::NormalizedIrisFrame<'a>,
     pub right_normalized: orb_pcp::NormalizedIrisFrame<'a>,
     /// Fresh normalization keyed by source multiframe image ID.
@@ -114,11 +116,12 @@ impl PreparedBiometrics<'_> {
 
     /// Both eyes are present, every vector has one length, floats are finite,
     /// quantized values fit `i8` and share values `u16`, the producer's types,
-    /// and the embeddings and all three shares agree on their model, embedding
-    /// and sharing versions.
+    /// and both share families agree with the embeddings' model and embedding version.
+    /// Sharing versions agree within each family.
     fn validate_di(&self) -> Result<(), Error> {
         const INVALID_EMBEDDINGS: Error = Error::InvalidField("di_embeddings");
         const INVALID_SHARES: Error = Error::InvalidField("di_embedding_shares");
+        const INVALID_ORBIT5_SHARES: Error = Error::InvalidField("orbit5_di_embedding_shares");
         let embedding = self
             .di_embeddings
             .embedding_v1
@@ -173,6 +176,28 @@ impl PreparedBiometrics<'_> {
                 })
             {
                 return Err(INVALID_SHARES);
+            }
+        }
+        let mut orbit5_shares_version = None;
+        for share in &self.orbit5_di_embedding_shares {
+            let share = share.share_v1.as_ref().ok_or(INVALID_ORBIT5_SHARES)?;
+            nonempty(&share.shares_version, "orbit5_shares_version")?;
+            if share.model_version != embedding.model_version
+                || share.embedding_version != embedding.embedding_version
+                || *orbit5_shares_version.get_or_insert(&share.shares_version)
+                    != &share.shares_version
+                || [
+                    &share.left_share,
+                    &share.left_mirror_share,
+                    &share.right_share,
+                    &share.right_mirror_share,
+                ]
+                .iter()
+                .any(|values| {
+                    values.len() != n || values.iter().any(|v| u16::try_from(*v).is_err())
+                })
+            {
+                return Err(INVALID_ORBIT5_SHARES);
             }
         }
         Ok(())

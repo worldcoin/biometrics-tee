@@ -16,7 +16,7 @@ mod preservation;
 mod source;
 
 pub use archive::files_from_tar_gz;
-pub use builder::{BuildError, OutputRecipients, build, validate_build_inputs, with_build_request};
+pub use builder::{BuildError, OutputRecipients, build, validate_build_inputs, with_build_inputs};
 pub use mapping::{MigrationContext, PreparedBiometrics};
 pub use orb_wld_data_id::{S3Region, SignupId};
 pub use preservation::verify_completed_pcp;

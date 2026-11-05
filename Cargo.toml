@@ -43,9 +43,18 @@ anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
 aws-config = "1"
-aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+] }
+aws-sdk-kms = { version = "1", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+] }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+] }
 axum = "0.8"
 bytes = { version = "1", features = ["serde"] }
 ciborium = "0.2"
@@ -61,15 +70,19 @@ hex = { version = "0.4", default-features = false, features = ["alloc"] }
 http-body-util = "0.1"
 mime = "0.3"
 # Shared PCP builder, protobuf definitions and signup IDs use one revision.
-orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac" }
-orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac" }
-orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac" }
+orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "5093390fedf02ce0fbb66515cf3f63bb198d18e9" }
+orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "5093390fedf02ce0fbb66515cf3f63bb198d18e9" }
+orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "5093390fedf02ce0fbb66515cf3f63bb198d18e9" }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 di-migration-client = { path = "migration/client" }
 pontifex = { version = "3.1.0", default-features = false }
 proof = { path = "migration/proof" }
 fastrand = "2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+] }
 serde = { version = "1.0", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = "1.0"
@@ -79,7 +92,14 @@ tar = "0.4"
 telemetry-batteries = { version = "0.4.1", default-features = false }
 tempfile = "3.27"
 thiserror = "2"
-tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.48", features = [
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
 tokio-vsock = "0.7.2"
 # Migration only verifies credentials; protocol proof support pulls in unused compression code.
 world-id-primitives = { version = "0.15.0", default-features = false }

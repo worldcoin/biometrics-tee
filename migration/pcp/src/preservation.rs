@@ -21,6 +21,7 @@ use crate::{Error, Files, MigrationContext, PreparedBiometrics, SourcePcp, parse
 /// - Raw captures, iris codes and shares equal the source bytes, including JSON
 ///   formatting; none is missing or added.
 /// - The normalized iris images and masks are exactly this run's.
+/// - All five ORBIT5 payloads equal the exact protobuf bytes prepared for this run.
 /// - `info.json` is compact with sorted keys, carries the context's signup ID,
 ///   keeps every other field of the source that `pcp.v1.Info` defines, and has a
 ///   32-hex-digit salt exactly for each present salted value.
@@ -41,6 +42,7 @@ pub fn verify_completed_pcp(
 ) -> Result<(), Error> {
     verify_preserved(source, files)?;
     verify_normalized(biometrics, files)?;
+    verify_orbit5(biometrics, files)?;
     let info = verify_info(source, &context.signup_id.to_string(), files)?;
     let expected = crate::builder::migration(source, biometrics, context);
     verify_migration(&expected, files)?;
@@ -109,6 +111,27 @@ fn verify_normalized(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Resu
         .collect();
     if actual != expected {
         return Err(Error::OutputMismatch("normalized_iris_mismatch"));
+    }
+    Ok(())
+}
+
+fn verify_orbit5(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Result<(), Error> {
+    for (recipient, expected) in biometrics.orbit5_di_embedding_shares.iter().enumerate() {
+        let name = format!("orbit5_di_iris_embeddings_shares_{recipient}.pb");
+        let actual = files
+            .get(&name)
+            .ok_or(Error::OutputMismatch("orbit5_share_missing"))?;
+        if *actual != expected.encode_to_vec() {
+            return Err(Error::OutputMismatch("orbit5_share_mismatch"));
+        }
+    }
+    if files
+        .keys()
+        .filter(|name| name.starts_with("orbit5_di_iris_embeddings_shares_"))
+        .count()
+        != biometrics.orbit5_di_embedding_shares.len()
+    {
+        return Err(Error::OutputMismatch("orbit5_share_unexpected"));
     }
     Ok(())
 }
