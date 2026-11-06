@@ -51,6 +51,8 @@ pub enum Error {
     CredentialClaimsMismatch,
     /// Failed to parse the PCP.
     InvalidPcp,
+    /// A present source Iris record has missing payload fields or inconsistent versions.
+    InvalidSourceIrisData,
     /// Failed to build the PCP.
     FailedToBuildPcp,
     /// The device public key was not valid standard Base64.
@@ -58,4 +60,27 @@ pub enum Error {
     /// An unrecognized worker failure or an error introduced by a newer enclave.
     #[serde(other)]
     Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn source_iris_error_round_trips_and_unknown_errors_remain_readable() {
+        let wire = rmp_serde::to_vec_named(&Error::InvalidSourceIrisData).unwrap();
+        assert_eq!(
+            rmp_serde::from_slice::<String>(&wire).unwrap(),
+            "InvalidSourceIrisData"
+        );
+        assert_eq!(
+            rmp_serde::from_slice::<Error>(&wire).unwrap(),
+            Error::InvalidSourceIrisData
+        );
+        let future = rmp_serde::to_vec_named("FutureError").unwrap();
+        assert_eq!(
+            rmp_serde::from_slice::<Error>(&future).unwrap(),
+            Error::Unknown
+        );
+    }
 }

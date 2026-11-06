@@ -16,9 +16,9 @@ use crate::{Error, Files, MigrationContext, PreparedBiometrics, SourcePcp};
 
 /// Recipient keys for the new package: the user key encrypts the tiers, the
 /// backend keys encrypt the inner archives and are written to `backend_keys.json`.
-pub struct OutputRecipients<'a> {
-    pub user_public_key: &'a [u8; 32],
-    pub backend_keys: orb_pcp::BackendKeys<'a>,
+pub struct OutputRecipients {
+    pub user_public_key: [u8; 32],
+    pub backend_keys: orb_pcp::BackendKeys,
 }
 
 /// Failure to prepare or construct a migrated package.
@@ -29,7 +29,27 @@ pub enum BuildError<E> {
     Mapping(#[from] Error),
     /// Archive assembly, encryption or the supplied signer failed.
     #[error(transparent)]
-    Build(orb_pcp::BuildError<E>),
+    Build(orb_pcp::BuildError<E, SealingError>),
+}
+
+/// Failure to seal a PCP tier or inner archive.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SealingError {
+    #[error("recipient public key has unacceptable low order")]
+    InvalidRecipient,
+    #[error("sealed-box encryption failed")]
+    Library(#[source] AlkaliError),
+}
+
+/// Libsodium-compatible sealed boxes with fresh ephemeral keys per call.
+/// Preserve the exact recipient bytes: they are part of the nonce derivation.
+fn seal(plaintext: &[u8], recipient: &[u8; 32]) -> Result<Vec<u8>, SealingError> {
+    let mut ciphertext = vec![0; plaintext.len() + sealedbox::OVERHEAD_LENGTH];
+    sealedbox::encrypt(plaintext, recipient, &mut ciphertext).map_err(|error| match error {
+        AlkaliError::SealError(SealError::PublicKeyUnacceptable) => SealingError::InvalidRecipient,
+        error => SealingError::Library(error),
+    })?;
+    Ok(ciphertext)
 }
 
 /// Builds an encrypted PCP from prepared inputs and recipient keys.
@@ -38,22 +58,91 @@ pub enum BuildError<E> {
 /// recipients and a manifest signer. Run this synchronous operation on a blocking
 /// worker when called from an asynchronous service. Call [`validate_build_inputs`]
 /// before generating backend keys. Retain `source` until [`crate::verify_completed_pcp`]
-/// passes on the opened result. See [`with_build_request`] for the mapping contract.
+/// passes on the opened result. Source Iris files and captures are preserved;
+/// face, DI and normalized iris outputs come from `biometrics`.
+/// Consumes the fresh outputs; source captures are copied into the owned builder.
+/// Completion checks require independently retained expected biometric outputs.
 ///
 /// # Errors
 /// Propagates mapping, archive, encryption and signer failures without returning
 /// a partial package.
 pub fn build<E>(
     source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
+    biometrics: PreparedBiometrics,
     context: &MigrationContext,
-    recipients: OutputRecipients<'_>,
+    recipients: OutputRecipients,
     sign_digest: impl FnOnce(&[u8; 32]) -> Result<Vec<u8>, E>,
 ) -> Result<orb_pcp::Package, BuildError<E>> {
-    with_build_request(source, biometrics, context, recipients, |request| {
-        orb_pcp::build(request, &mut rand::rngs::OsRng, sign_digest)
-    })?
-    .map_err(BuildError::Build)
+    validate_user_key(&recipients.user_public_key)?;
+    let timestamp =
+        u32::try_from(context.migrated_ts).map_err(|_| Error::InvalidField("migrated_ts"))?;
+    validate_mapping(source, &biometrics, context)?;
+    let migration = migration(source, &biometrics, context);
+    let iris = source.iris()?;
+    let info = v1::Info {
+        signup_id: Some(context.signup_id.to_string()),
+        ..source.info.clone()
+    };
+    let mut seen = BTreeSet::new();
+    let left_ids = image_ids(&info.left_ir_multiframe_image_ids, &mut seen)?;
+    let right_ids = image_ids(&info.right_ir_multiframe_image_ids, &mut seen)?;
+    let PreparedBiometrics {
+        face_embeddings,
+        di_embeddings,
+        di_embedding_shares,
+        left_normalized,
+        right_normalized,
+        mut extra_normalized,
+        ..
+    } = biometrics;
+    let files = &source.files;
+    let mut used = BTreeSet::new();
+    let images = orb_pcp::PackageImages {
+        left: orb_pcp::IrisEye {
+            primary: orb_pcp::PrimaryIrisFrame {
+                ir_png: image(files, "iris/left_ir.png", &mut used)?.to_vec(),
+                normalized: left_normalized,
+            },
+            multiframe: extra_frames(files, left_ids, &mut extra_normalized, &mut used)?,
+        },
+        right: orb_pcp::IrisEye {
+            primary: orb_pcp::PrimaryIrisFrame {
+                ir_png: image(files, "iris/right_ir.png", &mut used)?.to_vec(),
+                normalized: right_normalized,
+            },
+            multiframe: extra_frames(files, right_ids, &mut extra_normalized, &mut used)?,
+        },
+        thumbnail_png: Some(image(files, "face/thumbnail.png", &mut used)?.to_vec()),
+        face_ir_png: optional_image(files, "face_ir_and_thermal/face_ir.png", &mut used)
+            .map(<[u8]>::to_vec),
+        thermal_png: optional_image(files, "face_ir_and_thermal/thermal.png", &mut used)
+            .map(<[u8]>::to_vec),
+        fraud: fraud_images(files, &mut used),
+    };
+    if files.keys().filter(|path| raw_image(path)).count() != used.len() {
+        return Err(Error::UnmappedImage.into());
+    }
+    let di = orb_pcp::Di::embeddings(di_embeddings)
+        .shares(di_embedding_shares)
+        .map_err(|_| Error::InvalidField("di_embedding_shares"))?;
+    let biometrics = orb_pcp::Biometrics::images(images)
+        .iris(iris)
+        .di(di)
+        .face_embeddings(face_embeddings);
+    orb_pcp::Builder::timestamp(timestamp)
+        .info(info)
+        .user_public_key(recipients.user_public_key)
+        .backend_keys(recipients.backend_keys)
+        .biometrics(orb_pcp::BiometricPolicy::Included(biometrics))
+        // Source Iris files and version fields may be absent. Present payloads
+        // are validated by Iris construction; fresh DI is validated separately.
+        .strict(false)
+        .migration(migration)
+        .rng(rand::rngs::OsRng)
+        .sealer(seal)
+        .signer(sign_digest)
+        .build()
+        .map_err(BuildError::Build)
 }
 
 /// Checks mapping inputs and the user's encryption key without backend keys.
@@ -65,12 +154,12 @@ pub fn build<E>(
 /// a local cryptographic library failure. This does not authenticate the user key.
 pub fn validate_build_inputs(
     source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
+    biometrics: &PreparedBiometrics,
     context: &MigrationContext,
     user_public_key: &[u8; 32],
 ) -> Result<(), Error> {
     validate_user_key(user_public_key)?;
-    with_prepared_inputs(source, biometrics, context, |_, _, _| ())
+    validate_mapping(source, biometrics, context)
 }
 
 fn validate_user_key(user_public_key: &[u8; 32]) -> Result<(), Error> {
@@ -85,109 +174,62 @@ fn validate_user_key(user_public_key: &[u8; 32]) -> Result<(), Error> {
         })
 }
 
-/// Validate one migration run and pass its build request to `consume`,
-/// normally `orb_pcp::build` with a CSPRNG and the enclave signer.
-///
-/// `info.json` is the source's with the context's signup ID. Raw images and
-/// available iris code files come from `source` unchanged; face, DI and
-/// normalized iris outputs are required from `biometrics`.
-/// Fails without calling `consume` when the prepared biometrics are incomplete or
-/// inconsistent, the context reuses the source signup ID, a multiframe image ID
-/// is not a canonical image ID, a raw image has no builder input, the user key is
-/// unusable, or `migrated_ts` exceeds 32-bit archive seconds.
-/// Retain `source` until [`crate::verify_completed_pcp`] has passed on the built package.
-pub fn with_build_request<T>(
+fn validate_mapping(
     source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
+    biometrics: &PreparedBiometrics,
     context: &MigrationContext,
-    recipients: OutputRecipients<'_>,
-    consume: impl FnOnce(&orb_pcp::BuildRequest<'_>) -> T,
-) -> Result<T, Error> {
-    validate_user_key(recipients.user_public_key)?;
-    with_prepared_inputs(source, biometrics, context, |info, images, migration| {
-        let request = orb_pcp::BuildRequest {
-            timestamp: context.migrated_ts,
-            info,
-            user_public_key: recipients.user_public_key,
-            backend_keys: recipients.backend_keys,
-            biometrics: orb_pcp::BiometricPolicy::Included {
-                images,
-                face_embeddings: &biometrics.face_embeddings,
-                iris_codes: source.iris_codes.as_ref(),
-                iris_code_shares: source.iris_code_shares.each_ref().map(Option::as_ref),
-                di_embeddings: Some(&biometrics.di_embeddings),
-                di_embedding_shares: biometrics.di_embedding_shares.each_ref().map(Some),
-            },
-            migration: Some(migration),
-        };
-        consume(&request)
-    })
-}
-
-fn with_prepared_inputs<T>(
-    source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
-    context: &MigrationContext,
-    consume: impl FnOnce(&v1::Info, &orb_pcp::PackageImages<'_>, &v1::Migration) -> T,
-) -> Result<T, Error> {
+) -> Result<(), Error> {
+    source.validate_iris()?;
     biometrics.validate(source)?;
     nonempty(&context.tee_software_version, "tee_software_version")?;
     nonempty(&context.signing_key_id, "signing_key_id")?;
     u32::try_from(context.migrated_ts).map_err(|_| Error::InvalidField("migrated_ts"))?;
-    let signup_id = context.signup_id.to_string();
-    if source.info.signup_id.as_deref() == Some(signup_id.as_str()) {
+    if source.info.signup_id.as_deref() == Some(context.signup_id.to_string().as_str()) {
         return Err(Error::InvalidField("signup_id"));
     }
-    let info = v1::Info {
-        signup_id: Some(signup_id),
-        ..source.info.clone()
-    };
+    // Validate every mapped image without allocating copies of its bytes.
     let files = &source.files;
-
-    // Claim fixed-name images first, then the multiframe captures.
     let mut used = BTreeSet::new();
-    let left_primary = orb_pcp::PrimaryIrisFrame {
-        ir_png: image(files, "iris/left_ir.png", &mut used)?,
-        normalized: normalized(&biometrics.left_normalized),
-    };
-    let right_primary = orb_pcp::PrimaryIrisFrame {
-        ir_png: image(files, "iris/right_ir.png", &mut used)?,
-        normalized: normalized(&biometrics.right_normalized),
-    };
-    let thumbnail_png = image(files, "face/thumbnail.png", &mut used)?;
-    let face_ir_png = optional_image(files, "face_ir_and_thermal/face_ir.png", &mut used);
-    let thermal_png = optional_image(files, "face_ir_and_thermal/thermal.png", &mut used);
-    let fraud = fraud_images(files, &mut used);
-    let mut ids = BTreeSet::new();
-    let left_ids = image_ids(&info.left_ir_multiframe_image_ids, &mut ids)?;
-    let right_ids = image_ids(&info.right_ir_multiframe_image_ids, &mut ids)?;
-    let left_extra = extra_frames(files, &left_ids, &biometrics.extra_normalized, &mut used)?;
-    let right_extra = extra_frames(files, &right_ids, &biometrics.extra_normalized, &mut used)?;
+    for path in [
+        "iris/left_ir.png",
+        "iris/right_ir.png",
+        "face/thumbnail.png",
+    ] {
+        image(files, path, &mut used)?;
+    }
+    for path in [
+        "face_ir_and_thermal/face_ir.png",
+        "face_ir_and_thermal/thermal.png",
+        "fraud/scc_rgb.png",
+        "fraud/left_rgb.png",
+        "fraud/right_rgb.png",
+        "fraud/left_thermal.png",
+        "fraud/right_thermal.png",
+        "fraud/scc_depth.png",
+        "fraud/left_depth.png",
+        "fraud/right_depth.png",
+    ] {
+        optional_image(files, path, &mut used);
+    }
+    let mut seen = BTreeSet::new();
+    for ids in [
+        &source.info.left_ir_multiframe_image_ids,
+        &source.info.right_ir_multiframe_image_ids,
+    ] {
+        for id in image_ids(ids, &mut seen)? {
+            image(files, &format!("iris/{id}.png"), &mut used)?;
+        }
+    }
     if files.keys().filter(|path| raw_image(path)).count() != used.len() {
         return Err(Error::UnmappedImage);
     }
-    let images = orb_pcp::PackageImages {
-        left: orb_pcp::IrisEye {
-            primary: left_primary,
-            multiframe: &left_extra,
-        },
-        right: orb_pcp::IrisEye {
-            primary: right_primary,
-            multiframe: &right_extra,
-        },
-        thumbnail_png: Some(thumbnail_png),
-        face_ir_png,
-        thermal_png,
-        fraud,
-    };
-    let migration = migration(source, biometrics, context);
-    Ok(consume(&info, &images, &migration))
+    Ok(())
 }
 
 /// The `migration.pb` message of this run.
 pub(crate) fn migration(
     source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
+    biometrics: &PreparedBiometrics,
     context: &MigrationContext,
 ) -> v1::Migration {
     v1::Migration {
@@ -202,22 +244,20 @@ pub(crate) fn migration(
 
 /// The source's fraud images, each only if present. Without any, no
 /// `fraud.tar` is written.
-fn fraud_images<'a>(
-    files: &'a Files,
-    used: &mut BTreeSet<String>,
-) -> Option<orb_pcp::FraudImages<'a>> {
+fn fraud_images(files: &Files, used: &mut BTreeSet<String>) -> Option<orb_pcp::FraudImages> {
     if !files.keys().any(|path| path.starts_with("fraud/")) {
         return None;
     }
     Some(orb_pcp::FraudImages {
-        scc_rgb_png: optional_image(files, "fraud/scc_rgb.png", used),
-        left_rgb_png: optional_image(files, "fraud/left_rgb.png", used),
-        right_rgb_png: optional_image(files, "fraud/right_rgb.png", used),
-        left_thermal_png: optional_image(files, "fraud/left_thermal.png", used),
-        right_thermal_png: optional_image(files, "fraud/right_thermal.png", used),
-        scc_depth_png: optional_image(files, "fraud/scc_depth.png", used),
-        left_depth_png: optional_image(files, "fraud/left_depth.png", used),
-        right_depth_png: optional_image(files, "fraud/right_depth.png", used),
+        scc_rgb_png: optional_image(files, "fraud/scc_rgb.png", used).map(<[u8]>::to_vec),
+        left_rgb_png: optional_image(files, "fraud/left_rgb.png", used).map(<[u8]>::to_vec),
+        right_rgb_png: optional_image(files, "fraud/right_rgb.png", used).map(<[u8]>::to_vec),
+        left_thermal_png: optional_image(files, "fraud/left_thermal.png", used).map(<[u8]>::to_vec),
+        right_thermal_png: optional_image(files, "fraud/right_thermal.png", used)
+            .map(<[u8]>::to_vec),
+        scc_depth_png: optional_image(files, "fraud/scc_depth.png", used).map(<[u8]>::to_vec),
+        left_depth_png: optional_image(files, "fraud/left_depth.png", used).map(<[u8]>::to_vec),
+        right_depth_png: optional_image(files, "fraud/right_depth.png", used).map(<[u8]>::to_vec),
     })
 }
 
@@ -256,29 +296,62 @@ fn image_ids(ids: &[String], seen: &mut BTreeSet<String>) -> Result<Vec<ImageId>
         .collect()
 }
 
-fn extra_frames<'a>(
-    files: &'a Files,
-    ids: &'a [ImageId],
-    extra_normalized: &'a BTreeMap<String, orb_pcp::NormalizedIrisFrame<'a>>,
+fn extra_frames(
+    files: &Files,
+    ids: Vec<ImageId>,
+    extra_normalized: &mut BTreeMap<String, orb_pcp::NormalizedIrisFrame>,
     used: &mut BTreeSet<String>,
-) -> Result<Vec<orb_pcp::IrisFrame<'a>>, Error> {
-    ids.iter()
+) -> Result<Vec<orb_pcp::IrisFrame>, Error> {
+    ids.into_iter()
         .map(|id| {
             let id_text = id.to_string();
             Ok(orb_pcp::IrisFrame {
                 image_id: id,
-                ir_png: image(files, &format!("iris/{id_text}.png"), used)?,
-                normalized: extra_normalized.get(&id_text).map(normalized),
+                ir_png: image(files, &format!("iris/{id_text}.png"), used)?.to_vec(),
+                normalized: extra_normalized.remove(&id_text),
             })
         })
         .collect()
 }
 
-fn normalized<'a>(frame: &orb_pcp::NormalizedIrisFrame<'a>) -> orb_pcp::NormalizedIrisFrame<'a> {
-    orb_pcp::NormalizedIrisFrame {
-        image: frame.image,
-        mask: frame.mask,
-        image_resized: frame.image_resized,
-        mask_resized: frame.mask_resized,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sealed_boxes_preserve_recipient_bytes_and_use_fresh_ephemeral_keys() {
+        let mut pair = sealedbox::Keypair::generate().unwrap();
+        // X25519 accepts this alias, but sealed-box nonce derivation uses its exact bytes.
+        for high_bit in [0, 0x80] {
+            pair.public_key[31] = (pair.public_key[31] & 0x7f) | high_bit;
+            for plaintext in [b"".as_slice(), b"synthetic payload".as_slice()] {
+                let first = seal(plaintext, &pair.public_key).unwrap();
+                let second = seal(plaintext, &pair.public_key).unwrap();
+                assert_ne!(&first[..32], &second[..32]);
+                for ciphertext in [first, second] {
+                    assert_eq!(ciphertext.len(), plaintext.len() + 48);
+                    let mut opened = vec![0; plaintext.len()];
+                    sealedbox::decrypt(&ciphertext, &pair, &mut opened).unwrap();
+                    assert_eq!(opened, plaintext);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sealed_boxes_reject_wrong_recipients_and_tampering() {
+        let pair = sealedbox::Keypair::generate().unwrap();
+        let other = sealedbox::Keypair::generate().unwrap();
+        let ciphertext = seal(b"synthetic payload", &pair.public_key).unwrap();
+        let mut opened = vec![0; ciphertext.len() - sealedbox::OVERHEAD_LENGTH];
+        assert!(sealedbox::decrypt(&ciphertext, &other, &mut opened).is_err());
+        for index in 0..ciphertext.len() {
+            let mut altered = ciphertext.clone();
+            altered[index] ^= 1;
+            assert!(sealedbox::decrypt(&altered, &pair, &mut opened).is_err());
+        }
+        for length in 0..ciphertext.len() {
+            assert!(sealedbox::decrypt(&ciphertext[..length], &pair, &mut opened).is_err());
+        }
     }
 }
