@@ -30,24 +30,20 @@ fn edit_info(files: &mut Files, f: impl FnOnce(&mut serde_json::Value)) {
     files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
 }
 
-fn di<'a>(bio: &'a mut PreparedBiometrics<'static>) -> &'a mut v1::DiIrisEmbeddingV1 {
+fn di(bio: &mut PreparedBiometrics) -> &mut v1::DiIrisEmbeddingV1 {
     bio.di_embeddings.embedding_v1.as_mut().unwrap()
 }
 
-fn di_share<'a>(
-    bio: &'a mut PreparedBiometrics<'static>,
-    index: usize,
-) -> &'a mut v1::DiIrisEmbeddingShareV1 {
+fn di_share(bio: &mut PreparedBiometrics, index: usize) -> &mut v1::DiIrisEmbeddingShareV1 {
     bio.di_embedding_shares[index].share_v1.as_mut().unwrap()
 }
 
-fn frame(fill: u8) -> orb_pcp::NormalizedIrisFrame<'static> {
-    let image: &'static [u8] = Box::leak(vec![fill; 16].into_boxed_slice());
+fn frame(fill: u8) -> orb_pcp::NormalizedIrisFrame {
     orb_pcp::NormalizedIrisFrame {
-        image,
-        mask: image,
-        image_resized: &image[..8],
-        mask_resized: &image[..8],
+        image: vec![fill; 16],
+        mask: vec![fill; 16],
+        image_resized: vec![fill; 8],
+        mask_resized: vec![fill; 8],
     }
 }
 
@@ -392,7 +388,7 @@ fn unknown_files_paths_and_excessive_input_fail_explicitly() {
 
 #[test]
 fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
-    type Edit = fn(&mut PreparedBiometrics<'static>);
+    type Edit = fn(&mut PreparedBiometrics);
     let cases: [(Edit, &str); 14] = [
         (|bio| bio.face_embeddings.clear(), "face_embeddings"),
         (
@@ -439,7 +435,7 @@ fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
             |bio| di_share(bio, 0).right_share[1] = 65536,
             "di_embedding_shares",
         ),
-        (|bio| bio.left_normalized.image = &[], "normalized_iris"),
+        (|bio| bio.left_normalized.image.clear(), "normalized_iris"),
     ];
     // Unchanged pipeline output passes.
     let mut bio = pipeline();
@@ -625,19 +621,19 @@ fn builder_generated_orb_captures_open_as_sources() {
     let images = orb_pcp::PackageImages {
         left: orb_pcp::IrisEye {
             primary: orb_pcp::PrimaryIrisFrame {
-                ir_png: b"synthetic-left-png",
+                ir_png: b"synthetic-left-png".to_vec(),
                 normalized: frame(1),
             },
-            multiframe: &[],
+            multiframe: vec![],
         },
         right: orb_pcp::IrisEye {
             primary: orb_pcp::PrimaryIrisFrame {
-                ir_png: b"synthetic-right-png",
+                ir_png: b"synthetic-right-png".to_vec(),
                 normalized: frame(2),
             },
-            multiframe: &[],
+            multiframe: vec![],
         },
-        thumbnail_png: Some(b"synthetic-face-png"),
+        thumbnail_png: Some(b"synthetic-face-png".to_vec()),
         face_ir_png: None,
         thermal_png: None,
         fraud: None,
@@ -646,15 +642,15 @@ fn builder_generated_orb_captures_open_as_sources() {
         device_public_key: Some("device".into()),
         ..source.info().clone()
     };
-    let di = orb_pcp::Di::embeddings(&bio.di_embeddings)
-        .shares(bio.di_embedding_shares.each_ref())
+    let di = orb_pcp::Di::embeddings(bio.di_embeddings)
+        .shares(bio.di_embedding_shares)
         .unwrap();
-    let biometrics = orb_pcp::Biometrics::images(&images)
+    let biometrics = orb_pcp::Biometrics::images(images)
         .di(di)
-        .face_embeddings(&bio.face_embeddings);
+        .face_embeddings(bio.face_embeddings);
     let package = orb_pcp::Builder::timestamp(u32::try_from(ctx.migrated_ts).unwrap())
-        .info(&info)
-        .user_public_key(&keys.user.public_key)
+        .info(info)
+        .user_public_key(keys.user.public_key)
         .backend_keys(keys.recipients().backend_keys)
         .biometrics(orb_pcp::BiometricPolicy::Included(biometrics))
         .rng(rand::rngs::OsRng)

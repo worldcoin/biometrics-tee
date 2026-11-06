@@ -25,10 +25,16 @@ fn assert_rejected(files: di_migration_pcp::Files) {
         Err(Error::InvalidSourceIrisData),
     );
     let mut signed = false;
-    let result = build(&source, &bio, &ctx, keys.recipients(), |_| {
-        signed = true;
-        Ok::<_, std::convert::Infallible>(vec![])
-    });
+    let result = build(
+        &source,
+        support::copy_pipeline(&bio),
+        &ctx,
+        keys.recipients(),
+        |_| {
+            signed = true;
+            Ok::<_, std::convert::Infallible>(vec![])
+        },
+    );
     assert!(matches!(
         result,
         Err(BuildError::Mapping(Error::InvalidSourceIrisData))

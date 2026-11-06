@@ -480,7 +480,7 @@ fn migration_time_must_fit_the_archive_headers() {
     let bio = pipeline();
     let result = di_migration_pcp::build(
         &source,
-        &bio,
+        support::copy_pipeline(&bio),
         &ctx,
         OutputKeys::generate().recipients(),
         |_| Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec()),
@@ -763,10 +763,10 @@ fn unusable_user_keys_fail_preflight_and_never_reach_the_signer() {
             Err(Error::InvalidField("user_public_key"))
         );
         let mut recipients = keys.recipients();
-        recipients.user_public_key = &public_key;
+        recipients.user_public_key = public_key;
         let result = di_migration_pcp::build(
             &source,
-            &bio,
+            support::copy_pipeline(&bio),
             &ctx,
             recipients,
             |_| -> Result<Vec<u8>, std::convert::Infallible> {
@@ -788,7 +788,7 @@ fn build_errors_report_the_failed_stage_without_signer_details() {
     let (bio, ctx) = (pipeline(), context());
     let result = di_migration_pcp::build(
         &source,
-        &bio,
+        support::copy_pipeline(&bio),
         &ctx,
         OutputKeys::generate().recipients(),
         |_| Err::<Vec<u8>, _>(std::io::Error::other("sensitive-signer-detail")),
@@ -815,10 +815,10 @@ fn unusable_backend_keys_propagate_typed_encryption_errors_before_signing() {
                     2 => &mut recipients.backend_keys.face,
                     _ => &mut recipients.backend_keys.tier2,
                 };
-                key.public_key = &public_key;
+                key.public_key = public_key;
                 let error = di_migration_pcp::build(
                     &source,
-                    &bio,
+                    support::copy_pipeline(&bio),
                     &ctx,
                     recipients,
                     |_| -> Result<Vec<u8>, std::convert::Infallible> {

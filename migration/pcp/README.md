@@ -20,6 +20,13 @@ recipient bytes, with the standard 48-byte ciphertext overhead. Invalid recipien
 and library failures propagate through `BuildError::Build` as typed encryption
 errors.
 
+`build` consumes the prepared face/DI outputs and normalized image buffers.
+Preflight borrows these inputs and validates image coverage without copying image
+bytes. Source captures are copied once into the shared builder so the opened source
+remains available for preservation checks. Tests retain independent expected
+outputs for completion checks. The shared builder zeroizes its owned image buffers
+and backend-key values on drop.
+
 The host exposes observed failures through `migration.host.job_failures` with
 `reason=invalid_source_iris_data`, including failures whose job update cannot be
 persisted. The encrypted diagnostic identifies the migration stage and failure.

@@ -41,20 +41,20 @@ impl MigrationContext {
 /// The sandbox adapter must validate model-specific dimensions and encodings;
 /// the sharing stage must bind every share to these exact outputs.
 /// `crate::validate_build_inputs` checks availability and consistency before building.
-pub struct PreparedBiometrics<'a> {
+pub struct PreparedBiometrics {
     /// Release version of the executed biometric pipeline, recorded in `migration.pb`.
     pub biometric_pipeline_version: String,
     pub face_embeddings: Vec<v1::FaceEmbedding>,
     pub di_embeddings: v1::DiIrisEmbeddings,
     /// Index `i` belongs to recipient `i`.
     pub di_embedding_shares: [v1::DiIrisEmbeddingShares; 3],
-    pub left_normalized: orb_pcp::NormalizedIrisFrame<'a>,
-    pub right_normalized: orb_pcp::NormalizedIrisFrame<'a>,
+    pub left_normalized: orb_pcp::NormalizedIrisFrame,
+    pub right_normalized: orb_pcp::NormalizedIrisFrame,
     /// Fresh normalization keyed by source multiframe image ID.
-    pub extra_normalized: BTreeMap<String, orb_pcp::NormalizedIrisFrame<'a>>,
+    pub extra_normalized: BTreeMap<String, orb_pcp::NormalizedIrisFrame>,
 }
 
-impl PreparedBiometrics<'_> {
+impl PreparedBiometrics {
     pub(crate) fn validate(&self, source: &SourcePcp) -> Result<(), Error> {
         // These upper bounds are local resource guards, not model dimensions.
         nonempty(
@@ -99,10 +99,10 @@ impl PreparedBiometrics<'_> {
             .chain(self.extra_normalized.values())
         {
             for data in [
-                normalized.image,
-                normalized.mask,
-                normalized.image_resized,
-                normalized.mask_resized,
+                &normalized.image,
+                &normalized.mask,
+                &normalized.image_resized,
+                &normalized.mask_resized,
             ] {
                 if data.is_empty() || data.len() > 16 * 1024 * 1024 {
                     return Err(Error::InvalidField("normalized_iris"));
