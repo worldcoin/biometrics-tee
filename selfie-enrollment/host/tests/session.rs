@@ -165,3 +165,60 @@ async fn shutdown_waits_for_upgraded_sockets_and_rejects_new_sessions() {
     assert_eq!(state.connections.available_permits(), 1);
     task.abort();
 }
+
+#[tokio::test]
+async fn poseguard_opt_in_relays_multiple_frames_but_stops_at_the_exchange_limit() {
+    let (url, state, enclave, task) = server().await;
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    socket
+        .send(Message::Text(
+            r#"{"type":"pose_guard_assignment_request"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(next(&mut socket).await["type"], "assignment");
+    for _ in 0..MAX_POSEGUARD_EXCHANGES {
+        socket
+            .send(Message::Binary(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+    }
+    assert!(matches!(
+        socket.next().await.unwrap().unwrap(),
+        Message::Close(_)
+    ));
+    assert_eq!(
+        enclave.extractions.load(Ordering::SeqCst),
+        MAX_POSEGUARD_EXCHANGES as usize
+    );
+    drop(socket);
+    state.drain().await.unwrap();
+    task.abort();
+}
+
+#[tokio::test]
+async fn poseguard_opt_in_closes_cleanly_between_frames() {
+    let (url, state, enclave, task) = server().await;
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    socket
+        .send(Message::Text(
+            r#"{"type":"pose_guard_assignment_request"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    next(&mut socket).await;
+    socket.send(Message::Binary(vec![1].into())).await.unwrap();
+    assert!(matches!(
+        socket.next().await.unwrap().unwrap(),
+        Message::Binary(_)
+    ));
+    socket.close(None).await.unwrap();
+    drop(socket);
+    state.drain().await.unwrap();
+    assert_eq!(enclave.extractions.load(Ordering::SeqCst), 1);
+    task.abort();
+}

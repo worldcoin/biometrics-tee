@@ -59,7 +59,13 @@ pub fn run() -> anyhow::Result<()> {
         .block_on(async {
             attestation::connect().await?;
             let attestor = Arc::new(NsmAttestor);
-            let state = State::new(attestor.clone(), Box::new(SandboxEngine::new(worker)))?;
+            let state = State::new(
+                attestor.clone(),
+                Box::new(SandboxEngine::new(
+                    worker,
+                    biometric_engines_protocol::protobuf::ready_supports_poseguard(&ready),
+                )),
+            )?;
             let mut state =
                 enrollment_config::configure(state, enrollment_keys, &worker_sha384, attestor)
                     .context("failed to activate enrollment from measured configuration")?;

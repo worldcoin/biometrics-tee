@@ -150,6 +150,14 @@ impl Drop for BrowserTransport {
 }
 
 impl EnrollmentClient {
+    pub async fn connect_poseguard(
+        &self,
+        signal: Option<AbortSignal>,
+    ) -> Result<crate::PoseGuardSession<BrowserTransport>, Error> {
+        self.connect_poseguard_transport(BrowserTransport::connect(&self.config, signal).await?)
+            .await
+    }
+
     pub async fn connect(
         &self,
         signal: Option<AbortSignal>,
@@ -223,6 +231,64 @@ pub async fn extract_embedding(
         let config: Config = serde_json::from_str(&config_json).map_err(|_| Error::Config)?;
         let result = extract(config, std::mem::take(&mut *image), signal).await?;
         serde_wasm_bindgen::to_value(&result).map_err(|_| Error::Protocol)
+    }
+    .await;
+    operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
+}
+
+/// Authenticated shadow results are exposed without session capabilities or image data.
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_name=PoseGuardSession)]
+pub struct BrowserPoseGuardSession {
+    inner: crate::PoseGuardSession<BrowserTransport>,
+}
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_class=PoseGuardSession)]
+impl BrowserPoseGuardSession {
+    pub fn current(&self) -> Result<JsValue, JsValue> {
+        poseguard_value(self.inner.current())
+    }
+    pub async fn submit(&mut self, image: Vec<u8>) -> Result<JsValue, JsValue> {
+        let outcome = self
+            .inner
+            .submit(image)
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        poseguard_value(&outcome)
+    }
+    pub async fn cancel(&mut self) -> Result<JsValue, JsValue> {
+        let outcome = self
+            .inner
+            .cancel()
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        poseguard_value(&outcome)
+    }
+}
+#[cfg(feature = "js-export")]
+fn poseguard_value(outcome: &crate::poseguard::Outcome) -> Result<JsValue, JsValue> {
+    #[derive(serde::Serialize)]
+    struct Evaluation<'a> {
+        profile: &'static str,
+        outcome: &'a crate::poseguard::Outcome,
+    }
+    serde_wasm_bindgen::to_value(&Evaluation {
+        profile: crate::poseguard::PROFILE,
+        outcome,
+    })
+    .map_err(|_| JsValue::from_str(&Error::Protocol.to_string()))
+}
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_name=startPoseGuard)]
+pub async fn start_poseguard(
+    config_json: String,
+    signal: Option<AbortSignal>,
+) -> Result<BrowserPoseGuardSession, JsValue> {
+    let operation = async {
+        let config: Config = serde_json::from_str(&config_json).map_err(|_| Error::Config)?;
+        let client = EnrollmentClient::new(config)?;
+        let inner = client.connect_poseguard(signal).await?;
+        Ok(BrowserPoseGuardSession { inner })
     }
     .await;
     operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))

@@ -28,6 +28,7 @@ zeroize.workspace = true
 url = "2"
 futures-util = { version = "0.3", features = ["sink"] }
 web-time = "1"
+getrandom = { version = "0.2", features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true

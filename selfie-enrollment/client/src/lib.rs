@@ -16,6 +16,8 @@ use zeroize::Zeroizing;
 pub mod browser;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
+pub mod poseguard;
+pub use poseguard::PoseGuardSession;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -210,11 +212,19 @@ impl EnrollmentClient {
 
     async fn connect_transport<T: Transport>(
         &self,
+        socket: T,
+    ) -> Result<EnrollmentSession<T>, Error> {
+        self.assign_transport(socket, ClientMessage::AssignmentRequest)
+            .await
+    }
+
+    async fn assign_transport<T: Transport>(
+        &self,
         mut socket: T,
+        message: ClientMessage,
     ) -> Result<EnrollmentSession<T>, Error> {
         let result = async {
-            let request = serde_json::to_string(&ClientMessage::AssignmentRequest)
-                .map_err(|_| Error::Protocol)?;
+            let request = serde_json::to_string(&message).map_err(|_| Error::Protocol)?;
             socket
                 .send(Frame::Text(request), Duration::from_secs(5))
                 .await?;
@@ -230,6 +240,16 @@ impl EnrollmentClient {
                 Err(error)
             }
         }
+    }
+
+    async fn connect_poseguard_transport<T: Transport>(
+        &self,
+        socket: T,
+    ) -> Result<PoseGuardSession<T>, Error> {
+        let session = self
+            .assign_transport(socket, ClientMessage::PoseGuardAssignmentRequest)
+            .await?;
+        PoseGuardSession::begin(session.socket, session.assignment.consumer).await
     }
 }
 

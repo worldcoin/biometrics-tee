@@ -1,4 +1,5 @@
 //! Plaintext types used only by the client and enclave. Sensitive buffers are redacted and erased.
+pub mod poseguard;
 use selfie_enrollment_api_types::{
     ENROLLMENT_PROTOCOL_VERSION, MAX_ENCRYPTED_PCP_BYTES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES,
     PADDED_ENROLLMENT_RESULT_BYTES, PROTOCOL_VERSION,
@@ -161,6 +162,7 @@ impl EnrollmentRequest {
 pub enum Request {
     Embedding(EmbeddingRequest),
     Enrollment(EnrollmentRequest),
+    PoseGuard(poseguard::Request),
 }
 impl Request {
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
@@ -175,6 +177,7 @@ impl Request {
         match version {
             PROTOCOL_VERSION => EmbeddingRequest::decode(bytes).map(Self::Embedding),
             ENROLLMENT_PROTOCOL_VERSION => EnrollmentRequest::decode(bytes).map(Self::Enrollment),
+            poseguard::VERSION => poseguard::Request::decode(bytes).map(Self::PoseGuard),
             _ => Err(Error),
         }
     }

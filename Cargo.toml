@@ -9,6 +9,7 @@ members = [
     "selfie-enrollment/enclave-types",
     "selfie-enrollment/shares",
     "selfie-enrollment/identity",
+    "selfie-enrollment/worker-protocol",
 
     "dev/api-primitives",
     "dev/client",
@@ -95,7 +96,8 @@ selfie-enrollment-sealed-types = { version = "0.1.0", path = "selfie-enrollment/
 selfie-enrollment-enclave-types = { path = "selfie-enrollment/enclave-types" }
 
 selfie-enrollment-enclave = { path = "selfie-enrollment/enclave" }
-biometric-engines-protocol = "0.1.0"
+# Snapshot of the intended-public wire contract until the PoseGuard protocol is published.
+biometric-engines-protocol = { path = "selfie-enrollment/worker-protocol" }
 rand = "0.8"
 
 selfie-enrollment-client = { version = "0.1.0", path = "selfie-enrollment/client" }

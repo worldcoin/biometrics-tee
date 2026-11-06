@@ -20,7 +20,7 @@ async function main() {
     for(const [name,engine] of [['chromium',chromium],['webkit',webkit]]) {
       const browser=await engine.launch({headless:true, ...(name==='chromium'?{channel:'chromium'}:{})});
       try {
-        for(const mode of ['untrusted','abort-assignment','already-aborted','oversized','flood','invalid-policy']) {
+        for(const operation of ['extract','poseguard']) for(const mode of ['untrusted','abort-assignment','already-aborted','oversized','flood','invalid-policy']) {
           const page=await browser.newPage();
           try {
             await page.addInitScript(({mode})=>{
@@ -43,7 +43,7 @@ async function main() {
               };
             },{mode});
             await page.goto(`http://127.0.0.1:${server.address().port}/`);
-            const result=await page.evaluate(async ({config,mode})=>{
+            const result=await page.evaluate(async ({config,mode,operation})=>{
               const module=await import('/selfie_enrollment_client.js');await module.default();
               const controller=new AbortController();
               if(mode==='already-aborted')controller.abort();
@@ -51,16 +51,16 @@ async function main() {
               const started=performance.now();
               let error;
               if(mode==='abort-assignment')setTimeout(()=>controller.abort(),30);
-              try{await module.extractEmbedding(JSON.stringify(config),new Uint8Array([1,2,3]),controller.signal)}catch(e){error=String(e)}
+              try{if(operation==='poseguard')await module.startPoseGuard(JSON.stringify(config),controller.signal);else await module.extractEmbedding(JSON.stringify(config),new Uint8Array([1,2,3]),controller.signal)}catch(e){error=String(e)}
               return {...window.transport,error,elapsed:performance.now()-started};
-            },{config,mode});
+            },{config,mode,operation});
             assert.ok(result.error,`${name}/${mode} must fail`);
             assert.equal(result.sent.includes('image'),false,`${name}/${mode} must withhold image`);
             if(['already-aborted','invalid-policy'].includes(mode))assert.equal(result.created,0);
             else assert.ok(result.closed>0,`${name}/${mode} socket cleanup`);
             if(mode==='untrusted')assert.match(result.error,/attestation rejected/);
-            if(mode==='abort-assignment'){assert.deepEqual(result.sent,['assignment_request']);assert.ok(result.elapsed<1000,`cancellation took ${result.elapsed}ms`)}
-            console.log(`PASS ${name}: ${mode}`);
+            if(mode==='abort-assignment'){assert.deepEqual(result.sent,[operation==='poseguard'?'pose_guard_assignment_request':'assignment_request']);assert.ok(result.elapsed<1000,`cancellation took ${result.elapsed}ms`)}
+            console.log(`PASS ${name}/${operation}: ${mode}`);
           } finally {await page.close()}
         }
       } finally {await browser.close()}
