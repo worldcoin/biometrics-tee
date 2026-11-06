@@ -3,6 +3,8 @@
 pub mod attestation;
 pub mod engine;
 pub mod enrollment;
+#[cfg(any(target_os = "linux", test))]
+mod enrollment_config;
 pub mod rng;
 #[cfg(target_os = "linux")]
 pub mod runtime;
@@ -136,7 +138,15 @@ mod tests {
         }
     }
     fn state() -> Arc<State> {
-        Arc::new(State::new(Arc::new(TestAttestor), Box::new(FakeEngine)).unwrap())
+        Arc::new(
+            enrollment_config::configure(
+                State::new(Arc::new(TestAttestor), Box::new(FakeEngine)).unwrap(),
+                [None, None, None],
+                "unused for extraction-only releases",
+                Arc::new(CaptureDocument),
+            )
+            .unwrap(),
+        )
     }
     /// A 512-dimension embedding the share generator accepts, or a panic if `forbid`.
     struct EnrollEngine {
@@ -166,25 +176,74 @@ mod tests {
         fn attest(
             &self,
             _: &[u8; NONCE_BYTES],
-            _: &[u8; USER_DATA_BYTES],
+            data: &[u8; USER_DATA_BYTES],
         ) -> Result<Vec<u8>, AttestationFailed> {
+            assert_eq!(data, &selfie_enrollment_identity::user_data(&[0x5a; 48]));
             Ok(b"capture-document".to_vec())
         }
     }
+    fn recipient_keys() -> [SecretKey; 3] {
+        [1, 2, 3].map(|byte| SecretKey::from([byte; 32]))
+    }
+    fn key_config() -> [Option<String>; 3] {
+        recipient_keys().map(|key| Some(STANDARD.encode(key.public_key().as_bytes())))
+    }
+    fn configured_enrollment(
+        forbid: bool,
+        values: [Option<String>; 3],
+        worker_sha384: &str,
+    ) -> anyhow::Result<State> {
+        enrollment_config::configure(
+            State::new(Arc::new(TestAttestor), Box::new(EnrollEngine { forbid }))?,
+            values,
+            worker_sha384,
+            Arc::new(CaptureDocument),
+        )
+    }
     fn enrolling_state(forbid: bool) -> Arc<State> {
-        let context = enrollment::TrustedContext::new(
-            std::array::from_fn(|_| SecretKey::generate(&mut OsRng).public_key()),
-            [0x5a; 48],
-        )
-        .unwrap();
-        Arc::new(
-            State::new(Arc::new(TestAttestor), Box::new(EnrollEngine { forbid }))
-                .unwrap()
-                .with_enrollment(enrollment::Producer::new(
-                    context,
-                    Arc::new(CaptureDocument),
-                )),
-        )
+        Arc::new(configured_enrollment(forbid, key_config(), &hex::encode([0x5a; 48])).unwrap())
+    }
+    #[test]
+    fn malformed_enrollment_key_configuration_fails_startup() {
+        for index in 0..3 {
+            for invalid in [
+                None,
+                Some(String::new()),
+                Some("invalid base64".into()),
+                Some(STANDARD.encode([0; 31])),
+                Some(STANDARD.encode([0; 33])),
+            ] {
+                let mut values = key_config();
+                values[index] = invalid;
+                let error = configured_enrollment(true, values, &hex::encode([0x5a; 48]))
+                    .err()
+                    .expect("invalid configuration must fail startup");
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("FACE_AMPC_PUBLIC_KEY_{index}"))
+                );
+            }
+        }
+    }
+    #[test]
+    fn unsafe_enrollment_keys_and_invalid_worker_measurements_fail_startup() {
+        let mut duplicate = key_config();
+        duplicate[1] = duplicate[0].clone();
+        let mut low_order = key_config();
+        low_order[2] = Some(STANDARD.encode([0; 32]));
+        for values in [duplicate, low_order] {
+            assert!(configured_enrollment(true, values, &hex::encode([0x5a; 48])).is_err());
+        }
+        for measurement in [
+            String::new(),
+            "zz".repeat(48),
+            hex::encode([0x5a; 47]),
+            hex::encode([0x5a; 49]),
+            hex::encode([0; 48]),
+        ] {
+            assert!(configured_enrollment(true, key_config(), &measurement).is_err());
+        }
     }
     async fn sealed_enrollment(
         state: &Arc<State>,
@@ -231,6 +290,13 @@ mod tests {
         };
         assert_eq!(value("contract_version"), "2");
         assert_eq!(value("sub"), "0x1f");
+        // Configured slots must encrypt each share to its corresponding AMPC party.
+        for (index, key) in recipient_keys().into_iter().enumerate() {
+            let ciphertext = STANDARD
+                .decode(value(&format!("face_embedding_shares_{index}")))
+                .unwrap();
+            assert!(!key.unseal(&ciphertext).unwrap().is_empty());
+        }
         assert_eq!(
             STANDARD.decode(&enrollment.attestation_header).unwrap(),
             b"capture-document"

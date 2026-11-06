@@ -3,7 +3,7 @@ use crate::{
     State,
     attestation::{self, NsmAttestor},
     engine::SandboxEngine,
-    rng,
+    enrollment_config, rng,
 };
 use anyhow::Context;
 use selfie_enrollment_enclave_types::{
@@ -29,6 +29,8 @@ pub fn run() -> anyhow::Result<()> {
     let boot = enclave::accept(&BootstrapConfig::default(), Path::new(enclave::STAGING_DIR))
         .context("worker bundle verification failed")?;
     let runtime = boot.runtime();
+    let enrollment_keys = enrollment_config::from_env()
+        .context("failed to read measured enrollment configuration")?;
     tracing::info!(release_id = %runtime.release_id, "worker executable provisioned");
     let (worker, ready) = Worker::spawn(
         &runtime.binary,
@@ -50,16 +52,17 @@ pub fn run() -> anyhow::Result<()> {
         "unsupported worker protocol"
     );
     worker.check_alive();
+    let worker_sha384 = runtime.sha384.clone();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(async {
             attestation::connect().await?;
-            let attestor = NsmAttestor;
-            // Sealed enrollment stays off (requests fail as `Unavailable`) until the release
-            // configuration supplies the Face-AMPC party keys for `State::with_enrollment`.
-            // The worker measurement is already verified: `runtime.sha384`.
-            let mut state = State::new(Arc::new(attestor), Box::new(SandboxEngine::new(worker)))?;
+            let attestor = Arc::new(NsmAttestor);
+            let state = State::new(attestor.clone(), Box::new(SandboxEngine::new(worker)))?;
+            let mut state =
+                enrollment_config::configure(state, enrollment_keys, &worker_sha384, attestor)
+                    .context("failed to activate enrollment from measured configuration")?;
             let refresh = state.refresh();
             let state = Arc::new(state);
             let document = pontifex::SecureModule::global().attest(

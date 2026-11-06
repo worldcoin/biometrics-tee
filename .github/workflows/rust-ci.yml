@@ -126,6 +126,20 @@ jobs:
           for workload in di-migration di-dev selfie-enrollment; do
             nix build --no-link --no-update-lock-file ".#packages.x86_64-linux.$workload-oci"
           done
+      - name: Build enrollment with measured recipient keys
+        run: |
+          set -euo pipefail
+          # Public X25519 basepoint and RFC 7748 test keys; never deployment recipients.
+          cat > "$RUNNER_TEMP/face-ampc-public-keys.json" <<'JSON'
+          [
+            "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=",
+            "3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08="
+          ]
+          JSON
+          scripts/build-enclaves.sh --workload selfie-enrollment \
+            --face-ampc-public-keys-file "$RUNNER_TEMP/face-ampc-public-keys.json" \
+            "$RUNNER_TEMP/enrollment-eif"
 
   enrollment:
     name: Enrollment native and browser client
