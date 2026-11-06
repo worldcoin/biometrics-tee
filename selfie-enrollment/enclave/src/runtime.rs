@@ -52,6 +52,7 @@ pub fn run() -> anyhow::Result<()> {
         "unsupported worker protocol"
     );
     worker.check_alive();
+    let worker_sha384 = runtime.sha384.clone();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -60,7 +61,7 @@ pub fn run() -> anyhow::Result<()> {
             let attestor = Arc::new(NsmAttestor);
             let state = State::new(attestor.clone(), Box::new(SandboxEngine::new(worker)))?;
             let mut state =
-                enrollment_config::configure(state, enrollment_keys, &runtime.sha384, attestor)
+                enrollment_config::configure(state, enrollment_keys, &worker_sha384, attestor)
                     .context("failed to activate enrollment from measured configuration")?;
             let refresh = state.refresh();
             let state = Arc::new(state);
