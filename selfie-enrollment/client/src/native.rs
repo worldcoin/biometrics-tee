@@ -70,6 +70,13 @@ impl Transport for NativeTransport {
 }
 
 impl EnrollmentClient {
+    pub async fn connect_poseguard(
+        &self,
+    ) -> Result<crate::PoseGuardSession<NativeTransport>, Error> {
+        self.connect_poseguard_transport(NativeTransport::connect(&self.config).await?)
+            .await
+    }
+
     pub async fn connect(&self) -> Result<EnrollmentSession<NativeTransport>, Error> {
         self.connect_transport(NativeTransport::connect(&self.config).await?)
             .await

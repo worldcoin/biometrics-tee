@@ -14,6 +14,9 @@ pub const PADDED_ENROLLMENT_RESULT_BYTES: usize = MAX_ENCRYPTED_PCP_BYTES + 64 *
 pub const MAX_RESPONSE_BYTES: usize = PADDED_ENROLLMENT_RESULT_BYTES + 8192;
 pub const MAX_CONTROL_BYTES: usize = 32 * 1024;
 pub const CHANNEL_DOMAIN: &str = "selfie-enrollment/embedding/v1";
+/// Hard relay bounds for the separately requested interactive shadow evaluation.
+pub const MAX_POSEGUARD_EXCHANGES: u32 = 96;
+pub const POSEGUARD_RELAY_TIMEOUT_SECS: u64 = 150;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +29,7 @@ pub struct Assignment {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientMessage {
     AssignmentRequest,
+    PoseGuardAssignmentRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

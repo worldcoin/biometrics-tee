@@ -1,0 +1,20 @@
+[package]
+name = "biometric-engines-protocol"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+license = "MIT"
+description = "Protobuf messages, codecs and stream framing for biometric engine workers"
+keywords = ["biometrics", "protobuf", "ipc"]
+categories = ["encoding", "network-programming"]
+publish = false
+
+[dependencies]
+prost = "0.14.3"
+serde.workspace = true
+thiserror.workspace = true
+
+[package.metadata.upstream]
+repository = "https://github.com/worldcoin/biometric-engines"
+revision = "741a51801b1034eb7e8a9ea495061cc684638f1f"
+path = "biometric-engines-protocol"

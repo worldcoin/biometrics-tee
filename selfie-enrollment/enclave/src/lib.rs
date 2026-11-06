@@ -5,6 +5,7 @@ pub mod engine;
 pub mod enrollment;
 #[cfg(any(target_os = "linux", test))]
 mod enrollment_config;
+mod poseguard;
 pub mod rng;
 #[cfg(target_os = "linux")]
 pub mod runtime;
@@ -24,6 +25,7 @@ pub struct State {
     processing: Arc<tokio::sync::Semaphore>,
     /// Absent until the release supplies Face-AMPC keys and the worker measurement.
     enrollment: Option<enrollment::Producer>,
+    poseguard: Arc<std::sync::Mutex<poseguard::Sessions>>,
 }
 impl State {
     pub fn new(attestor: Arc<dyn Attestor>, engine: Box<dyn Engine>) -> Result<Self, Error> {
@@ -40,6 +42,7 @@ impl State {
             engine,
             processing: Arc::new(tokio::sync::Semaphore::new(1)),
             enrollment: None,
+            poseguard: Arc::default(),
         })
     }
     /// Enables sealed enrollment requests; without it they fail as `Unavailable`.
@@ -49,7 +52,24 @@ impl State {
         self
     }
     pub fn refresh(&mut self) -> tokio::task::JoinHandle<()> {
-        self.attested.start_refresh()
+        let mut refresh = self.attested.start_refresh();
+        let sessions = self.poseguard.clone();
+        tokio::spawn(async move {
+            let mut cleanup = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = &mut refresh => return,
+                    _ = cleanup.tick() => {
+                        let Ok(mut sessions) = sessions.lock() else {
+                            tracing::error!("PoseGuard session lock poisoned");
+                            refresh.abort();
+                            return;
+                        };
+                        sessions.expire(std::time::Instant::now());
+                    }
+                }
+            }
+        })
     }
     pub fn health(&self) -> Result<(), Error> {
         self.engine.check_health()
@@ -93,6 +113,7 @@ impl State {
                 }
                 .encode(),
                 Ok(Request::Enrollment(input)) => state.enroll_sealed(&input)?.encode(),
+                Ok(Request::PoseGuard(input)) => Ok(state.evaluate_poseguard(&input)?),
             }
             .map_err(|_| Error::Unavailable)?;
             let ciphertext = sealer.seal(&encoded).map_err(|_| Error::Unavailable)?;
