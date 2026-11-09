@@ -142,7 +142,8 @@ fn compares_eyes_independently_and_preserves_version_provenance() {
         iris_version: Some("2.10.0".into()),
         left_iris_code: Some(valid.iris_code.clone()),
         left_mask_code: Some(valid.mask_code.clone()),
-        ..IrisCodes::default()
+        right_iris_code: None,
+        right_mask_code: None,
     };
     let worker = MigrationResult {
         iris_code_version: "v2.1".into(),
