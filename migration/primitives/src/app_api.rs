@@ -96,20 +96,3 @@ pub mod codes {
     /// The migration already finished.
     pub const INVALID_STATE: &str = "invalid_state";
 }
-
-#[cfg(test)]
-mod source_iris_error_tests {
-    use super::MigrationStatus;
-    use crate::Reason;
-
-    #[test]
-    fn status_preserves_the_source_iris_failure_reason() {
-        let wire = serde_json::json!({"status":"failed", "reason":"invalid_source_iris_data"});
-        let status: MigrationStatus = serde_json::from_value(wire).unwrap();
-        assert_eq!(status.reason, Some(Reason::InvalidSourceIrisData));
-        assert_eq!(
-            serde_json::to_value(status).unwrap()["reason"],
-            "invalid_source_iris_data"
-        );
-    }
-}

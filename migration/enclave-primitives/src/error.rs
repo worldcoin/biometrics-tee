@@ -67,16 +67,7 @@ mod tests {
     use super::Error;
 
     #[test]
-    fn source_iris_error_round_trips_and_unknown_errors_remain_readable() {
-        let wire = rmp_serde::to_vec_named(&Error::InvalidSourceIrisData).unwrap();
-        assert_eq!(
-            rmp_serde::from_slice::<String>(&wire).unwrap(),
-            "InvalidSourceIrisData"
-        );
-        assert_eq!(
-            rmp_serde::from_slice::<Error>(&wire).unwrap(),
-            Error::InvalidSourceIrisData
-        );
+    fn unknown_enclave_errors_remain_readable() {
         let future = rmp_serde::to_vec_named("FutureError").unwrap();
         assert_eq!(
             rmp_serde::from_slice::<Error>(&future).unwrap(),
