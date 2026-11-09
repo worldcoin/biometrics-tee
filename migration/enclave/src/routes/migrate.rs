@@ -128,7 +128,7 @@ fn migrate_payload(
     let source_pcp = parse_source_pcp(state, files)?;
     report.source(&source_pcp);
     source_pcp.validate_iris().map_err(|error| {
-        tracing::warn!(%error, "source Iris validation failed");
+        tracing::error!(%error, "source Iris validation failed");
         enclave_primitives::Error::InvalidSourceIrisData
     })?;
     let biometrics = run_pipeline(state, &source_pcp, report)?;
@@ -174,7 +174,7 @@ fn build_and_seal_pcp(
         device_public_key,
     )
     .map_err(|error| {
-        tracing::warn!(%error, "invalid PCP build inputs");
+        tracing::error!(%error, "invalid PCP build inputs");
         pcp_mapping_error(&error)
     })?;
 
