@@ -2390,6 +2390,7 @@ dependencies = [
  "di-migration-enclave-primitives",
  "di-migration-primitives",
  "di-migration-storage",
+ "di-migration-telemetry",
  "http-body-util",
  "pontifex",
  "serde",
@@ -2456,6 +2457,15 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "di-migration-telemetry"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "metrics-exporter-statsd",
+ "telemetry-batteries",
 ]
 
 [[package]]
@@ -3997,6 +4007,7 @@ dependencies = [
  "di-migration-client",
  "di-migration-primitives",
  "di-migration-storage",
+ "di-migration-telemetry",
  "fastrand",
  "http-body-util",
  "proof",
