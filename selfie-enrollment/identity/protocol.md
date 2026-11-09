@@ -7,8 +7,7 @@ the request itself. Signup-service hashes the received capture fields and
 compares the result to the authenticated Nitro nonce (signup-service#2400,
 contract version `2`).
 
-Submit to `PUT /api/v2/identity`. There is no v3 identity: no `idComm` query
-parameter, commitment hash or v3 proof. Signup-service verifies the Nitro
+Submit to `PUT /api/v2/identity`. Signup-service verifies the Nitro
 capture attestation and, synchronously, the v4 ownership proof for the attested
 `sub`. A failed verification never falls back to another flow. The route is
 disabled until signup-service enables `ENABLE_WEB_IDENTITY_V2`.
@@ -32,7 +31,7 @@ browser adds 13 and 14.
 | 1 | `contract_version` | `2` | yes |
 | 2 | `sub` | Canonical v4 subject: `0x`, then 1 to 64 lowercase hex digits without a leading zero, nonzero | yes |
 | 3 | `capture_id` | Enclave-generated canonical lowercase UUID | yes |
-| 4 | `timestamp` | Enclave capture time, canonical decimal Unix seconds | yes |
+| 4 | `timestamp` | Enclave-assigned timestamp, canonical decimal Unix seconds | yes |
 | 5–7 | `face_embedding_shares_0`, `_1`, `_2` | Standard padded base64 of each party's sealed share | yes, as decoded bytes |
 | 8–10 | `face_embedding_version`, `face_embedding_type`, `face_embedding_inference_backend` | Capture metadata | yes |
 | 11 | `pcp_version` | Custody format version | yes |

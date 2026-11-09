@@ -364,6 +364,7 @@
                 "CredentialSignatureInvalid",
                 "CredentialClaimsMismatch",
                 "InvalidPcp",
+                "InvalidSourceIrisData",
                 "FailedToBuildPcp",
                 "InvalidDevicePublicKeyEncoding",
                 "Unknown"

@@ -21,6 +21,7 @@ members = [
     "migration/host",
     "migration/primitives",
     "migration/storage",
+    "migration/telemetry",
     "migration/shares",
     "migration/api",
     "migration/client",
@@ -57,15 +58,17 @@ di-dev-enclave-primitives = { path = "dev/enclave-primitives" }
 di-migration-enclave-primitives = { path = "migration/enclave-primitives" }
 di-migration-primitives = { path = "migration/primitives" }
 di-migration-storage = { path = "migration/storage" }
+di-migration-telemetry = { path = "migration/telemetry" }
 di-worker-protocol = { path = "worker-protocol" }
 flate2 = "1.1"
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 http-body-util = "0.1"
 mime = "0.3"
+metrics-exporter-statsd = "0.9"
 # Shared PCP builder, protobuf definitions and signup IDs use one revision.
-orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac" }
-orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac" }
-orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "c911670ff7ec2a7d8e87bfbcf1ab3763c8f7feac" }
+orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "53ba3ca3a636496b95cb44cf3497247caa1e5f3f" }
+orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "53ba3ca3a636496b95cb44cf3497247caa1e5f3f" }
+orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "53ba3ca3a636496b95cb44cf3497247caa1e5f3f" }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 di-migration-client = { path = "migration/client" }
 pontifex = { version = "3.1.0", default-features = false }

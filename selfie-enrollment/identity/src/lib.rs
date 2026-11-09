@@ -1,10 +1,10 @@
 //! Assembles signup-service's v4-only web enrollment, `PUT /api/v2/identity`, for one
 //! Selfie Check capture inside the enclave (signup-service#2400, contract version 2).
 //!
-//! There is no v3 identity: the capture is bound to the browser's World ID 4.0 subject. One
-//! per-capture Nitro document signs the running worker SHA-384 in [`user_data`] and a
-//! canonical capture digest in its `nonce`. The document travels in an HTTP header,
-//! outside the body it binds, so no relay can change capture fields. The enclave produces
+//! The capture is bound to the browser's World ID 4.0 subject. One per-capture Nitro
+//! document signs the running worker SHA-384 in [`user_data`] and a canonical capture
+//! digest in its `nonce`. The document travels in an HTTP header, outside the body it
+//! binds; verification detects changes to the bound capture fields. The enclave produces
 //! only the attested capture fields. The browser adds its v4 challenge and ownership proof,
 //! which are not attested, and submits the request itself; a retry can carry a fresh proof
 //! for the same capture. Share recipients, the capture clock and the attestor are supplied
@@ -161,7 +161,7 @@ impl Form {
     }
 }
 
-/// Oxide's `FaceAssociatedData` with its single embedding, without a v3 identity commitment.
+/// Oxide's `FaceAssociatedData` with its single embedding.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct AssociatedData {
     pub pcp_version: String,
@@ -174,8 +174,8 @@ pub struct AssociatedData {
 
 /// Builds the enrollment for one successful extraction and attests it once.
 ///
-/// Basic inputs and the embedding are validated before sharing. All failures precede
-/// attestation. Supply an RNG seeded from fresh entropy in production.
+/// Basic inputs and the embedding are validated before sharing. Inputs and shares are
+/// validated before requesting attestation. Supply an RNG seeded from fresh entropy in production.
 ///
 /// # Errors
 /// Rejects malformed inputs, unsupported embeddings and unsuitable recipient keys; propagates

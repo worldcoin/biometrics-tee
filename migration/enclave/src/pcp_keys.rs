@@ -59,10 +59,10 @@ impl PublicPrivateKeypair {
         })
     }
 
-    fn recipient(&self) -> orb_pcp::BackendKey<'_> {
+    fn recipient(&self) -> orb_pcp::BackendKey {
         orb_pcp::BackendKey {
-            public_key: &self.public_key,
-            encrypted_private_key: &self.encrypted_private_key,
+            public_key: self.public_key,
+            encrypted_private_key: self.encrypted_private_key.clone(),
         }
     }
 }
@@ -95,11 +95,11 @@ impl BackendKeys {
         })
     }
 
-    /// Borrows the public keys and their matching KMS envelopes for `orb-pcp`.
+    /// Copies the public keys and their matching KMS envelopes into `orb-pcp`.
     #[must_use]
-    pub fn recipients<'a>(&'a self, user_public_key: &'a [u8; 32]) -> OutputRecipients<'a> {
+    pub fn recipients(&self, user_public_key: &[u8; 32]) -> OutputRecipients {
         OutputRecipients {
-            user_public_key,
+            user_public_key: *user_public_key,
             backend_keys: orb_pcp::BackendKeys {
                 iris: self.iris.recipient(),
                 normalized_iris: self.normalized_iris.recipient(),

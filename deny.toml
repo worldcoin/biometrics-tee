@@ -37,6 +37,8 @@ deny = [
     { name = "openssl" },
     { name = "openssl-sys" },
     { name = "openssl-src" },
+    # Unmaintained pinning helpers (RUSTSEC-2026-0441).
+    { name = "pin-utils" },
     # The zip advisory exceptions apply only to libsodium's unused build dependency.
     { name = "zip", wrappers = ["libsodium-sys-stable"] },
 ]
