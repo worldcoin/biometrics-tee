@@ -1,12 +1,21 @@
 //! Opt-in migration of local sample packages, which are never part of this
 //! repository: opened PCPs at `$PCP_SAMPLES_DIR/<version>/<signup>/pcp_pkg/`.
 //!
-//! `PCP_SAMPLES_DIR=<dir> cargo test -p di-migration-pcp --test samples -- --ignored`
+//! Set `PCP_SAMPLES_DIR` and `PCP_SAMPLES_EXPECTATIONS` before running
+//! `cargo test -p di-migration-pcp --test samples -- --ignored`.
+//! Expectations are a private JSON object mapping each relative `pcp_pkg` path
+//! to `migrated`, `unsupported_version`, `missing_thumbnail` or `invalid_source_iris_data`.
+//! Every discovered package must have exactly one expectation.
 //!
 //! Failures name the version directory only, never a signup or a payload.
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
+use serde::Deserialize;
 
 use di_migration_pcp::*;
 use support::{build_and_open, context, pipeline};
@@ -19,33 +28,57 @@ impl SourcePcp {
     }
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Outcome {
+    Migrated,
+    UnsupportedVersion,
+    MissingThumbnail,
+    InvalidSourceIrisData,
+}
+
 #[test]
-#[ignore = "needs local sample packages in PCP_SAMPLES_DIR"]
+#[ignore = "needs private samples and explicit expected outcomes"]
 fn local_samples_migrate_and_pass_the_final_check() {
     let root = PathBuf::from(std::env::var_os("PCP_SAMPLES_DIR").expect("PCP_SAMPLES_DIR"));
-    let mut migrated = 0;
-    for (version, package) in packages(&root) {
-        match SourcePcp::parse(read_tree(&package)) {
-            Ok(source) => {
-                let (bio, ctx) = (pipeline(), context());
-                let new = build_and_open(&source, &bio, &ctx);
-                if let Err(error) = verify_completed_pcp(&source, &bio, &ctx, &new.files) {
-                    panic!("{version}: {error}");
+    let expectations =
+        std::env::var_os("PCP_SAMPLES_EXPECTATIONS").expect("PCP_SAMPLES_EXPECTATIONS");
+    let mut expected: BTreeMap<String, Outcome> =
+        serde_json::from_slice(&std::fs::read(expectations).expect("read sample expectations"))
+            .expect("valid sample expectations");
+    assert!(!expected.is_empty(), "empty sample inventory");
+    let inventory = packages(&root);
+    assert_eq!(
+        inventory.len(),
+        expected.len(),
+        "sample inventory count differs"
+    );
+    for (version, package) in inventory {
+        let key = package.strip_prefix(&root).unwrap().to_str().unwrap();
+        let expected = expected
+            .remove(key)
+            .expect("sample missing from expectations");
+        let outcome = match SourcePcp::parse(read_tree(&package)) {
+            Ok(source) => match source.validate_iris() {
+                Ok(()) => {
+                    let (bio, ctx) = (pipeline(), context());
+                    let new = build_and_open(&source, &bio, &ctx);
+                    if let Err(error) = verify_completed_pcp(&source, &bio, &ctx, &new.files) {
+                        panic!("{version}: {error}");
+                    }
+                    Outcome::Migrated
                 }
-                migrated += 1;
-                eprintln!("{version}: migrated");
-            }
-            // Outside the supported versions, or without the face thumbnail
-            // the pipeline reads.
-            Err(
-                error @ (Error::UnsupportedVersion | Error::MissingArtifact("face/thumbnail.png")),
-            ) => {
-                eprintln!("{version}: not migratable: {error}");
-            }
+                Err(Error::InvalidSourceIrisData) => Outcome::InvalidSourceIrisData,
+                Err(error) => panic!("{version}: unexpected Iris error: {error}"),
+            },
+            Err(Error::UnsupportedVersion) => Outcome::UnsupportedVersion,
+            Err(Error::MissingArtifact("face/thumbnail.png")) => Outcome::MissingThumbnail,
             Err(error) => panic!("{version}: {error}"),
-        }
+        };
+        assert_eq!(outcome, expected, "{version}: unexpected outcome");
+        eprintln!("{version}: {outcome:?}");
     }
-    assert!(migrated > 0, "no sample packages migrated");
+    assert!(expected.is_empty(), "expected samples were not exercised");
 }
 
 /// `(version directory, pcp_pkg directory)` for every sample package.

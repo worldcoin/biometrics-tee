@@ -113,6 +113,8 @@ pub enum Reason {
     InvalidInput,
     /// The enclave could not parse or validate the source PCP.
     InvalidPcp,
+    /// A present source Iris record has missing payload fields or inconsistent versions.
+    InvalidSourceIrisData,
     /// The enclave could not build the migrated PCP.
     FailedToBuildPcp,
     /// The worker or enclave returned an unrecognized failure.
@@ -169,7 +171,7 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, for parsing.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::HostBusy,
         Self::EnclaveChanged,
         Self::EnclaveError,
@@ -177,6 +179,7 @@ impl Reason {
         Self::Transport,
         Self::InvalidInput,
         Self::InvalidPcp,
+        Self::InvalidSourceIrisData,
         Self::FailedToBuildPcp,
         Self::Unknown,
         Self::MigrationTaskCancelled,
@@ -216,6 +219,7 @@ impl Reason {
             Self::Transport => "transport",
             Self::InvalidInput => "invalid_input",
             Self::InvalidPcp => "invalid_pcp",
+            Self::InvalidSourceIrisData => "invalid_source_iris_data",
             Self::FailedToBuildPcp => "failed_to_build_pcp",
             Self::Unknown => "unknown",
             Self::MigrationTaskCancelled => "migration_task_cancelled",
@@ -348,6 +352,7 @@ mod tests {
             (Reason::Transport, "transport"),
             (Reason::InvalidInput, "invalid_input"),
             (Reason::InvalidPcp, "invalid_pcp"),
+            (Reason::InvalidSourceIrisData, "invalid_source_iris_data"),
             (Reason::FailedToBuildPcp, "failed_to_build_pcp"),
             (Reason::Unknown, "unknown"),
             (Reason::MigrationTaskCancelled, "migration_task_cancelled"),

@@ -702,7 +702,7 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_failed(&id(), "sub", Reason::EnclaveError, None, 100)
+            .mark_failed(&id(), "sub", Reason::InvalidSourceIrisData, None, 100)
             .await
             .expect("should update");
 
@@ -714,7 +714,7 @@ mod tests {
         );
         assert_eq!(
             request["ExpressionAttributeValues"][":extra"]["S"],
-            "enclave_error"
+            "invalid_source_iris_data"
         );
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "reason");
     }
