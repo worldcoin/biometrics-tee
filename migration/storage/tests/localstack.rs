@@ -309,3 +309,36 @@ async fn the_upload_check_sees_the_sealed_pcp() {
         .ok();
     s3.delete_bucket().bucket(&bucket).send().await.ok();
 }
+
+#[tokio::test]
+#[ignore = "needs LocalStack"]
+async fn source_iris_failure_round_trips_through_storage() {
+    let (jobs, client, name) = table().await;
+    let job = new_job("source-iris-test", NOW);
+    jobs.create_job(&job).await.expect("created");
+    jobs.claim(&job.job_id, "source-iris-test", NOW + 1, NOW + 600)
+        .await
+        .expect("claimed");
+    jobs.mark_failed(
+        &job.job_id,
+        "source-iris-test",
+        Reason::InvalidSourceIrisData,
+        None,
+        NOW + 2,
+    )
+    .await
+    .expect("failed outcome persisted");
+    let latest = jobs
+        .latest_job("source-iris-test")
+        .await
+        .expect("read")
+        .expect("job");
+    assert_eq!(latest.status, Status::Failed);
+    assert_eq!(latest.reason, Some(Reason::InvalidSourceIrisData));
+    client
+        .delete_table()
+        .table_name(&name)
+        .send()
+        .await
+        .expect("delete test table");
+}

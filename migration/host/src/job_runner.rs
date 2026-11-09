@@ -56,12 +56,15 @@ impl JobRunner {
     /// reads as `timeout`, so it is skipped rather than spending enclave time.
     pub async fn handle(&self, job: &JobRequest) {
         if unix_now() > job.deadline {
+            metrics::counter!("migration.host.job_outcomes", "outcome" => "failed").increment(1);
             metrics::counter!("migration.host.job_failures", "reason" => Reason::Timeout.as_str())
                 .increment(1);
             tracing::warn!(job_id = %job.job_id, "job passed its deadline in the queue; skipped");
             return;
         }
         let (result, debug_report) = self.migrate(job).await;
+        let outcome = if result.is_ok() { "migrated" } else { "failed" };
+        metrics::counter!("migration.host.job_outcomes", "outcome" => outcome).increment(1);
         let recorded = match result {
             Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
             Err(reason) => {
@@ -217,6 +220,7 @@ const fn operation_reason(error: enclave_primitives::Error) -> Reason {
         Error::CredentialSignatureInvalid => Reason::CredentialSignatureInvalid,
         Error::CredentialClaimsMismatch => Reason::CredentialClaimsMismatch,
         Error::InvalidPcp => Reason::InvalidPcp,
+        Error::InvalidSourceIrisData => Reason::InvalidSourceIrisData,
         Error::FailedToBuildPcp => Reason::FailedToBuildPcp,
         Error::InvalidDevicePublicKeyEncoding => Reason::InvalidDevicePublicKeyEncoding,
         Error::Unknown => Reason::Unknown,
@@ -570,6 +574,7 @@ mod tests {
             CredentialSignatureInvalid,
             CredentialClaimsMismatch,
             InvalidPcp,
+            InvalidSourceIrisData,
             FailedToBuildPcp,
             InvalidDevicePublicKeyEncoding,
             Unknown,
