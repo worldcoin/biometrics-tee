@@ -127,11 +127,15 @@ fn migrate_payload(
     })?;
     let source_pcp = parse_source_pcp(state, files)?;
     report.source(&source_pcp);
+    source_pcp.validate_iris().map_err(|error| {
+        tracing::error!(%error, "source Iris validation failed");
+        enclave_primitives::Error::InvalidSourceIrisData
+    })?;
     let biometrics = run_pipeline(state, &source_pcp, report)?;
     build_and_seal_pcp(
         state,
         &source_pcp,
-        &biometrics,
+        biometrics,
         &payload.device_public_key,
         sealer,
         report,
@@ -141,13 +145,12 @@ fn migrate_payload(
 fn build_and_seal_pcp(
     state: &EnclaveState,
     source_pcp: &SourcePcp,
-    owned_biometrics: &OwnedPreparedBiometrics,
+    prepared_biometrics: PreparedBiometrics,
     device_public_key: &[u8; 32],
     sealer: ResponseSealer,
     report: &mut Report,
 ) -> Result<Vec<u8>, enclave_primitives::Error> {
     report.stage = Stage::BuildPcp;
-    let prepared_biometrics = owned_biometrics.as_prepared();
     let migrated_ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| enclave_primitives::Error::InvalidSystemTime)?
@@ -171,8 +174,8 @@ fn build_and_seal_pcp(
         device_public_key,
     )
     .map_err(|error| {
-        tracing::warn!(%error, "invalid biometric pipeline output for PCP build");
-        enclave_primitives::Error::FailedToBuildPcp
+        tracing::error!(%error, "invalid PCP build inputs");
+        pcp_mapping_error(&error)
     })?;
 
     report.stage = Stage::GenerateRecipients;
@@ -186,7 +189,7 @@ fn build_and_seal_pcp(
     report.stage = Stage::BuildPcp;
     let package = di_migration_pcp::build(
         source_pcp,
-        &prepared_biometrics,
+        prepared_biometrics,
         &context,
         recipients,
         |digest| {
@@ -200,7 +203,10 @@ fn build_and_seal_pcp(
     )
     .map_err(|error| {
         tracing::warn!(%error, "failed to build output PCP");
-        enclave_primitives::Error::FailedToBuildPcp
+        match &error {
+            di_migration_pcp::BuildError::Mapping(error) => pcp_mapping_error(error),
+            di_migration_pcp::BuildError::Build(_) => enclave_primitives::Error::FailedToBuildPcp,
+        }
     })?;
 
     report.stage = Stage::SealPcp;
@@ -208,6 +214,15 @@ fn build_and_seal_pcp(
         tracing::error!(?error, "failed to seal the migrated PCP");
         enclave_primitives::Error::PcpResponseSealingFailed
     })
+}
+
+const fn pcp_mapping_error(error: &di_migration_pcp::Error) -> enclave_primitives::Error {
+    match error {
+        di_migration_pcp::Error::InvalidSourceIrisData => {
+            enclave_primitives::Error::InvalidSourceIrisData
+        }
+        _ => enclave_primitives::Error::FailedToBuildPcp,
+    }
 }
 
 fn seal_debug_report(
@@ -233,7 +248,7 @@ fn run_pipeline(
     state: &EnclaveState,
     source_pcp: &SourcePcp,
     report: &mut Report,
-) -> Result<OwnedPreparedBiometrics, enclave_primitives::Error> {
+) -> Result<PreparedBiometrics, enclave_primitives::Error> {
     report.stage = Stage::Biometrics;
     match state.migrate(source_pcp.pipeline_inputs()) {
         Ok(mut output) => {
@@ -272,45 +287,9 @@ fn pipeline_failure_reason(code: i32) -> enclave_primitives::Error {
     }
 }
 
-/// Owns worker iris buffers and shares so [`PreparedBiometrics`] can borrow them for PCP build.
-struct OwnedPreparedBiometrics {
-    pipeline_version: String,
-    face_embeddings: Vec<v1::FaceEmbedding>,
-    di_embeddings: v1::DiIrisEmbeddings,
-    shares: [v1::DiIrisEmbeddingShares; 3],
-    left_normalized: di_worker_protocol::migration::NormalizedIris,
-    left_resized: di_worker_protocol::migration::NormalizedIris,
-    right_normalized: di_worker_protocol::migration::NormalizedIris,
-    right_resized: di_worker_protocol::migration::NormalizedIris,
-}
-
-impl OwnedPreparedBiometrics {
-    fn as_prepared(&self) -> PreparedBiometrics<'_> {
-        PreparedBiometrics {
-            biometric_pipeline_version: self.pipeline_version.clone(),
-            face_embeddings: self.face_embeddings.clone(),
-            di_embeddings: self.di_embeddings.clone(),
-            di_embedding_shares: self.shares.clone(),
-            left_normalized: orb_pcp::NormalizedIrisFrame {
-                image: &self.left_normalized.image,
-                mask: &self.left_normalized.mask,
-                image_resized: &self.left_resized.image,
-                mask_resized: &self.left_resized.mask,
-            },
-            right_normalized: orb_pcp::NormalizedIrisFrame {
-                image: &self.right_normalized.image,
-                mask: &self.right_normalized.mask,
-                image_resized: &self.right_resized.image,
-                mask_resized: &self.right_resized.mask,
-            },
-            extra_normalized: std::collections::BTreeMap::new(),
-        }
-    }
-}
-
 fn prepare_biometrics(
     output: crate::worker::MigrationOutput,
-) -> Result<OwnedPreparedBiometrics, enclave_primitives::Error> {
+) -> Result<PreparedBiometrics, enclave_primitives::Error> {
     let MigrationResult {
         face_embedding,
         left_iris,
@@ -341,8 +320,8 @@ fn prepare_biometrics(
         .normalized_resized
         .ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
 
-    Ok(OwnedPreparedBiometrics {
-        pipeline_version: output.pipeline_version,
+    Ok(PreparedBiometrics {
+        biometric_pipeline_version: output.pipeline_version,
         face_embeddings: vec![v1::FaceEmbedding {
             embedding: Some(face.vector),
             embedding_type: Some(face.r#type),
@@ -364,11 +343,20 @@ fn prepare_biometrics(
                 right_mirror_embedding_f32: right.mirror_embedding_f32,
             }),
         },
-        shares,
-        left_normalized,
-        left_resized,
-        right_normalized,
-        right_resized,
+        di_embedding_shares: shares,
+        left_normalized: orb_pcp::NormalizedIrisFrame {
+            image: left_normalized.image,
+            mask: left_normalized.mask,
+            image_resized: left_resized.image,
+            mask_resized: left_resized.mask,
+        },
+        right_normalized: orb_pcp::NormalizedIrisFrame {
+            image: right_normalized.image,
+            mask: right_normalized.mask,
+            image_resized: right_resized.image,
+            mask_resized: right_resized.mask,
+        },
+        extra_normalized: std::collections::BTreeMap::new(),
     })
 }
 
@@ -604,8 +592,7 @@ mod tests {
             },
         };
 
-        let mapped = prepare_biometrics(output).expect("valid worker result should map");
-        let prepared = mapped.as_prepared();
+        let prepared = prepare_biometrics(output).expect("valid worker result should map");
         let embedding = prepared
             .di_embeddings
             .embedding_v1
@@ -834,6 +821,18 @@ mod tests {
         let failure = handler(state, empty).await.unwrap_err();
         assert_eq!(failure.error, enclave_primitives::Error::InvalidInput);
         assert!(failure.debug_report.is_none());
+    }
+
+    #[test]
+    fn source_iris_errors_are_distinct_from_fresh_output_errors() {
+        assert_eq!(
+            super::pcp_mapping_error(&di_migration_pcp::Error::InvalidSourceIrisData),
+            enclave_primitives::Error::InvalidSourceIrisData
+        );
+        assert_eq!(
+            super::pcp_mapping_error(&di_migration_pcp::Error::InvalidField("di_embeddings")),
+            enclave_primitives::Error::FailedToBuildPcp
+        );
     }
 
     #[test]

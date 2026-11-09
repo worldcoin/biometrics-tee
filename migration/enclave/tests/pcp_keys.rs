@@ -257,7 +257,7 @@ async fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
     let mut digest = None;
     let output = di_migration_pcp::build(
         &source,
-        &bio,
+        support::copy_pipeline(&bio),
         &ctx,
         keys.recipients(&user.public_key),
         |d| {
@@ -281,7 +281,7 @@ async fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
         ("tier2", recipients.tier2),
     ]
     .map(|(role, key)| {
-        assert!(public_keys.insert(*key.public_key));
+        assert!(public_keys.insert(key.public_key));
         assert_eq!(
             serialized[role]["public_key"],
             STANDARD.encode(key.public_key)
@@ -290,7 +290,7 @@ async fn check_package(keys: &BackendKeys, unwrap: impl Fn(&str) -> Vec<u8>) {
             serialized[role]["encrypted_private_key"],
             key.encrypted_private_key
         );
-        recover_key(&unwrap(key.encrypted_private_key), key.public_key)
+        recover_key(&unwrap(&key.encrypted_private_key), &key.public_key)
     });
     for (name, ciphertext) in &files {
         if name.ends_with(".tar") {
@@ -433,7 +433,7 @@ async fn localstack_ciphertexts_round_trip_into_the_archive_keys() {
             .decrypt()
             .key_id(&arn)
             .ciphertext_blob(Blob::new(
-                STANDARD.decode(key.encrypted_private_key).unwrap(),
+                STANDARD.decode(&key.encrypted_private_key).unwrap(),
             ))
             .send()
             .await
