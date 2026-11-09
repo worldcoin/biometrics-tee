@@ -1336,6 +1336,38 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
+    #[tokio::test]
+    async fn the_client_receives_the_stored_source_iris_failure_reason() {
+        let row = job_row(
+            "failed",
+            now(),
+            &[(
+                "reason",
+                serde_json::json!({"S": "invalid_source_iris_data"}),
+            )],
+        );
+        let (state, _) =
+            migration_state(Some(row), StatusCode::OK, "127.0.0.1:9".parse().unwrap()).await;
+        let api = serve(routes::router(state)).await;
+        let client =
+            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
+                .unwrap()
+                .with_attested_key_thumbprint("device-key");
+        let signer = Arc::new(test_signer());
+        let token = test_integrity_token(&signer);
+
+        let status = client
+            .migration_status(&token, &signer, "test-sub")
+            .await
+            .unwrap();
+
+        assert_eq!(status.status, di_migration_primitives::Status::Failed);
+        assert_eq!(
+            status.reason,
+            Some(di_migration_primitives::Reason::InvalidSourceIrisData)
+        );
+    }
+
     /// The client's migrate and status calls match the routes.
     #[tokio::test]
     async fn the_client_round_trips_migrate_and_status() {
