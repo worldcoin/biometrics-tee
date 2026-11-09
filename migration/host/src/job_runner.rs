@@ -2,7 +2,7 @@
 
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use di_migration_enclave_primitives::{self as enclave_primitives, MigrateRequest};
@@ -122,6 +122,7 @@ impl JobRunner {
             reason
         };
 
+        let started_at = Instant::now();
         let migration = self
             .enclave_client
             .migrate(MigrateRequest {
@@ -129,6 +130,11 @@ impl JobRunner {
                 sub: job.sub.clone(),
             })
             .await;
+        metrics::histogram!(
+            "migration.host.enclave_migration_duration_seconds",
+            "outcome" => if migration.is_ok() { "success" } else { "error" }
+        )
+        .record(started_at.elapsed().as_secs_f64());
         let (pcp, debug_report) = match migration {
             Ok(response) => (Ok(response.pcp), response.debug_report),
             Err(error) => {
