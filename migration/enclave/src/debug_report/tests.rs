@@ -615,7 +615,8 @@ fn iris_comparison_survives_later_failure_without_worker_json() {
         iris_version: Some("2.10.0".into()),
         left_iris_code: Some(code.clone()),
         left_mask_code: Some(mask.clone()),
-        ..IrisCodes::default()
+        right_iris_code: None,
+        right_mask_code: None,
     };
     let worker = MigrationResult {
         iris_code_version: "v2.1".into(),
