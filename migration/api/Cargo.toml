@@ -26,6 +26,7 @@ tokio.workspace = true
 tracing.workspace = true
 di-migration-primitives.workspace = true
 di-migration-storage.workspace = true
+di-migration-telemetry.workspace = true
 
 [dev-dependencies]
 attested-request = { version = "0.1.1", features = ["test-util"] }

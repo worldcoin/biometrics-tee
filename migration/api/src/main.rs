@@ -65,12 +65,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut telemetry_config = telemetry_batteries::TelemetryConfig::from_env()
-        .map_err(|error| anyhow::anyhow!("failed to load telemetry configuration: {error:?}"))?;
-    // The StatsD exporter has no timed flush; sparse job events must be sent immediately.
-    telemetry_config.metrics.statsd.buffer_size = 0;
-    let _telemetry = telemetry_batteries::init_with_config(telemetry_config)
-        .map_err(|error| anyhow::anyhow!("failed to initialize telemetry: {error:?}"))?;
+    let _telemetry = di_migration_telemetry::init()?;
     let config = config::Config::from_env()?;
     let aws_config = tokio::time::timeout(
         Duration::from_secs(5),
