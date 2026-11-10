@@ -705,7 +705,10 @@ mod tests {
             request["ExpressionAttributeValues"][":completed_at"]["N"],
             "100"
         );
-        assert_eq!(request["ExpressionAttributeNames"]["#completed_at"], "completed_at");
+        assert_eq!(
+            request["ExpressionAttributeNames"]["#completed_at"],
+            "completed_at"
+        );
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "result_key");
         let lock = &items[1]["Update"];
         assert_eq!(
@@ -734,7 +737,10 @@ mod tests {
             "invalid_source_iris_data"
         );
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "reason");
-        assert_eq!(request["ExpressionAttributeValues"][":completed_at"]["N"], "100");
+        assert_eq!(
+            request["ExpressionAttributeValues"][":completed_at"]["N"],
+            "100"
+        );
     }
 
     /// A job resolved elsewhere first, or past its deadline, is not overwritten.

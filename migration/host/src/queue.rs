@@ -124,8 +124,7 @@ impl JobQueue {
             .values()
             .min()
             .map_or(0.0, |enqueued_at| enqueued_at.elapsed().as_secs_f64());
-        metrics::gauge!("migration.host.oldest_queued_job_age_seconds")
-            .set(oldest_age_seconds);
+        metrics::gauge!("migration.host.oldest_queued_job_age_seconds").set(oldest_age_seconds);
     }
 }
 
