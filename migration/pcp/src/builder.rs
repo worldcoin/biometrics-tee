@@ -90,7 +90,7 @@ pub fn build<E>(
         face_embeddings,
         di_embeddings,
         di_embedding_shares,
-        orbit5_di_embedding_shares,
+        di_embedding_5_party_shares,
         left_normalized,
         right_normalized,
         mut extra_normalized,
@@ -124,7 +124,7 @@ pub fn build<E>(
         return Err(Error::UnmappedImage.into());
     }
     let di = orb_pcp::Di::embeddings(di_embeddings)
-        .orbit5_di_embedding_shares(orbit5_di_embedding_shares)
+        .di_embedding_5_party_shares(di_embedding_5_party_shares)
         .shares(di_embedding_shares)
         .map_err(|_| Error::InvalidField("di_embedding_shares"))?;
     let biometrics = orb_pcp::Biometrics::images(images)

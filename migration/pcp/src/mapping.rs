@@ -49,7 +49,7 @@ pub struct PreparedBiometrics {
     /// Index `i` belongs to recipient `i`.
     pub di_embedding_shares: [v1::DiIrisEmbeddingShares; 3],
     /// All five ORBIT5 recipients in index order, each carrying both eyes and mirrors.
-    pub orbit5_di_embedding_shares: [v1::Orbit5DiIrisEmbeddingShares; 5],
+    pub di_embedding_5_party_shares: [v1::DiIrisEmbeddingShares; 5],
     pub left_normalized: orb_pcp::NormalizedIrisFrame,
     pub right_normalized: orb_pcp::NormalizedIrisFrame,
     /// Fresh normalization keyed by source multiframe image ID.
@@ -121,7 +121,7 @@ impl PreparedBiometrics {
     fn validate_di(&self) -> Result<(), Error> {
         const INVALID_EMBEDDINGS: Error = Error::InvalidField("di_embeddings");
         const INVALID_SHARES: Error = Error::InvalidField("di_embedding_shares");
-        const INVALID_ORBIT5_SHARES: Error = Error::InvalidField("orbit5_di_embedding_shares");
+        const INVALID_ORBIT5_SHARES: Error = Error::InvalidField("di_embedding_5_party_shares");
         let embedding = self
             .di_embeddings
             .embedding_v1
@@ -179,7 +179,7 @@ impl PreparedBiometrics {
             }
         }
         let mut orbit5_shares_version = None;
-        for share in &self.orbit5_di_embedding_shares {
+        for share in &self.di_embedding_5_party_shares {
             let share = share.share_v1.as_ref().ok_or(INVALID_ORBIT5_SHARES)?;
             nonempty(&share.shares_version, "orbit5_shares_version")?;
             if share.model_version != embedding.model_version

@@ -74,9 +74,9 @@ http-body-util = "0.1"
 mime = "0.3"
 metrics-exporter-statsd = "0.9"
 # Shared PCP builder, protobuf definitions and signup IDs use one revision.
-orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "53ba3ca3a636496b95cb44cf3497247caa1e5f3f" }
-orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "53ba3ca3a636496b95cb44cf3497247caa1e5f3f" }
-orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "53ba3ca3a636496b95cb44cf3497247caa1e5f3f" }
+orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
+orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
+orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 di-migration-client = { path = "migration/client" }
 pontifex = { version = "3.1.0", default-features = false }

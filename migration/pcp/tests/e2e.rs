@@ -202,12 +202,12 @@ fn round_trip(version: &str, optional: bool) {
     assert_eq!(di.right_mirror_embedding, [3, 4]);
     assert_eq!(di.left_embedding_f32, [0.1, 0.2]);
     // Check each recipient's encoded ORBIT5 payload and its manifest hash.
-    for (recipient, expected) in bio.orbit5_di_embedding_shares.iter().enumerate() {
-        let name = format!("orbit5_di_iris_embeddings_shares_{recipient}.pb");
+    for (recipient, expected) in bio.di_embedding_5_party_shares.iter().enumerate() {
+        let name = format!("di_iris_embeddings_5_party_shares_{recipient}.pb");
         let bytes = &new.files[&name];
         assert_eq!(bytes, &expected.encode_to_vec());
         assert_eq!(
-            v1::Orbit5DiIrisEmbeddingShares::decode(bytes.as_slice()).unwrap(),
+            v1::DiIrisEmbeddingShares::decode(bytes.as_slice()).unwrap(),
             *expected
         );
         assert_eq!(
@@ -430,7 +430,7 @@ fn existing_orbit5_outputs_are_verified_and_replaced() {
     let mut old = version_profile("2.8", true);
     for recipient in 0..5 {
         old.insert(
-            format!("orbit5_di_iris_embeddings_shares_{recipient}.pb"),
+            format!("di_iris_embeddings_5_party_shares_{recipient}.pb"),
             b"old-orbit5-share".to_vec(),
         );
     }
@@ -439,8 +439,8 @@ fn existing_orbit5_outputs_are_verified_and_replaced() {
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
     verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
-    for (recipient, expected) in bio.orbit5_di_embedding_shares.iter().enumerate() {
-        let name = format!("orbit5_di_iris_embeddings_shares_{recipient}.pb");
+    for (recipient, expected) in bio.di_embedding_5_party_shares.iter().enumerate() {
+        let name = format!("di_iris_embeddings_5_party_shares_{recipient}.pb");
         assert_eq!(new.files[&name], expected.encode_to_vec());
         assert_ne!(new.files[&name], old[&name]);
         let mut corrupted = old.clone();
@@ -450,7 +450,7 @@ fn existing_orbit5_outputs_are_verified_and_replaced() {
             Some(Error::SourceIntegrity("manifest_hash_mismatch"))
         );
     }
-    old.insert("orbit5_di_iris_embeddings_shares_5.pb".into(), vec![0]);
+    old.insert("di_iris_embeddings_5_party_shares_5.pb".into(), vec![0]);
     refresh_source_manifest(&mut old);
     assert_eq!(
         SourcePcp::parse(old).err(),
@@ -465,7 +465,7 @@ fn completion_requires_all_prepared_orbit5_payloads_even_with_matching_hashes() 
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
     for recipient in 0..5 {
-        let name = format!("orbit5_di_iris_embeddings_shares_{recipient}.pb");
+        let name = format!("di_iris_embeddings_5_party_shares_{recipient}.pb");
         for missing in [false, true] {
             let mut files = new.files.clone();
             let reason = if missing {
@@ -473,7 +473,7 @@ fn completion_requires_all_prepared_orbit5_payloads_even_with_matching_hashes() 
                 "orbit5_share_missing"
             } else {
                 let mut bundle =
-                    v1::Orbit5DiIrisEmbeddingShares::decode(files[&name].as_slice()).unwrap();
+                    v1::DiIrisEmbeddingShares::decode(files[&name].as_slice()).unwrap();
                 bundle.share_v1.as_mut().unwrap().left_share[0] ^= 1;
                 files.insert(name.clone(), bundle.encode_to_vec());
                 "orbit5_share_mismatch"
@@ -489,7 +489,7 @@ fn completion_requires_all_prepared_orbit5_payloads_even_with_matching_hashes() 
         }
     }
     let mut files = new.files;
-    files.insert("orbit5_di_iris_embeddings_shares_5.pb".into(), vec![0]);
+    files.insert("di_iris_embeddings_5_party_shares_5.pb".into(), vec![0]);
     refresh_source_manifest(&mut files);
     assert_eq!(
         verify_completed_pcp(&source, &bio, &ctx, &files),

@@ -458,19 +458,19 @@ fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
 // Validate all five bundles' metadata, vector lengths and u16 bounds before building.
 #[test]
 fn every_orbit5_bundle_is_required_and_validated_before_building() {
-    type Edit = fn(&mut v1::Orbit5DiIrisEmbeddingShareV1);
+    type Edit = fn(&mut v1::DiIrisEmbeddingShareV1);
     let cases: [(Edit, &str); 12] = [
         (
             |share| share.model_version = "other".into(),
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.embedding_version = "other".into(),
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.shares_version = "other".into(),
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.shares_version.clear(),
@@ -478,42 +478,42 @@ fn every_orbit5_bundle_is_required_and_validated_before_building() {
         ),
         (
             |share| share.left_share.clear(),
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.left_mirror_share.truncate(1),
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.right_share.push(0),
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.right_mirror_share.truncate(1),
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.left_share[1] = 65536,
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.left_mirror_share[1] = 65536,
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.right_share[1] = 65536,
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
         (
             |share| share.right_mirror_share[1] = 65536,
-            "orbit5_di_embedding_shares",
+            "di_embedding_5_party_shares",
         ),
     ];
     let source = SourcePcp::parse(source_files("2.8")).unwrap();
     let ctx = context();
     let mut valid = pipeline();
     // Each family has its own sharing version; the full u16 range is valid.
-    for bundle in &mut valid.orbit5_di_embedding_shares {
+    for bundle in &mut valid.di_embedding_5_party_shares {
         let share = bundle.share_v1.as_mut().unwrap();
         for vector in [
             &mut share.left_share,
@@ -527,15 +527,15 @@ fn every_orbit5_bundle_is_required_and_validated_before_building() {
     check_request(&source, &valid, &ctx).unwrap();
     for recipient in 0..5 {
         let mut bio = pipeline();
-        bio.orbit5_di_embedding_shares[recipient].share_v1 = None;
+        bio.di_embedding_5_party_shares[recipient].share_v1 = None;
         assert_eq!(
             check_request(&source, &bio, &ctx),
-            Err(Error::InvalidField("orbit5_di_embedding_shares"))
+            Err(Error::InvalidField("di_embedding_5_party_shares"))
         );
         for (edit, field) in cases {
             let mut bio = pipeline();
             edit(
-                bio.orbit5_di_embedding_shares[recipient]
+                bio.di_embedding_5_party_shares[recipient]
                     .share_v1
                     .as_mut()
                     .unwrap(),
@@ -586,10 +586,10 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
             *expected
         );
     }
-    for (recipient, expected) in bio.orbit5_di_embedding_shares.iter().enumerate() {
-        let name = format!("orbit5_di_iris_embeddings_shares_{recipient}.pb");
+    for (recipient, expected) in bio.di_embedding_5_party_shares.iter().enumerate() {
+        let name = format!("di_iris_embeddings_5_party_shares_{recipient}.pb");
         assert_eq!(
-            v1::Orbit5DiIrisEmbeddingShares::decode(new.files[&name].as_slice()).unwrap(),
+            v1::DiIrisEmbeddingShares::decode(new.files[&name].as_slice()).unwrap(),
             *expected
         );
     }

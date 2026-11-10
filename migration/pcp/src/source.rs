@@ -433,11 +433,11 @@ const REPLACED_OUTPUTS: [&str; 10] = [
     "di_iris_embeddings_shares_0.pb",
     "di_iris_embeddings_shares_1.pb",
     "di_iris_embeddings_shares_2.pb",
-    "orbit5_di_iris_embeddings_shares_0.pb",
-    "orbit5_di_iris_embeddings_shares_1.pb",
-    "orbit5_di_iris_embeddings_shares_2.pb",
-    "orbit5_di_iris_embeddings_shares_3.pb",
-    "orbit5_di_iris_embeddings_shares_4.pb",
+    "di_iris_embeddings_5_party_shares_0.pb",
+    "di_iris_embeddings_5_party_shares_1.pb",
+    "di_iris_embeddings_5_party_shares_2.pb",
+    "di_iris_embeddings_5_party_shares_3.pb",
+    "di_iris_embeddings_5_party_shares_4.pb",
 ];
 
 const ARCHIVES: [(&str, &str); 5] = [

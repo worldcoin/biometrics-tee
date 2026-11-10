@@ -306,7 +306,7 @@ fn prepare_biometrics(
     let right = right_iris.ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
 
     let shares = generate_shares(&left, &right, &iris_model_version, &iris_embedding_version)?;
-    let orbit5_di_embedding_shares = generate_orbit5_shares(
+    let di_embedding_5_party_shares = generate_orbit5_shares(
         &left,
         &right,
         &iris_model_version,
@@ -351,7 +351,7 @@ fn prepare_biometrics(
             }),
         },
         di_embedding_shares: shares,
-        orbit5_di_embedding_shares,
+        di_embedding_5_party_shares,
         left_normalized: orb_pcp::NormalizedIrisFrame {
             image: left_normalized.image,
             mask: left_normalized.mask,
@@ -444,7 +444,7 @@ fn generate_orbit5_shares<R: Rng + CryptoRng>(
     model_version: &str,
     embedding_version: &str,
     rng: &mut R,
-) -> Result<[v1::Orbit5DiIrisEmbeddingShares; 5], enclave_primitives::Error> {
+) -> Result<[v1::DiIrisEmbeddingShares; 5], enclave_primitives::Error> {
     let mut generate = |embedding: &[u8], eye: &'static str, mirrored: bool| {
         di_migration_shares::generate_orbit5(embedding, rng).map_err(|error| {
             tracing::error!(%error, eye, mirrored, "failed to generate ORBIT5 embedding shares");
@@ -456,34 +456,32 @@ fn generate_orbit5_shares<R: Rng + CryptoRng>(
     let right_shares = generate(&right.embedding, "right", false)?;
     let right_mirror_shares = generate(&right.mirror_embedding, "right", true)?;
 
-    Ok(std::array::from_fn(|recipient| {
-        v1::Orbit5DiIrisEmbeddingShares {
-            share_v1: Some(v1::Orbit5DiIrisEmbeddingShareV1 {
-                model_version: model_version.to_owned(),
-                shares_version: di_migration_shares::VERSION.to_owned(),
-                embedding_version: embedding_version.to_owned(),
-                left_share: left_shares[recipient]
-                    .iter()
-                    .copied()
-                    .map(u32::from)
-                    .collect(),
-                left_mirror_share: left_mirror_shares[recipient]
-                    .iter()
-                    .copied()
-                    .map(u32::from)
-                    .collect(),
-                right_share: right_shares[recipient]
-                    .iter()
-                    .copied()
-                    .map(u32::from)
-                    .collect(),
-                right_mirror_share: right_mirror_shares[recipient]
-                    .iter()
-                    .copied()
-                    .map(u32::from)
-                    .collect(),
-            }),
-        }
+    Ok(std::array::from_fn(|recipient| v1::DiIrisEmbeddingShares {
+        share_v1: Some(v1::DiIrisEmbeddingShareV1 {
+            model_version: model_version.to_owned(),
+            shares_version: di_migration_shares::VERSION.to_owned(),
+            embedding_version: embedding_version.to_owned(),
+            left_share: left_shares[recipient]
+                .iter()
+                .copied()
+                .map(u32::from)
+                .collect(),
+            left_mirror_share: left_mirror_shares[recipient]
+                .iter()
+                .copied()
+                .map(u32::from)
+                .collect(),
+            right_share: right_shares[recipient]
+                .iter()
+                .copied()
+                .map(u32::from)
+                .collect(),
+            right_mirror_share: right_mirror_shares[recipient]
+                .iter()
+                .copied()
+                .map(u32::from)
+                .collect(),
+        }),
     }))
 }
 
@@ -668,7 +666,7 @@ mod tests {
             assert_eq!(share.left_share.len(), EMBEDDING_SIZE);
             assert_eq!(share.right_mirror_share.len(), EMBEDDING_SIZE);
         }
-        for share in prepared.orbit5_di_embedding_shares {
+        for share in prepared.di_embedding_5_party_shares {
             let share = share.share_v1.expect("versioned ORBIT5 share");
             assert_eq!(share.model_version, "di-model");
             assert_eq!(share.embedding_version, "di-embedding");

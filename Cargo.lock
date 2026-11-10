@@ -4349,7 +4349,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orb-pcp"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=53ba3ca3a636496b95cb44cf3497247caa1e5f3f#53ba3ca3a636496b95cb44cf3497247caa1e5f3f"
+source = "git+https://github.com/worldcoin/orb-software?rev=0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f#0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f"
 dependencies = [
  "bon",
  "data-encoding",
@@ -4368,7 +4368,7 @@ dependencies = [
 [[package]]
 name = "orb-pcp-defs"
 version = "0.0.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=53ba3ca3a636496b95cb44cf3497247caa1e5f3f#53ba3ca3a636496b95cb44cf3497247caa1e5f3f"
+source = "git+https://github.com/worldcoin/orb-software?rev=0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f#0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f"
 dependencies = [
  "pbjson",
  "pbjson-build",
@@ -4381,7 +4381,7 @@ dependencies = [
 [[package]]
 name = "orb-wld-data-id"
 version = "0.0.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=53ba3ca3a636496b95cb44cf3497247caa1e5f3f#53ba3ca3a636496b95cb44cf3497247caa1e5f3f"
+source = "git+https://github.com/worldcoin/orb-software?rev=0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f#0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f"
 dependencies = [
  "eyre",
  "rand 0.8.8",

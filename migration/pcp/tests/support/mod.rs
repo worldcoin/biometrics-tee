@@ -310,10 +310,10 @@ pub fn pipeline() -> PreparedBiometrics {
                 }),
             }
         }),
-        orbit5_di_embedding_shares: [1u32, 2, 3, 4, 5].map(|recipient| {
+        di_embedding_5_party_shares: [1u32, 2, 3, 4, 5].map(|recipient| {
             let base = 100 * recipient;
-            v1::Orbit5DiIrisEmbeddingShares {
-                share_v1: Some(v1::Orbit5DiIrisEmbeddingShareV1 {
+            v1::DiIrisEmbeddingShares {
+                share_v1: Some(v1::DiIrisEmbeddingShareV1 {
                     model_version: model(),
                     shares_version: "test-orbit5-shares".into(),
                     embedding_version: encoding(),
@@ -345,7 +345,7 @@ pub fn copy_pipeline(bio: &PreparedBiometrics) -> PreparedBiometrics {
         face_embeddings: bio.face_embeddings.clone(),
         di_embeddings: bio.di_embeddings.clone(),
         di_embedding_shares: bio.di_embedding_shares.clone(),
-        orbit5_di_embedding_shares: bio.orbit5_di_embedding_shares.clone(),
+        di_embedding_5_party_shares: bio.di_embedding_5_party_shares.clone(),
         left_normalized: frame(&bio.left_normalized),
         right_normalized: frame(&bio.right_normalized),
         extra_normalized: bio

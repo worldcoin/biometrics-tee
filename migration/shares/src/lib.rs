@@ -10,7 +10,7 @@ use rand::{CryptoRng, Rng};
 /// Locked Git revision of the AMPC implementation used to produce these shares.
 ///
 /// This must match the `ampc-secret-sharing` revision pinned in this crate's `Cargo.toml`.
-pub const VERSION: &str = "d021f1ebd274156fd087ca8ea938ac5a958e023c";
+pub const VERSION: &str = "3dfb4aacd8152329d03c4fe71dd81ee05589f360";
 
 /// Sharing failures without embedding values. The caller supplies eye and mirror context.
 #[derive(Debug, thiserror::Error)]
