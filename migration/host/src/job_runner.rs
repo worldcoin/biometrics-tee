@@ -246,7 +246,7 @@ fn record_job_duration(job: &JobRequest, outcome: &'static str) {
     let Some(created_at) = job.created_at else {
         return;
     };
-    let duration_seconds = unix_now().saturating_sub(created_at) as f64;
+    let duration_seconds = Duration::from_secs(unix_now().saturating_sub(created_at)).as_secs_f64();
     metrics::histogram!("migration.host.job_duration_seconds", "outcome" => outcome)
         .record(duration_seconds);
 }

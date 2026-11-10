@@ -118,7 +118,8 @@ impl JobQueue {
     }
 
     fn record_metrics(state: &State) {
-        metrics::gauge!("migration.host.queued_requests").set(state.known.len() as f64);
+        let queued = u32::try_from(state.known.len()).unwrap_or(u32::MAX);
+        metrics::gauge!("migration.host.queued_requests").set(f64::from(queued));
         let oldest_age_seconds = state
             .known
             .values()
