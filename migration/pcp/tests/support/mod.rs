@@ -136,7 +136,7 @@ pub fn iris_code_share(index: usize, with_shares_version: bool) -> Vec<u8> {
     } else {
         ""
     };
-    format!(r#"{{{version}"IRIS_version":"old","left_iris_code_shares":"old-share-{index}","left_mask_code_shares":"old-left-mask-{index}","right_iris_code_shares":"old-right-code-{index}","right_mask_code_shares":"old-right-mask-{index}"}}"#)
+    format!(r#"{{{version}"IRIS_version":"old","left_iris_code_shares":"old-share-{index}","left_mask_code_shares":"old-mask-{index}","right_iris_code_shares":"old-right-{index}","right_mask_code_shares":"old-right-mask-{index}"}}"#)
         .into_bytes()
 }
 
@@ -264,12 +264,12 @@ pub fn context() -> MigrationContext {
 }
 
 // Fixed, invented values for mapping and encoding checks; no inference runs.
-pub fn pipeline() -> PreparedBiometrics<'static> {
+pub fn pipeline() -> PreparedBiometrics {
     let normalized = || orb_pcp::NormalizedIrisFrame {
-        image: &[1; 16],
-        mask: &[2; 16],
-        image_resized: &[3; 8],
-        mask_resized: &[4; 8],
+        image: vec![1; 16],
+        mask: vec![2; 16],
+        image_resized: vec![3; 8],
+        mask_resized: vec![4; 8],
     };
     let model = || "1.2.3".to_owned();
     let encoding = || "test-di-encoding".to_owned();
@@ -330,6 +330,32 @@ pub fn pipeline() -> PreparedBiometrics<'static> {
     }
 }
 
+/// Keep independent expected outputs for preservation assertions after building.
+pub fn copy_pipeline(bio: &PreparedBiometrics) -> PreparedBiometrics {
+    fn frame(frame: &orb_pcp::NormalizedIrisFrame) -> orb_pcp::NormalizedIrisFrame {
+        orb_pcp::NormalizedIrisFrame {
+            image: frame.image.clone(),
+            mask: frame.mask.clone(),
+            image_resized: frame.image_resized.clone(),
+            mask_resized: frame.mask_resized.clone(),
+        }
+    }
+    PreparedBiometrics {
+        biometric_pipeline_version: bio.biometric_pipeline_version.clone(),
+        face_embeddings: bio.face_embeddings.clone(),
+        di_embeddings: bio.di_embeddings.clone(),
+        di_embedding_shares: bio.di_embedding_shares.clone(),
+        orbit5_di_embedding_shares: bio.orbit5_di_embedding_shares.clone(),
+        left_normalized: frame(&bio.left_normalized),
+        right_normalized: frame(&bio.right_normalized),
+        extra_normalized: bio
+            .extra_normalized
+            .iter()
+            .map(|(id, value)| (id.clone(), frame(value)))
+            .collect(),
+    }
+}
+
 /// Ephemeral recipient key pairs; a distinct pair per role checks key routing.
 pub struct OutputKeys {
     pub user: sealedbox::Keypair,
@@ -351,15 +377,15 @@ impl OutputKeys {
         }
     }
 
-    pub fn recipients(&self) -> OutputRecipients<'_> {
-        fn key(pair: &sealedbox::Keypair) -> orb_pcp::BackendKey<'_> {
+    pub fn recipients(&self) -> OutputRecipients {
+        fn key(pair: &sealedbox::Keypair) -> orb_pcp::BackendKey {
             orb_pcp::BackendKey {
-                public_key: &pair.public_key,
-                encrypted_private_key: "synthetic-envelope",
+                public_key: pair.public_key,
+                encrypted_private_key: "synthetic-envelope".into(),
             }
         }
         OutputRecipients {
-            user_public_key: &self.user.public_key,
+            user_public_key: self.user.public_key,
             backend_keys: orb_pcp::BackendKeys {
                 iris: key(&self.iris),
                 normalized_iris: key(&self.normalized_iris),
@@ -382,27 +408,32 @@ pub const SIGNATURE: &[u8] = b"synthetic-tee-signature";
 /// Build the migration with the shared builder, then decrypt and open the result.
 pub fn build_and_open(
     source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
+    biometrics: &PreparedBiometrics,
     context: &MigrationContext,
 ) -> OpenedPcp {
     let keys = OutputKeys::generate();
     let mut signed_digest = None;
-    let package =
-        di_migration_pcp::build(source, biometrics, context, keys.recipients(), |digest| {
+    let package = di_migration_pcp::build(
+        source,
+        copy_pipeline(biometrics),
+        context,
+        keys.recipients(),
+        |digest| {
             signed_digest = Some(*digest);
             Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
     OpenedPcp {
         files: open(&package, &keys),
         signed_digest: signed_digest.unwrap(),
     }
 }
 
-/// The checks `with_build_inputs` runs before building, without building.
+/// The checks `validate_build_inputs` runs before building, without building.
 pub fn check_request(
     source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
+    biometrics: &PreparedBiometrics,
     context: &MigrationContext,
 ) -> Result<(), Error> {
     validate_build_inputs(

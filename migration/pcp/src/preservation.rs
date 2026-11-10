@@ -36,7 +36,7 @@ use crate::{Error, Files, MigrationContext, PreparedBiometrics, SourcePcp, parse
 /// paths, identifiers or payloads.
 pub fn verify_completed_pcp(
     source: &SourcePcp,
-    biometrics: &PreparedBiometrics<'_>,
+    biometrics: &PreparedBiometrics,
     context: &MigrationContext,
     files: &Files,
 ) -> Result<(), Error> {
@@ -74,7 +74,7 @@ fn verify_preserved(source: &SourcePcp, files: &Files) -> Result<(), Error> {
 
 /// The normalized images and masks are this run's, one set per normalized
 /// frame; the builder's commitments over them are covered by the manifest.
-fn verify_normalized(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Result<(), Error> {
+fn verify_normalized(biometrics: &PreparedBiometrics, files: &Files) -> Result<(), Error> {
     let mut expected = BTreeMap::new();
     let frames = [
         ("left", &biometrics.left_normalized),
@@ -89,10 +89,10 @@ fn verify_normalized(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Resu
     );
     for (prefix, frame) in frames {
         for (kind, bytes) in [
-            ("image", frame.image),
-            ("mask", frame.mask),
-            ("image_resized", frame.image_resized),
-            ("mask_resized", frame.mask_resized),
+            ("image", frame.image.as_slice()),
+            ("mask", frame.mask.as_slice()),
+            ("image_resized", frame.image_resized.as_slice()),
+            ("mask_resized", frame.mask_resized.as_slice()),
         ] {
             expected.insert(
                 format!("normalized_iris/{prefix}_normalized_{kind}.bin"),
@@ -115,7 +115,7 @@ fn verify_normalized(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Resu
     Ok(())
 }
 
-fn verify_orbit5(biometrics: &PreparedBiometrics<'_>, files: &Files) -> Result<(), Error> {
+fn verify_orbit5(biometrics: &PreparedBiometrics, files: &Files) -> Result<(), Error> {
     for (recipient, expected) in biometrics.orbit5_di_embedding_shares.iter().enumerate() {
         let name = format!("orbit5_di_iris_embeddings_shares_{recipient}.pb");
         let actual = files

@@ -117,12 +117,13 @@ async fn the_job_lifecycle_honours_the_sub_lock() {
     );
 
     // A failed dispatch fails the job and releases the lock at once.
-    jobs.fail_dispatch(&first.job_id, "sub-a", Reason::EnclaveChanged)
+    jobs.fail_dispatch(&first.job_id, "sub-a", Reason::EnclaveChanged, NOW + 60)
         .await
         .expect("dispatch failure should be recorded");
     let latest = jobs.latest_job("sub-a").await.expect("read").expect("job");
     assert_eq!(latest.status, Status::Failed);
     assert_eq!(latest.reason, Some(Reason::EnclaveChanged));
+    assert_eq!(latest.completed_at, Some(NOW + 60));
 
     let retry = new_job("sub-a", NOW + 501);
     jobs.create_job(&retry)
@@ -308,4 +309,37 @@ async fn the_upload_check_sees_the_sealed_pcp() {
         .await
         .ok();
     s3.delete_bucket().bucket(&bucket).send().await.ok();
+}
+
+#[tokio::test]
+#[ignore = "needs LocalStack"]
+async fn source_iris_failure_round_trips_through_storage() {
+    let (jobs, client, name) = table().await;
+    let job = new_job("source-iris-test", NOW);
+    jobs.create_job(&job).await.expect("created");
+    jobs.claim(&job.job_id, "source-iris-test", NOW + 1, NOW + 600)
+        .await
+        .expect("claimed");
+    jobs.mark_failed(
+        &job.job_id,
+        "source-iris-test",
+        Reason::InvalidSourceIrisData,
+        None,
+        NOW + 2,
+    )
+    .await
+    .expect("failed outcome persisted");
+    let latest = jobs
+        .latest_job("source-iris-test")
+        .await
+        .expect("read")
+        .expect("job");
+    assert_eq!(latest.status, Status::Failed);
+    assert_eq!(latest.reason, Some(Reason::InvalidSourceIrisData));
+    client
+        .delete_table()
+        .table_name(&name)
+        .send()
+        .await
+        .expect("delete test table");
 }

@@ -2,7 +2,7 @@
 
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use di_migration_enclave_primitives::{self as enclave_primitives, MigrateRequest};
@@ -56,12 +56,16 @@ impl JobRunner {
     /// reads as `timeout`, so it is skipped rather than spending enclave time.
     pub async fn handle(&self, job: &JobRequest) {
         if unix_now() > job.deadline {
+            metrics::counter!("migration.host.job_outcomes", "outcome" => "failed").increment(1);
             metrics::counter!("migration.host.job_failures", "reason" => Reason::Timeout.as_str())
                 .increment(1);
+            record_job_duration(job, "failed");
             tracing::warn!(job_id = %job.job_id, "job passed its deadline in the queue; skipped");
             return;
         }
         let (result, debug_report) = self.migrate(job).await;
+        let outcome = if result.is_ok() { "migrated" } else { "failed" };
+        metrics::counter!("migration.host.job_outcomes", "outcome" => outcome).increment(1);
         let recorded = match result {
             Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
             Err(reason) => {
@@ -71,6 +75,7 @@ impl JobRunner {
                 self.job_store.mark_failed(job, reason, None).await
             }
         };
+        record_job_duration(job, outcome);
 
         match recorded {
             Ok(()) => {}
@@ -119,6 +124,7 @@ impl JobRunner {
             reason
         };
 
+        let started_at = Instant::now();
         let migration = self
             .enclave_client
             .migrate(MigrateRequest {
@@ -126,6 +132,11 @@ impl JobRunner {
                 sub: job.sub.clone(),
             })
             .await;
+        metrics::histogram!(
+            "migration.host.enclave_migration_duration_seconds",
+            "outcome" => if migration.is_ok() { "success" } else { "error" }
+        )
+        .record(started_at.elapsed().as_secs_f64());
         let (pcp, debug_report) = match migration {
             Ok(response) => (Ok(response.pcp), response.debug_report),
             Err(error) => {
@@ -217,6 +228,7 @@ const fn operation_reason(error: enclave_primitives::Error) -> Reason {
         Error::CredentialSignatureInvalid => Reason::CredentialSignatureInvalid,
         Error::CredentialClaimsMismatch => Reason::CredentialClaimsMismatch,
         Error::InvalidPcp => Reason::InvalidPcp,
+        Error::InvalidSourceIrisData => Reason::InvalidSourceIrisData,
         Error::FailedToBuildPcp => Reason::FailedToBuildPcp,
         Error::InvalidDevicePublicKeyEncoding => Reason::InvalidDevicePublicKeyEncoding,
         Error::Unknown => Reason::Unknown,
@@ -228,6 +240,15 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs()
+}
+
+fn record_job_duration(job: &JobRequest, outcome: &'static str) {
+    let Some(created_at) = job.created_at else {
+        return;
+    };
+    let duration_seconds = Duration::from_secs(unix_now().saturating_sub(created_at)).as_secs_f64();
+    metrics::histogram!("migration.host.job_duration_seconds", "outcome" => outcome)
+        .record(duration_seconds);
 }
 
 #[cfg(test)]
@@ -570,6 +591,7 @@ mod tests {
             CredentialSignatureInvalid,
             CredentialClaimsMismatch,
             InvalidPcp,
+            InvalidSourceIrisData,
             FailedToBuildPcp,
             InvalidDevicePublicKeyEncoding,
             Unknown,

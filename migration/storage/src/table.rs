@@ -56,18 +56,24 @@ impl JobTable {
         let mut job_row = Update::builder()
             .table_name(&self.table_name)
             .key(attributes::ID, string(&row_id(job_id)))
-            .update_expression("SET #status = :status, #extra = :extra")
+            .update_expression(
+                "SET #status = :status, #extra = :extra, #completed_at = :completed_at",
+            )
             .condition_expression("#status = :migrating AND #deadline >= :now")
             .expression_attribute_names("#status", attributes::STATUS)
             .expression_attribute_names("#extra", extra.0)
+            .expression_attribute_names("#completed_at", attributes::COMPLETED_AT)
             .expression_attribute_names("#deadline", attributes::DEADLINE)
             .expression_attribute_values(":status", string(status.as_str()))
             .expression_attribute_values(":extra", AttributeValue::S(extra.1))
+            .expression_attribute_values(":completed_at", number(now))
             .expression_attribute_values(":migrating", string(Status::Migrating.as_str()))
             .expression_attribute_values(":now", number(now));
         if let Some(result_key) = result_key {
             job_row = job_row
-                .update_expression("SET #status = :status, #extra = :extra, #result = :result")
+                .update_expression(
+                    "SET #status = :status, #extra = :extra, #result = :result, #completed_at = :completed_at",
+                )
                 .expression_attribute_names("#result", attributes::RESULT_KEY)
                 .expression_attribute_values(":result", string(result_key));
         }
@@ -206,6 +212,8 @@ pub struct JobRecord {
     pub enclave_id: EnclaveId,
     /// Unix seconds the job was created.
     pub created_at: u64,
+    /// Unix seconds the job reached a terminal state; absent for older or unfinished jobs.
+    pub completed_at: Option<u64>,
     /// Unix seconds after which a `migrating` job reads as `failed (timeout)`; set at migrate.
     pub deadline: Option<u64>,
     /// S3 key of the migrated PCP, or of an encrypted diagnostic on a failed job.
@@ -361,6 +369,7 @@ impl JobTable {
                 .map_err(|_| malformed(attributes::ENCLAVE_ID))?,
             created_at: unsigned(&row, attributes::CREATED_AT)?
                 .ok_or_else(|| malformed(attributes::CREATED_AT))?,
+            completed_at: unsigned(&row, attributes::COMPLETED_AT)?,
             deadline: unsigned(&row, attributes::DEADLINE)?,
             result_key: optional_text(&row, attributes::RESULT_KEY).map(str::to_owned),
             job_id,
@@ -425,18 +434,21 @@ impl JobTable {
         job_id: &JobId,
         sub: &str,
         reason: Reason,
+        now: u64,
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "DynamoDB TransactWriteItems";
         let job_row = Update::builder()
             .table_name(&self.table_name)
             .key(attributes::ID, string(&row_id(job_id)))
-            .update_expression("SET #status = :failed, #reason = :reason")
+            .update_expression("SET #status = :failed, #reason = :reason, #completed_at = :now")
             .condition_expression("#status = :migrating")
             .expression_attribute_names("#status", attributes::STATUS)
             .expression_attribute_names("#reason", attributes::REASON)
+            .expression_attribute_names("#completed_at", attributes::COMPLETED_AT)
             .expression_attribute_values(":failed", string(Status::Failed.as_str()))
             .expression_attribute_values(":migrating", string(Status::Migrating.as_str()))
             .expression_attribute_values(":reason", string(reason.as_str()))
+            .expression_attribute_values(":now", number(now))
             .build()
             .map_err(|error| failed(OPERATION, &error))?;
 
@@ -689,6 +701,14 @@ mod tests {
             request["ExpressionAttributeValues"][":extra"]["S"],
             "result/abc"
         );
+        assert_eq!(
+            request["ExpressionAttributeValues"][":completed_at"]["N"],
+            "100"
+        );
+        assert_eq!(
+            request["ExpressionAttributeNames"]["#completed_at"],
+            "completed_at"
+        );
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "result_key");
         let lock = &items[1]["Update"];
         assert_eq!(
@@ -702,7 +722,7 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_failed(&id(), "sub", Reason::EnclaveError, None, 100)
+            .mark_failed(&id(), "sub", Reason::InvalidSourceIrisData, None, 100)
             .await
             .expect("should update");
 
@@ -714,9 +734,13 @@ mod tests {
         );
         assert_eq!(
             request["ExpressionAttributeValues"][":extra"]["S"],
-            "enclave_error"
+            "invalid_source_iris_data"
         );
         assert_eq!(request["ExpressionAttributeNames"]["#extra"], "reason");
+        assert_eq!(
+            request["ExpressionAttributeValues"][":completed_at"]["N"],
+            "100"
+        );
     }
 
     /// A job resolved elsewhere first, or past its deadline, is not overwritten.

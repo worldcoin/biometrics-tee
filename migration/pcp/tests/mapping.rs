@@ -30,24 +30,20 @@ fn edit_info(files: &mut Files, f: impl FnOnce(&mut serde_json::Value)) {
     files.insert("info.json".into(), serde_json::to_vec(&info).unwrap());
 }
 
-fn di<'a>(bio: &'a mut PreparedBiometrics<'static>) -> &'a mut v1::DiIrisEmbeddingV1 {
+fn di(bio: &mut PreparedBiometrics) -> &mut v1::DiIrisEmbeddingV1 {
     bio.di_embeddings.embedding_v1.as_mut().unwrap()
 }
 
-fn di_share<'a>(
-    bio: &'a mut PreparedBiometrics<'static>,
-    index: usize,
-) -> &'a mut v1::DiIrisEmbeddingShareV1 {
+fn di_share(bio: &mut PreparedBiometrics, index: usize) -> &mut v1::DiIrisEmbeddingShareV1 {
     bio.di_embedding_shares[index].share_v1.as_mut().unwrap()
 }
 
-fn frame(fill: u8) -> orb_pcp::NormalizedIrisFrame<'static> {
-    let image: &'static [u8] = Box::leak(vec![fill; 16].into_boxed_slice());
+fn frame(fill: u8) -> orb_pcp::NormalizedIrisFrame {
     orb_pcp::NormalizedIrisFrame {
-        image,
-        mask: image,
-        image_resized: &image[..8],
-        mask_resized: &image[..8],
+        image: vec![fill; 16],
+        mask: vec![fill; 16],
+        image_resized: vec![fill; 8],
+        mask_resized: vec![fill; 8],
     }
 }
 
@@ -58,6 +54,10 @@ fn all_supported_versions_preserve_capture_and_fill_absence() {
         let files = source_files(version);
         let source = SourcePcp::parse(files.clone()).unwrap();
         assert_eq!(source.version().as_str(), version);
+        assert_eq!(
+            source.iris_codes().unwrap().left_iris_code.as_deref(),
+            Some("old-left-code")
+        );
         assert_eq!(version.parse::<SourceVersion>().unwrap(), source.version());
         let (bio, ctx) = (pipeline(), context());
         let new = build_and_open(&source, &bio, &ctx);
@@ -389,7 +389,7 @@ fn unknown_files_paths_and_excessive_input_fail_explicitly() {
 
 #[test]
 fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
-    type Edit = fn(&mut PreparedBiometrics<'static>);
+    type Edit = fn(&mut PreparedBiometrics);
     let cases: [(Edit, &str); 14] = [
         (|bio| bio.face_embeddings.clear(), "face_embeddings"),
         (
@@ -436,7 +436,7 @@ fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
             |bio| di_share(bio, 0).right_share[1] = 65536,
             "di_embedding_shares",
         ),
-        (|bio| bio.left_normalized.image = &[], "normalized_iris"),
+        (|bio| bio.left_normalized.image.clear(), "normalized_iris"),
     ];
     // Unchanged pipeline output passes.
     let mut bio = pipeline();
@@ -600,6 +600,7 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
     let face: Vec<v1::FaceEmbedding> =
         serde_json::from_slice(&new.files["face_embeddings.json"]).unwrap();
     assert_eq!(face[0].embedding.as_deref(), Some("new-face"));
+    assert_eq!(face, bio.face_embeddings);
 }
 
 #[test]
@@ -735,28 +736,54 @@ fn builder_generated_orb_captures_open_as_sources() {
     let (bio, ctx) = (pipeline(), context());
     let keys = OutputKeys::generate();
     let mut signed_digest = None;
-    let package = with_build_inputs(&source, &bio, &ctx, |info, biometrics, _| {
-        // Reuse the migration inputs as an Orb capture.
-        let info = v1::Info {
-            device_public_key: Some("device".into()),
-            ..info.clone()
-        };
-        orb_pcp::Builder::timestamp(u32::try_from(ctx.migrated_ts).unwrap())
-            .info(&info)
-            .user_public_key(&keys.user.public_key)
-            .backend_keys(keys.recipients().backend_keys)
-            .biometrics(orb_pcp::BiometricPolicy::Included(biometrics))
-            .strict(false)
-            .rng(rand::rngs::OsRng)
-            .sealer(support::seal)
-            .signer(|digest| {
-                signed_digest = Some(*digest);
-                Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
-            })
-            .build()
-    })
-    .unwrap()
-    .unwrap();
+    let images = orb_pcp::PackageImages {
+        left: orb_pcp::IrisEye {
+            primary: orb_pcp::PrimaryIrisFrame {
+                ir_png: b"synthetic-left-png".to_vec(),
+                normalized: frame(1),
+            },
+            multiframe: vec![],
+        },
+        right: orb_pcp::IrisEye {
+            primary: orb_pcp::PrimaryIrisFrame {
+                ir_png: b"synthetic-right-png".to_vec(),
+                normalized: frame(2),
+            },
+            multiframe: vec![],
+        },
+        thumbnail_png: Some(b"synthetic-face-png".to_vec()),
+        face_ir_png: None,
+        thermal_png: None,
+        fraud: None,
+    };
+    let info = v1::Info {
+        device_public_key: Some("device".into()),
+        ..source.info().clone()
+    };
+    let di = orb_pcp::Di::embeddings(bio.di_embeddings)
+        .shares(bio.di_embedding_shares)
+        .unwrap();
+    let biometrics = orb_pcp::Biometrics::images(images)
+        .di(di)
+        .face_embeddings(bio.face_embeddings);
+    let package = orb_pcp::Builder::timestamp(u32::try_from(ctx.migrated_ts).unwrap())
+        .info(info)
+        .user_public_key(keys.user.public_key)
+        .backend_keys(keys.recipients().backend_keys)
+        .biometrics(orb_pcp::BiometricPolicy::Included(biometrics))
+        .rng(rand::rngs::OsRng)
+        .sealer(|plaintext, recipient| {
+            use alkali::asymmetric::seal::curve25519xsalsa20poly1305 as sealedbox;
+            let mut ciphertext = vec![0; plaintext.len() + sealedbox::OVERHEAD_LENGTH];
+            sealedbox::encrypt(plaintext, recipient, &mut ciphertext)?;
+            Ok::<_, alkali::AlkaliError>(ciphertext)
+        })
+        .signer(|digest| {
+            signed_digest = Some(*digest);
+            Ok::<_, std::convert::Infallible>(SIGNATURE.to_vec())
+        })
+        .build()
+        .unwrap();
     let files = open(&package, &keys);
     let digest: [u8; 32] = Sha256::digest(&files["hashes.json"]).into();
     assert_eq!(signed_digest, Some(digest));
@@ -878,14 +905,22 @@ fn shared_builder_rejects_incomplete_iris_records_during_preflight() {
         let (bio, ctx) = (pipeline(), context());
         assert_eq!(
             check_request(&source, &bio, &ctx),
-            Err(Error::InvalidField("iris_codes_or_shares"))
+            Err(Error::InvalidSourceIrisData)
         );
-        assert_eq!(
-            with_build_inputs::<()>(&source, &bio, &ctx, |_, _, _| {
-                panic!("invalid iris records must not reach the builder")
-            }),
-            Err(Error::InvalidField("iris_codes_or_shares"))
+        let keys = OutputKeys::generate();
+        let result = di_migration_pcp::build(
+            &source,
+            bio,
+            &ctx,
+            keys.recipients(),
+            |_| -> Result<Vec<u8>, std::convert::Infallible> {
+                panic!("invalid iris records must not reach the signer")
+            },
         );
+        assert!(matches!(
+            result,
+            Err(BuildError::Mapping(Error::InvalidSourceIrisData))
+        ));
     }
 }
 
@@ -896,10 +931,10 @@ fn shared_builder_sealing_errors_propagate_without_signing() {
     let (bio, ctx) = (pipeline(), context());
     let keys = OutputKeys::generate();
     let mut recipients = keys.recipients();
-    recipients.backend_keys.face.public_key = &[0; 32];
+    recipients.backend_keys.face.public_key = [0; 32];
     let result = di_migration_pcp::build(
         &source,
-        &bio,
+        bio,
         &ctx,
         recipients,
         |_| -> Result<Vec<u8>, std::convert::Infallible> {

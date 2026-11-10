@@ -1,6 +1,89 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
+  "definitions": {
+    "iris_code_distance": {
+      "additionalProperties": false,
+      "properties": {
+        "common_valid_bits": {
+          "maximum": 12800,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "differing_bits": {
+          "maximum": 12800,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hamming_distance": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "rotation_columns": {
+          "maximum": 15,
+          "minimum": -15,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hamming_distance",
+        "rotation_columns",
+        "differing_bits",
+        "common_valid_bits"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "iris_code_eye_comparison": {
+      "additionalProperties": false,
+      "properties": {
+        "new_valid_bits": {
+          "maximum": 12800,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "old_valid_bits": {
+          "maximum": 12800,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rotation_adjusted": {
+          "$ref": "#/definitions/iris_code_distance"
+        },
+        "status": {
+          "enum": [
+            "compared",
+            "missing_source",
+            "missing_worker",
+            "unsupported_version",
+            "invalid_encoding",
+            "invalid_length",
+            "no_valid_overlap"
+          ]
+        },
+        "zero_shift": {
+          "$ref": "#/definitions/iris_code_distance"
+        }
+      },
+      "required": [
+        "status",
+        "zero_shift",
+        "rotation_adjusted",
+        "old_valid_bits",
+        "new_valid_bits"
+      ],
+      "type": "object"
+    }
+  },
   "description": "Enclave migration outcome, execution environment and complete biometric worker diagnostics.",
   "properties": {
     "face": {
@@ -27,6 +110,49 @@
     },
     "iris": {
       "description": "Complete worker iris diagnostics, including left/right image wrappers and pair checks.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "iris_code_comparison": {
+      "additionalProperties": false,
+      "description": "Source versus regenerated v2.1 iris templates. Null until the worker succeeds. Regenerated templates are the rotated probe; source templates are the gallery. Distances are null when unavailable or without common valid bits.",
+      "properties": {
+        "left": {
+          "$ref": "#/definitions/iris_code_eye_comparison"
+        },
+        "right": {
+          "$ref": "#/definitions/iris_code_eye_comparison"
+        },
+        "rotation_limit_columns": {
+          "const": 15
+        },
+        "source_iris_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worker_iris_code_version": {
+          "type": "string"
+        },
+        "worker_iris_version": {
+          "description": "Agreed iris engine version from worker diagnostics, matching metadata.software_version.iris_engine_version; null when unavailable, malformed or inconsistent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source_iris_version",
+        "worker_iris_code_version",
+        "rotation_limit_columns",
+        "left",
+        "right",
+        "worker_iris_version"
+      ],
       "type": [
         "object",
         "null"
@@ -238,6 +364,7 @@
                 "CredentialSignatureInvalid",
                 "CredentialClaimsMismatch",
                 "InvalidPcp",
+                "InvalidSourceIrisData",
                 "FailedToBuildPcp",
                 "InvalidDevicePublicKeyEncoding",
                 "Unknown"
@@ -478,7 +605,8 @@
     "metadata",
     "face",
     "iris",
-    "pipeline_errors"
+    "pipeline_errors",
+    "iris_code_comparison"
   ],
   "title": "MigrationDebugReport",
   "type": "object"

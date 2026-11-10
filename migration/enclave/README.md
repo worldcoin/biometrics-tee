@@ -29,6 +29,9 @@ PCR1 and PCR2 are all present as 48-byte zero digests. These image measurements
 are zeroed in debug mode; parent-instance PCRs can remain nonzero. A false value
 does not establish verified code identity or replace attestation verification.
 
+In debug mode the worker's stdout and stderr go to the enclave console
+(`nitro-cli console`); a measured enclave discards them.
+
 | Enclave outcome | `signup_status` | `signup_reason` |
 |---|---|---|
 | PCP prepared and sealed | `Success` | `Normal` |
@@ -47,3 +50,27 @@ The API discovers reports independently in storage, so a subsequent status poll 
 include a report URL after the migration is already complete.
 Unsealing failures have no report. Process-wide failures such as allocation aborts,
 stack overflow and termination cannot be recovered by panic isolation.
+
+`iris_code_comparison` compares the source PCP's iris templates with the worker's
+regenerated templates, separately for each eye. It is null until a worker succeeds.
+Each eye records `zero_shift` and `rotation_adjusted`, with the masked Hamming
+distance, differing-bit count, common-valid-bit count and rotation in columns.
+Each eye also records the old and new masks’ valid-bit counts.
+The distance is differing code bits divided by common valid bits; a bit counts
+only when both masks mark it valid. The regenerated template and mask are the
+probe, rolled along columns within each row against the source gallery.
+The rotation search visits 0, -1, +1, ..., -15, +15 and retains the first minimum.
+
+The supported worker code version is `v2.1`: 16 rows, 200 columns, two filters and
+two phase bits, packed MSB-first into 1,600 bytes. All four decoded buffers must
+have that size. Source `IRIS_version` is pipeline provenance, not a code-format
+identifier, and is recorded separately from `worker_iris_code_version`.
+`worker_iris_version` uses the same agreed worker diagnostic version as
+`metadata.software_version.iris_engine_version`; it is null when the version is
+unavailable, malformed or inconsistent.
+Additional template formats require an explicit layout and compatibility check.
+A distance with no common valid bits is null; an eye with no valid rotation has
+status `no_valid_overlap`. Missing data, unsupported versions and invalid
+encodings/lengths have explicit statuses. These diagnostics do not gate migration.
+Only summary measurements enter the encrypted report; template buffers are
+zeroized after comparison and never included in the report or application logs.

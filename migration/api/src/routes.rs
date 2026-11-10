@@ -241,6 +241,7 @@ async fn migrate(
         sub: sub.to_owned(),
         attested_key_thumbprint: job.attested_key_thumbprint,
         enclave_id: job.enclave_id,
+        created_at: Some(job.created_at),
         deadline,
     };
     let Err(error) = state.hosts.submit(host, &request).await else {
@@ -259,7 +260,11 @@ async fn migrate(
     )
     .increment(1);
     tracing::warn!(%sub, job_id = %job.job_id, %error, %host, dependency = "host", reason = reason.as_str(), "dispatch failed");
-    match state.jobs.fail_dispatch(&job.job_id, sub, reason).await {
+    match state
+        .jobs
+        .fail_dispatch(&job.job_id, sub, reason, unix_now())
+        .await
+    {
         // The host may have queued it after all and already finished it.
         Ok(()) | Err(StorageError::NotMigrating) => Err(ApiError::failed(reason)),
         Err(error) => Err(ApiError::storage("dynamodb", error.to_string())),
