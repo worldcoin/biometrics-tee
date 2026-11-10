@@ -35,6 +35,13 @@ Source values and upstream validation text are not included in this error.
 jobs that expire in the queue, before persistence. Use it as the denominator for
 the overall source-Iris rejection rate; it is not a count of unique users or only
 packages that reached Iris validation.
+`migration.host.queued_requests` reports the host's queue occupancy, including
+both waiting and running jobs, and can be compared with the configured queue
+capacity.
+`migration.host.job_duration_seconds` measures from the database row's creation
+timestamp through the host's outcome handling, including upload and queue wait.
+It is tagged by `outcome` (`migrated` or `failed`) and excludes optional debug
+report upload time.
 
 ## Release compatibility
 

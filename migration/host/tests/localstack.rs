@@ -207,6 +207,7 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         sub: "sub".to_owned(),
         attested_key_thumbprint: "device-key".to_owned(),
         enclave_id: enclave::enclave_id(&PUBLIC_KEY),
+        created_at: Some(now),
         deadline,
     })
     .expect("job should serialize");
@@ -270,6 +271,7 @@ async fn a_dispatched_job_is_migrated_end_to_end() {
         sub: "sub".to_owned(),
         attested_key_thumbprint: "device-key".to_owned(),
         enclave_id: enclave::enclave_id(&PUBLIC_KEY),
+        created_at: Some(now),
         deadline,
     };
     assert_eq!(

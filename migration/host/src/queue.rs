@@ -2,12 +2,14 @@
 //! buy nothing; the cap is a safety net, since the API admits against the fleet's capacity.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     num::NonZeroUsize,
     sync::Mutex,
+    time::Instant,
 };
 
 use di_migration_primitives::{JobId, host_api::JobRequest};
+use telemetry_batteries::reexports::metrics;
 use tokio::sync::Notify;
 
 /// How a push was handled.
@@ -27,7 +29,7 @@ pub struct Full;
 struct State {
     waiting: VecDeque<JobRequest>,
     /// Waiting and running job IDs: what dedup and the cap count.
-    known: HashSet<JobId>,
+    known: HashMap<JobId, Instant>,
 }
 
 /// Jobs the API dispatched, waiting for or held by the single job runner.
@@ -41,11 +43,13 @@ impl JobQueue {
     /// Creates an empty queue holding at most `capacity` waiting and running jobs.
     #[must_use]
     pub fn new(capacity: NonZeroUsize) -> Self {
-        Self {
+        let queue = Self {
             state: Mutex::new(State::default()),
             ready: Notify::new(),
             capacity,
-        }
+        };
+        Self::record_metrics(&State::default());
+        queue
     }
 
     /// Adds `job` unless it is already known.
@@ -55,14 +59,15 @@ impl JobQueue {
     /// [`Full`] when the queue is at its cap.
     pub fn push(&self, job: JobRequest) -> Result<Admission, Full> {
         let mut state = self.lock();
-        if state.known.contains(&job.job_id) {
+        if state.known.contains_key(&job.job_id) {
             return Ok(Admission::Duplicate);
         }
         if state.known.len() >= self.capacity.get() {
             return Err(Full);
         }
-        state.known.insert(job.job_id.clone());
+        state.known.insert(job.job_id.clone(), Instant::now());
         state.waiting.push_back(job);
+        Self::record_metrics(&state);
         drop(state);
         // `notify_one` stores a permit, so a job runner that is not waiting yet still wakes.
         self.ready.notify_one();
@@ -82,7 +87,15 @@ impl JobQueue {
 
     /// Releases a job taken with [`Self::next`].
     pub fn finish(&self, job_id: &JobId) {
-        self.lock().known.remove(job_id);
+        let mut state = self.lock();
+        if state.known.remove(job_id).is_some() {
+            Self::record_metrics(&state);
+        }
+    }
+
+    /// Refreshes the gauges, including age as time passes without queue transitions.
+    pub fn refresh_metrics(&self) {
+        Self::record_metrics(&self.lock());
     }
 
     /// Waiting plus running jobs.
@@ -102,6 +115,17 @@ impl JobQueue {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn record_metrics(state: &State) {
+        metrics::gauge!("migration.host.queued_requests").set(state.known.len() as f64);
+        let oldest_age_seconds = state
+            .known
+            .values()
+            .min()
+            .map_or(0.0, |enqueued_at| enqueued_at.elapsed().as_secs_f64());
+        metrics::gauge!("migration.host.oldest_queued_job_age_seconds")
+            .set(oldest_age_seconds);
     }
 }
 

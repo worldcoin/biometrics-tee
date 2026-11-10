@@ -21,6 +21,8 @@ pub mod attributes {
     pub const ENCLAVE_ID: &str = "enclave_id";
     /// Unix seconds the job was created.
     pub const CREATED_AT: &str = "created_at";
+    /// Unix seconds the job reached a terminal state.
+    pub const COMPLETED_AT: &str = "completed_at";
     /// Unix seconds after which a `migrating` job reads as `failed (timeout)`.
     pub const DEADLINE: &str = "deadline";
     /// Unix seconds after which `DynamoDB` deletes the row.
