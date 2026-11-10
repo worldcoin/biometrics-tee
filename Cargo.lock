@@ -6205,8 +6205,8 @@ dependencies = [
 
 [[package]]
 name = "tabernaculum"
-version = "0.1.0"
-source = "git+https://github.com/worldcoin/tabernaculum?tag=v0.1.0#9e7713be5a4b28ae97fd34c7636335155ce51152"
+version = "0.2.0"
+source = "git+https://github.com/worldcoin/tabernaculum?branch=kilianglas%2Fcapture-before-ready#0c8fe8bc35b08418f1068b7902b3f7b0ea01cf52"
 dependencies = [
  "libc",
  "minijail",
@@ -6217,8 +6217,8 @@ dependencies = [
 
 [[package]]
 name = "tabernaculum-bundle"
-version = "0.1.0"
-source = "git+https://github.com/worldcoin/tabernaculum?tag=v0.1.0#9e7713be5a4b28ae97fd34c7636335155ce51152"
+version = "0.2.0"
+source = "git+https://github.com/worldcoin/tabernaculum?branch=kilianglas%2Fcapture-before-ready#0c8fe8bc35b08418f1068b7902b3f7b0ea01cf52"
 dependencies = [
  "hex",
  "libc",
@@ -6346,7 +6346,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
