@@ -78,8 +78,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = "1.0"
 sha2 = { version = "0.10", default-features = false }
-# Unreleased stdio support (worldcoin/tabernaculum#10, #12); move to a tag once released.
-tabernaculum = { git = "https://github.com/worldcoin/tabernaculum", branch = "kilianglas/capture-before-ready" }
+tabernaculum = { git = "https://github.com/worldcoin/tabernaculum", tag = "v0.3.0" }
 tar = "0.4"
 telemetry-batteries = { version = "0.4.1", default-features = false }
 tempfile = "3.27"
