@@ -162,7 +162,7 @@ pub fn encrypt<R: Rng + CryptoRng>(
         return Err(Error::TooLarge);
     }
     let plaintext = {
-        let encoder = GzEncoder::new(ArchiveBuffer::new(capacity), Compression::default());
+        let encoder = GzEncoder::new(BoundedBuffer::new(capacity), Compression::default());
         let mut archive = Builder::new(encoder);
         for (name, bytes) in &mut entries {
             append(&mut archive, name, bytes)?;
@@ -189,12 +189,12 @@ pub fn encrypt<R: Rng + CryptoRng>(
         .map_err(|_| Error::Encryption)
 }
 
-struct ArchiveBuffer {
+struct BoundedBuffer {
     bytes: Zeroizing<Vec<u8>>,
     limit: usize,
 }
 
-impl ArchiveBuffer {
+impl BoundedBuffer {
     fn new(limit: usize) -> Self {
         Self {
             bytes: Zeroizing::new(Vec::with_capacity(limit)),
@@ -203,11 +203,11 @@ impl ArchiveBuffer {
     }
 }
 
-impl Write for ArchiveBuffer {
+impl Write for BoundedBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         // Reject before extending so reallocation cannot leave unwiped plaintext behind.
         if bytes.len() > self.limit - self.bytes.len() {
-            return Err(io::Error::other("custody archive size limit exceeded"));
+            return Err(io::Error::other("custody package size limit exceeded"));
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -232,25 +232,9 @@ fn append<W: Write>(archive: &mut Builder<W>, name: &str, bytes: &[u8]) -> Resul
 }
 
 fn json(value: &impl Serialize) -> Result<Zeroizing<Vec<u8>>, Error> {
-    struct Size(usize);
-    impl Write for Size {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .filter(|&size| size <= MAX_PACKAGE_BYTES)
-                .ok_or_else(|| io::Error::other("package limit"))?;
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut size = Size(0);
-    serde_json::to_writer(&mut size, value).map_err(|_| Error::Serialization)?;
-    let mut bytes = Zeroizing::new(vec![0; size.0]);
-    serde_json::to_writer(bytes.as_mut_slice(), value).map_err(|_| Error::Serialization)?;
-    Ok(bytes)
+    let mut buffer = BoundedBuffer::new(MAX_PACKAGE_BYTES);
+    serde_json::to_writer(&mut buffer, value).map_err(|_| Error::Serialization)?;
+    Ok(buffer.bytes)
 }
 
 #[cfg(test)]
@@ -259,7 +243,7 @@ mod tests {
 
     #[test]
     fn archive_buffer_rejects_overflow_without_reallocating() {
-        let mut buffer = ArchiveBuffer::new(4);
+        let mut buffer = BoundedBuffer::new(4);
         let allocation = buffer.bytes.as_ptr();
         assert!(buffer.bytes.is_empty());
         buffer.write_all(b"ab").unwrap();
