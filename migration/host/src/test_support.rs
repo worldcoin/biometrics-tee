@@ -450,6 +450,7 @@ pub fn job(n: u64) -> JobRequest {
         sub: "sub".to_owned(),
         attested_key_thumbprint: "device-key".to_owned(),
         enclave_id: crate::enclave::enclave_id(&StubEnclave::default().public_key),
+        created_at: Some(1_700_000_000),
         deadline: u64::MAX,
     }
 }

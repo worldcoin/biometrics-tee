@@ -197,6 +197,7 @@ mod tests {
             sub: "sub".to_owned(),
             attested_key_thumbprint: "device-key".to_owned(),
             enclave_id: EnclaveId::from_commitment([1; 32]),
+            created_at: Some(1_800_000_000),
             deadline: 1_800_000_600,
         }
     }

@@ -32,6 +32,8 @@ pub struct JobRequest {
     pub attested_key_thumbprint: String,
     /// The boot the PCP was sealed to; a restarted enclave refuses the job.
     pub enclave_id: EnclaveId,
+    /// Unix seconds when the job row was created; optional for rolling compatibility.
+    pub created_at: Option<u64>,
     /// Unix seconds after which the job reads as `timeout`; the host skips it then.
     pub deadline: u64,
 }
@@ -117,6 +119,7 @@ mod tests {
             sub: "sub".to_owned(),
             attested_key_thumbprint: "key".to_owned(),
             enclave_id: EnclaveId::from_commitment([1; 32]),
+            created_at: Some(1_800_000_000),
             deadline: 1_800_000_600,
         };
 
@@ -128,9 +131,25 @@ mod tests {
                 "sub": "sub",
                 "attested_key_thumbprint": "key",
                 "enclave_id": "01".repeat(32),
+                "created_at": 1_800_000_000,
                 "deadline": 1_800_000_600,
             })
         );
+    }
+
+    #[test]
+    fn a_job_request_without_created_at_remains_compatible() {
+        let request = serde_json::from_value::<JobRequest>(json!({
+            "job_id": "3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a",
+            "object_key": "pcp/3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a",
+            "sub": "sub",
+            "attested_key_thumbprint": "key",
+            "enclave_id": "01".repeat(32),
+            "deadline": 1_800_000_600,
+        }))
+        .expect("legacy job request should parse");
+
+        assert_eq!(request.created_at, None);
     }
 
     #[test]
