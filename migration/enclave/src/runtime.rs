@@ -17,7 +17,7 @@ use di_migration_enclave::{
 use di_migration_enclave_primitives::{MAX_MIGRATION_DIAGNOSTIC_BYTES, PONTIFEX_PORT};
 use pontifex::SecureModule;
 use tabernaculum::{
-    ConnectionConfig, ConnectionError, Limits, Policy, SandboxConfig, Worker,
+    ConnectionConfig, ConnectionError, Limits, Policy, SandboxConfig, Worker, WorkerOutput,
     bundle::{
         BootstrapConfig,
         enclave::{self, Bootstrap},
@@ -48,6 +48,7 @@ pub(super) fn run() -> anyhow::Result<()> {
     let runtime = boot.runtime();
     tracing::info!(worker_sha384 = %runtime.sha384, "worker executable provisioned");
     let pipeline_version = runtime.sha384.clone();
+    let output = worker_output().context("failed to read the boot measurements")?;
     let (worker, ready) = Worker::spawn(
         &runtime.binary,
         SandboxConfig {
@@ -57,6 +58,7 @@ pub(super) fn run() -> anyhow::Result<()> {
                 max_threads: 32,
             },
             policy: &SANDBOX_POLICY,
+            output,
         },
         ConnectionConfig {
             // Leave time inside the host's default five-minute request budget for PCP assembly.
@@ -79,6 +81,22 @@ pub(super) fn run() -> anyhow::Result<()> {
         .build()
         .context("failed to start enclave executor")?
         .block_on(serve(boot, SandboxWorker::new(worker, pipeline_version)))
+}
+
+/// Worker output can carry biometric diagnostics, so only a debug enclave exposes it.
+fn worker_output() -> anyhow::Result<WorkerOutput> {
+    // A local handle: the global one needs the async runtime, which must start after the fork.
+    let nsm = SecureModule::connect()?;
+    let document = nsm.attest(None::<Vec<u8>>, None::<Vec<u8>>, None::<Vec<u8>>)?;
+    nsm.disconnect();
+    if !attestation::has_zeroed_measurements(&document) {
+        return Ok(WorkerOutput::Discard);
+    }
+    tracing::warn!(
+        dependency = "worker",
+        "debug enclave: worker stdout/stderr go to the console"
+    );
+    Ok(WorkerOutput::Inherit)
 }
 
 /// A dead worker cannot be replaced within a boot; init tears the enclave down on exit.

@@ -4,7 +4,7 @@
 # the digest covers the artifact whose PCRs clients attest. Context is build-enclaves.sh's output
 # dir, so EIF_FILE is a bare filename:
 #   docker build -f scripts/Dockerfile.provisioner --build-arg EIF_FILE=di-<workload>-enclave.eif target/eif
-FROM ghcr.io/worldcoin/tabernaculum-provisioner:v0.1.0@sha256:a7d2f60029e3731193c2f134a05726d1a04fd5bf7e60bb1590dd1398761d8783
+FROM ghcr.io/worldcoin/tabernaculum-provisioner:v0.3.0@sha256:0aaf106ecc04eac0572d916bbfeaddf96b1fa9a78803ef22708b6a60832b68a6
 
 ARG EIF_FILE
 COPY ${EIF_FILE} /home/enclave.eif
