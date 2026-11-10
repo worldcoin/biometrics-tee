@@ -4,7 +4,7 @@
 //! The authenticated enrollment channel must supply the user's custody public key.
 //! This helper checks its cryptographic suitability, not ownership or provenance.
 
-use std::io::{self, Cursor, Write};
+use std::io::{self, Write};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use crypto_box::PublicKey;
@@ -161,12 +161,8 @@ pub fn encrypt<R: Rng + CryptoRng>(
     if capacity > MAX_PACKAGE_BYTES {
         return Err(Error::TooLarge);
     }
-    let mut plaintext = Zeroizing::new(vec![0; capacity]);
-    let length = {
-        let encoder = GzEncoder::new(
-            Cursor::new(plaintext.as_mut_slice()),
-            Compression::default(),
-        );
+    let plaintext = {
+        let encoder = GzEncoder::new(ArchiveBuffer::new(capacity), Compression::default());
         let mut archive = Builder::new(encoder);
         for (name, bytes) in &mut entries {
             append(&mut archive, name, bytes)?;
@@ -186,11 +182,40 @@ pub fn encrypt<R: Rng + CryptoRng>(
             .map_err(|_| Error::Serialization)?
             .finish()
             .map_err(|_| Error::Serialization)?
-            .position() as usize
+            .bytes
     };
     custody_key
-        .seal(rng, &plaintext[..length])
+        .seal(rng, &plaintext)
         .map_err(|_| Error::Encryption)
+}
+
+struct ArchiveBuffer {
+    bytes: Zeroizing<Vec<u8>>,
+    limit: usize,
+}
+
+impl ArchiveBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Zeroizing::new(Vec::with_capacity(limit)),
+            limit,
+        }
+    }
+}
+
+impl Write for ArchiveBuffer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        // Reject before extending so reallocation cannot leave unwiped plaintext behind.
+        if bytes.len() > self.limit - self.bytes.len() {
+            return Err(io::Error::other("custody archive size limit exceeded"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn append<W: Write>(archive: &mut Builder<W>, name: &str, bytes: &[u8]) -> Result<(), Error> {
@@ -226,4 +251,24 @@ fn json(value: &impl Serialize) -> Result<Zeroizing<Vec<u8>>, Error> {
     let mut bytes = Zeroizing::new(vec![0; size.0]);
     serde_json::to_writer(bytes.as_mut_slice(), value).map_err(|_| Error::Serialization)?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_buffer_rejects_overflow_without_reallocating() {
+        let mut buffer = ArchiveBuffer::new(4);
+        let allocation = buffer.bytes.as_ptr();
+        assert!(buffer.bytes.is_empty());
+        buffer.write_all(b"ab").unwrap();
+        assert!(buffer.write_all(b"cde").is_err());
+        assert_eq!(&*buffer.bytes, b"ab");
+        buffer.write_all(b"cd").unwrap();
+        assert!(buffer.write_all(b"e").is_err());
+        buffer.write_all(b"").unwrap();
+        assert_eq!(&*buffer.bytes, b"abcd");
+        assert_eq!(buffer.bytes.as_ptr(), allocation);
+    }
 }
