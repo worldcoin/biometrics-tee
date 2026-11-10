@@ -9,7 +9,7 @@ use anyhow::{Context, bail};
 use di_dev_enclave::{server, state::EnclaveState};
 use di_dev_enclave_primitives::PONTIFEX_PORT;
 use tabernaculum::{
-    ConnectionConfig, ConnectionError, Limits, Policy, SandboxConfig, Worker,
+    ConnectionConfig, ConnectionError, Limits, Policy, SandboxConfig, Worker, WorkerOutput,
     bundle::{
         BootstrapConfig,
         enclave::{self, Bootstrap},
@@ -32,13 +32,14 @@ pub(super) fn run() -> anyhow::Result<()> {
     let boot = enclave::accept(&BootstrapConfig::default(), Path::new(enclave::STAGING_DIR))
         .context("worker bundle provisioning failed")?;
     let runtime = boot.runtime();
-    tracing::info!(release_id = %runtime.release_id, worker_sha384 = %runtime.sha384, "worker executable provisioned");
+    tracing::info!(worker_sha384 = %runtime.sha384, "worker executable provisioned");
     let (worker, ready) = Worker::spawn(
         &runtime.binary,
         SandboxConfig {
             root: runtime.root.path(),
             limits: Limits::default(),
             policy: &POLICY,
+            output: WorkerOutput::Discard,
         },
         ConnectionConfig::default(),
         worker_failed,

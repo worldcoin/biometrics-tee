@@ -29,6 +29,9 @@ PCR1 and PCR2 are all present as 48-byte zero digests. These image measurements
 are zeroed in debug mode; parent-instance PCRs can remain nonzero. A false value
 does not establish verified code identity or replace attestation verification.
 
+In debug mode the worker's stdout and stderr go to the enclave console
+(`nitro-cli console`); a measured enclave discards them.
+
 | Enclave outcome | `signup_status` | `signup_reason` |
 |---|---|---|
 | PCP prepared and sealed | `Success` | `Normal` |

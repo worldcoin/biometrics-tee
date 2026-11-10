@@ -6,6 +6,7 @@ use crate::AppState;
 /// Waiting plus running jobs and the cap, which the API's admission poll sums across hosts.
 pub async fn handler(State(state): State<AppState>) -> Json<Capacity> {
     let queue = state.queue();
+    queue.refresh_metrics();
     Json(Capacity {
         queued: queue.queued(),
         capacity: queue.capacity().get(),
