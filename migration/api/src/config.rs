@@ -34,6 +34,14 @@ pub struct Config {
     /// host queue, (queue cap + 1) times the job time.
     #[arg(long, env = "JOB_DEADLINE_SECS", default_value_t = 600)]
     pub job_deadline_secs: u64,
+    /// Job and lock row retention after init. Configure alongside the PCP bucket lifecycle.
+    #[arg(
+        long,
+        env = "JOB_RETENTION_SECS",
+        default_value_t = 14 * 24 * 60 * 60,
+        value_parser = clap::value_parser!(u64).range(1..=i64::MAX as u64)
+    )]
+    pub job_retention_secs: u64,
     /// LocalStack and other S3-compatible endpoints only serve path-style addressing.
     #[arg(long, env = "S3_FORCE_PATH_STYLE", default_value_t = false, action = clap::ArgAction::Set)]
     pub s3_force_path_style: bool,
@@ -167,5 +175,43 @@ impl Config {
         }
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(extra: &[&str]) -> Result<Config, clap::Error> {
+        Config::try_parse_from(
+            [
+                "migration-api",
+                "--dynamodb-table-name=test-jobs",
+                "--pcp-bucket=test-pcp",
+                "--proof-verification-host=http://localhost:8080",
+                "--proof-jwt-kms-key-id=test-key",
+                "--host-service=hosts.local",
+            ]
+            .into_iter()
+            .chain(extra.iter().copied()),
+        )
+    }
+
+    #[test]
+    fn job_retention_defaults_to_two_weeks_and_can_be_overridden() {
+        assert_eq!(parse(&[]).unwrap().job_retention_secs, 1_209_600);
+        assert_eq!(
+            parse(&["--job-retention-secs=3600"])
+                .unwrap()
+                .job_retention_secs,
+            3600
+        );
+    }
+
+    #[test]
+    fn job_retention_rejects_invalid_seconds() {
+        for value in ["0", "-1", "invalid", "18446744073709551615"] {
+            assert!(parse(&[&format!("--job-retention-secs={value}")]).is_err());
+        }
     }
 }

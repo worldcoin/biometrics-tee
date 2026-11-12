@@ -56,6 +56,8 @@ struct AppState {
     upload_window: Duration,
     /// How long after migrate an unfinished job counts as timed out.
     job_deadline: Duration,
+    /// How long job and lock rows are retained after init.
+    job_retention: Duration,
     /// The port every host serves its internal API on.
     host_port: u16,
     verifier: Arc<proof::Verifier>,
@@ -104,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
         presigned_url_ttl: config.presigned_url_ttl,
         upload_window: Duration::from_secs(config.upload_window_secs),
         job_deadline: Duration::from_secs(config.job_deadline_secs),
+        job_retention: Duration::from_secs(config.job_retention_secs),
         host_port: config.host_port,
         verifier: Arc::new(verifier),
         fleet,
@@ -378,6 +381,7 @@ mod tests {
             presigned_url_ttl: Duration::from_secs(300),
             upload_window: Duration::from_secs(420),
             job_deadline: Duration::from_secs(600),
+            job_retention: Duration::from_secs(14 * 24 * 60 * 60),
             host_port: 9,
             verifier: verifier(proof::Verdict::Accepted),
             fleet: fleet(Vec::new()),
@@ -431,7 +435,8 @@ mod tests {
     async fn init_admits_places_and_pins_the_job() {
         let host = host(0, 4).await;
         let writes = Arc::new(Mutex::new(Vec::new()));
-        let state = state(vec![host], dynamodb(Arc::clone(&writes)).await).await;
+        let mut state = state(vec![host], dynamodb(Arc::clone(&writes)).await).await;
+        state.job_retention = Duration::from_secs(3600);
 
         let response = routes::router(state).oneshot(valid_init()).await.unwrap();
 
@@ -456,6 +461,9 @@ mod tests {
         assert_eq!(job["enclave_id"]["S"], enclave_id().as_str());
         let lock = &writes[0]["TransactItems"][1]["Put"]["Item"];
         let created_at: u64 = job["created_at"]["N"].as_str().unwrap().parse().unwrap();
+        let expected_ttl = (created_at + 3600).to_string();
+        assert_eq!(job["ttl"]["N"], expected_ttl);
+        assert_eq!(lock["ttl"]["N"], expected_ttl);
         let active_until: u64 = lock["active_until"]["N"].as_str().unwrap().parse().unwrap();
         assert_eq!(
             active_until,
