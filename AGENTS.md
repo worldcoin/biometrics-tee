@@ -1,15 +1,5 @@
 # Agent guidelines
 
-## You are the owner of this codebase
-
-Treat every change as code you will maintain and debug later:
-
-- Optimize for the next reader over quick local patches.
-- Read and understand the surrounding code before changing it.
-- Fix root causes instead of papering over symptoms.
-- Keep changes small. When you find work outside the task's scope, leave a `TODO` and mention it in your summary instead of expanding the change.
-- Push back when a request is wrong or a better approach exists.
-
 ## Code style
 
 Write readable, self-explanatory code.
