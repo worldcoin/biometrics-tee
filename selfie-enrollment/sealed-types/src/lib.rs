@@ -257,13 +257,12 @@ fn encode<T: Serialize>(value: &T) -> Result<Zeroizing<Vec<u8>>, Error> {
 }
 /// A big-endian `u32` body length, the body, then zeros up to exactly `size` bytes.
 fn encode_padded<T: Serialize>(value: &T, size: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
-    let body = encode(value)?;
-    if body.len() > size - 4 {
-        return Err(Error);
-    }
+    let body_capacity = size.checked_sub(4).ok_or(Error)?;
     let mut padded = Zeroizing::new(vec![0; size]);
-    padded[..4].copy_from_slice(&(body.len() as u32).to_be_bytes());
-    padded[4..4 + body.len()].copy_from_slice(&body);
+    let mut remaining = &mut padded[4..];
+    ciborium::into_writer(value, &mut remaining).map_err(|_| Error)?;
+    let length = u32::try_from(body_capacity - remaining.len()).map_err(|_| Error)?;
+    padded[..4].copy_from_slice(&length.to_be_bytes());
     Ok(padded)
 }
 fn decode_padded<T: DeserializeOwned>(bytes: &[u8], size: usize) -> Result<T, Error> {
@@ -430,7 +429,20 @@ mod tests {
             reason: Failure::InvalidImage,
         };
         let mut encoded = response.encode().unwrap();
+        let body = encode(&response).unwrap();
         assert_eq!(encoded.len(), PADDED_RESULT_BYTES);
+        assert_eq!(
+            u32::from_be_bytes(encoded[..4].try_into().unwrap()) as usize,
+            body.len()
+        );
+        assert_eq!(&encoded[4..4 + body.len()], body.as_slice());
+        assert!(encoded[4 + body.len()..].iter().all(|&byte| byte == 0));
+        assert_eq!(
+            &encode_padded(&response, 4 + body.len()).unwrap()[4..],
+            body.as_slice()
+        );
+        assert!(encode_padded(&response, 3 + body.len()).is_err());
+        assert!(encode_padded(&response, 3).is_err());
         assert!(EmbeddingResult::decode(&encoded).is_ok());
         encoded[PADDED_RESULT_BYTES - 1] = 1;
         assert!(EmbeddingResult::decode(&encoded).is_err());
