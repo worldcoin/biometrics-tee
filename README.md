@@ -49,13 +49,12 @@ Debug reports may contain up to 2 MiB (2,097,152 bytes) of plaintext JSON. The
 sealed size limit includes Pontifex overhead. The worker response budget is 3 MiB
 to accommodate the report alongside the biometric result.
 
-The migration API's `JOB_RETENTION_SECS` (or `--job-retention-secs`) sets the
-DynamoDB job and lock row TTL from init, defaulting to 1,209,600 seconds (two weeks).
-It applies to newly created jobs; existing rows keep their stored TTL. DynamoDB
-TTL cleanup is asynchronous. This setting does not delete S3 objects or change
-the presigned URL lifetime (`PRESIGNED_URL_TTL_SECS`, default 300 seconds).
-Configure it alongside the PCP bucket's lifecycle policy. S3 lifecycle cleanup
-is asynchronous too.
+`JOB_RETENTION_SECS` (or `--job-retention-secs`) controls how long new DynamoDB
+job and lock records are retained after init. The default is two weeks
+(1,209,600 seconds); existing records keep their original expiration.
+Configure S3 object retention separately through the PCP bucket's lifecycle
+policy. Both DynamoDB and S3 delete expired data asynchronously. Presigned links
+use `PRESIGNED_URL_TTL_SECS`, which defaults to five minutes (300 seconds).
 
 The [migration debug report](migration/enclave/README.md) contains debug information
 about the TEE migration.
