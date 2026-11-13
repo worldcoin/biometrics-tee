@@ -2,6 +2,22 @@
 
 WIP
 
+After saving the migrated PCP, call the signed `POST /v1/migrations/{sub}/ack`
+endpoint with JSON `{"job_id": "<job ID>"}` from the status response
+(Rust client: `MigrationApiClient::acknowledge`). It requires the device
+key used at init and a `migrated` job; created, running (including timed-out), and
+failed jobs return 409. A successful call returns 204 after deleting `pcp/{job_id}`
+and `result/{job_id}` from S3 and setting the job's `acknowledged` flag in DynamoDB.
+Subsequent status requests return 200 OK with `acknowledged: true`, without PCP
+or debug report links or their expiries. Debug report objects
+retain their existing retention policy. Repeating acknowledgement still returns 204.
+
+Deletion or table-write failures return a retryable 503. Repeating acknowledgement
+is safe, including after a partial deletion. The API's IAM role needs
+`s3:DeleteObject` on the input and result prefixes. S3 lifecycle retention remains
+necessary for abandoned jobs, retained object versions in versioned buckets, and
+objects re-uploaded through a still-valid presigned upload URL.
+
 The host emits `migration.host.job_failures`, tagged with the public `reason` value.
 It counts each failed attempt observed by the runner, including jobs skipped after
 their queue deadline, even if recording the outcome in DynamoDB fails. It is not

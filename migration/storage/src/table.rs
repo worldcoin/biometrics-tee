@@ -229,6 +229,8 @@ pub struct JobRecord {
     pub result_key: Option<String>,
     /// Signup ID of the migrated PCP, set on success.
     pub signup_id: Option<String>,
+    /// Both PCP objects were deleted after download acknowledgement; false for older rows.
+    pub acknowledged: bool,
 }
 
 /// A transaction item failed its condition.
@@ -361,7 +363,16 @@ impl JobTable {
         let job_id: JobId = text(&lock, attributes::JOB_ID)?
             .parse()
             .map_err(|_| malformed(attributes::JOB_ID))?;
-        let Some(row) = self.get(&row_id(&job_id)).await? else {
+        self.job_by_id(&job_id).await
+    }
+
+    /// Reads a specific job, including one superseded by a newer migration for its subject.
+    ///
+    /// # Errors
+    ///
+    /// A read timed out or failed, or the stored row is malformed.
+    pub async fn job_by_id(&self, job_id: &JobId) -> Result<Option<JobRecord>, StorageError> {
+        let Some(row) = self.get(&row_id(job_id)).await? else {
             return Ok(None);
         };
 
@@ -383,9 +394,46 @@ impl JobTable {
             completed_at: unsigned(&row, attributes::COMPLETED_AT)?,
             deadline: unsigned(&row, attributes::DEADLINE)?,
             signup_id: optional_text(&row, attributes::SIGNUP_ID).map(str::to_owned),
+            acknowledged: row
+                .get(attributes::ACKNOWLEDGED)
+                .map(|value| {
+                    value
+                        .as_bool()
+                        .copied()
+                        .map_err(|_| malformed(attributes::ACKNOWLEDGED))
+                })
+                .transpose()?
+                .unwrap_or(false),
             result_key: optional_text(&row, attributes::RESULT_KEY).map(str::to_owned),
-            job_id,
+            job_id: job_id.clone(),
         }))
+    }
+
+    /// Records acknowledgement after both PCP objects have been deleted. Repeating is safe.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::NotMigrated`] if the job is missing or not migrated, or the write failed.
+    pub async fn acknowledge(&self, job_id: &JobId) -> Result<(), StorageError> {
+        const OPERATION: &str = "DynamoDB TransactWriteItems";
+        let update = Update::builder()
+            .table_name(&self.table_name)
+            .key(attributes::ID, string(&row_id(job_id)))
+            .update_expression("SET #acknowledged = :acknowledged")
+            .condition_expression("#status = :migrated")
+            .expression_attribute_names("#acknowledged", attributes::ACKNOWLEDGED)
+            .expression_attribute_names("#status", attributes::STATUS)
+            .expression_attribute_values(":acknowledged", AttributeValue::Bool(true))
+            .expression_attribute_values(":migrated", string(Status::Migrated.as_str()))
+            .build()
+            .map_err(|error| failed(OPERATION, &error))?;
+        match self
+            .transact(vec![TransactWriteItem::builder().update(update).build()])
+            .await?
+        {
+            Transaction::Committed => Ok(()),
+            Transaction::Rejected(_) => Err(StorageError::NotMigrated),
+        }
     }
 
     /// Moves a `created` job to `migrating` with `deadline`, and keeps its `sub`'s lock active
@@ -784,6 +832,18 @@ mod tests {
             .expect_err("should skip");
 
         assert_eq!(error, StorageError::NotMigrating);
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_requires_a_migrated_job() {
+        let (store, _) = fake(
+            StatusCode::BAD_REQUEST,
+            r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException","message":"canceled","CancellationReasons":[{"Code":"ConditionalCheckFailed"}]}"#,
+        ).await;
+        assert_eq!(
+            store.acknowledge(&id()).await,
+            Err(StorageError::NotMigrated)
+        );
     }
 
     #[tokio::test]
