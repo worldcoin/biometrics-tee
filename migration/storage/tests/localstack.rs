@@ -198,9 +198,15 @@ async fn a_finished_job_frees_its_sub_but_a_late_one_stays_timed_out() {
     jobs.claim(&done.job_id, "sub-e", NOW + 60, deadline)
         .await
         .expect("claimed");
-    jobs.mark_migrated(&done.job_id, "sub-e", "result/done", deadline)
-        .await
-        .expect("the last second of the deadline still records");
+    jobs.mark_migrated(
+        &done.job_id,
+        "sub-e",
+        "result/done",
+        "new-signup-id",
+        deadline,
+    )
+    .await
+    .expect("the last second of the deadline still records");
     let latest = jobs.latest_job("sub-e").await.expect("read").expect("job");
     assert_eq!(latest.status, Status::Migrated);
     assert_eq!(latest.result_key.as_deref(), Some("result/done"));

@@ -367,7 +367,13 @@ async fn a_migration_runs_from_init_to_download() {
         .await
         .expect("the host writes the result");
     JobTable::new(resources.dynamodb.clone(), resources.table.clone())
-        .mark_migrated(&job.job_id, &sub, &result_key, job.deadline - 1)
+        .mark_migrated(
+            &job.job_id,
+            &sub,
+            &result_key,
+            "new-signup-id",
+            job.deadline - 1,
+        )
         .await
         .expect("the host marks the job migrated");
 

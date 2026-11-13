@@ -2392,6 +2392,7 @@ dependencies = [
  "di-migration-storage",
  "di-migration-telemetry",
  "http-body-util",
+ "orb-wld-data-id",
  "pontifex",
  "serde",
  "serde_json",

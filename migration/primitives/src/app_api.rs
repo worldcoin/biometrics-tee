@@ -48,6 +48,9 @@ pub struct MigrateResponse {
 /// `200` body of `GET /v1/migrations/{sub}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrationStatus {
+    /// Signup ID of the migrated PCP, present once migration succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signup_id: Option<String>,
     /// The job's state; a `migrating` job past its deadline reads as `failed`.
     pub status: Status,
     /// Why it failed, once `failed`.

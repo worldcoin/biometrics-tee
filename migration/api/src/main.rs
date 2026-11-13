@@ -1159,6 +1159,7 @@ mod tests {
             "migrated",
             now(),
             &[
+                ("signup_id", serde_json::json!({"S": "new-signup-id"})),
                 (
                     "result_key",
                     serde_json::json!({"S": format!("result/{JOB_ID}")}),
@@ -1194,6 +1195,7 @@ mod tests {
             let body = json(response).await;
             assert_eq!(body["error"]["code"], expected_code);
             assert_eq!(body["allowRetry"], false);
+            assert!(body.get("signup_id").is_none());
             assert!(body.get("download_url").is_none());
             assert!(body.get("download_expires_at").is_none());
         }
@@ -1206,6 +1208,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = json(response).await;
         assert_eq!(body["status"], "migrated");
+        assert_eq!(body["signup_id"], "new-signup-id");
         let url = body["download_url"].as_str().unwrap();
         assert!(
             url.contains(&format!("/test-bucket/result/{JOB_ID}")),

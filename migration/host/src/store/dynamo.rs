@@ -26,9 +26,14 @@ impl JobStore for DynamoJobStore {
         self.table.check_ready().await
     }
 
-    async fn mark_migrated(&self, job: &JobRequest, result_key: &str) -> Result<(), StoreError> {
+    async fn mark_migrated(
+        &self,
+        job: &JobRequest,
+        result_key: &str,
+        signup_id: &str,
+    ) -> Result<(), StoreError> {
         self.table
-            .mark_migrated(&job.job_id, &job.sub, result_key, unix_now())
+            .mark_migrated(&job.job_id, &job.sub, result_key, signup_id, unix_now())
             .await
     }
 

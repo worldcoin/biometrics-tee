@@ -35,7 +35,12 @@ pub trait JobStore: Send + Sync {
     async fn check_ready(&self) -> Result<(), StoreError>;
 
     /// Marks a `migrating` job `migrated` and frees its `sub`, unless it is past its deadline.
-    async fn mark_migrated(&self, job: &JobRequest, result_key: &str) -> Result<(), StoreError>;
+    async fn mark_migrated(
+        &self,
+        job: &JobRequest,
+        result_key: &str,
+        signup_id: &str,
+    ) -> Result<(), StoreError>;
 
     /// Marks a `migrating` job `failed` with an optional encrypted diagnostic result key.
     /// Frees its `sub`, unless it is past its deadline.
