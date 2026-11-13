@@ -141,6 +141,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(status.reason, Some(Reason::Unknown));
+        assert!(!status.reason.unwrap().is_retriable());
         assert_eq!(status.deadline, Some(123));
         // Storage parsing remains strict.
         assert!("future_backend_reason".parse::<Reason>().is_err());
