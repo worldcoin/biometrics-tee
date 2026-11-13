@@ -2,9 +2,16 @@
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
+/// Sealed enrollment requests: a capture becomes an attested v2 web enrollment and a PCP.
+pub const ENROLLMENT_PROTOCOL_VERSION: u32 = 2;
 pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_REQUEST_BYTES: usize = MAX_IMAGE_BYTES + 8192;
-pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 + 8192;
+/// A sealed Face PCP: the image plus bounded metadata, archive overhead and a 48-byte sealed box.
+pub const MAX_ENCRYPTED_PCP_BYTES: usize = MAX_IMAGE_BYTES + 256 * 1024 + 48;
+/// Every enrollment result is padded to this size, so its length reveals nothing to the host.
+pub const PADDED_ENROLLMENT_RESULT_BYTES: usize = MAX_ENCRYPTED_PCP_BYTES + 64 * 1024;
+/// Largest sealed response: an enrollment result plus channel encryption overhead.
+pub const MAX_RESPONSE_BYTES: usize = PADDED_ENROLLMENT_RESULT_BYTES + 8192;
 pub const MAX_CONTROL_BYTES: usize = 32 * 1024;
 pub const CHANNEL_DOMAIN: &str = "selfie-enrollment/embedding/v1";
 

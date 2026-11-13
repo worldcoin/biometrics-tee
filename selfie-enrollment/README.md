@@ -1,6 +1,6 @@
 # Selfie Check enrollment: embedding extraction
 
-This application follows Flamingo's public host / measured enclave / private sandboxed worker split. It exposes one operation: extract an embedding from a VanillaSelfie image. It does not issue credentials, construct a PCP or implement interactive biometric challenges.
+This application follows Flamingo's public host / measured enclave / private sandboxed worker split. It exposes two sealed operations on the same attested channel. Protocol version 1 extracts an embedding from a VanillaSelfie image. Protocol version 2 enrolls a capture: the request carries the image, the browser's canonical v4 `sub` and the user's X25519 custody public key, and the result carries signup-service's 12 attested v2 fields, the `X-Nitro-Attestation` value and the user's Face PCP sealed to that custody key, padded to a fixed size. The browser keeps the PCP, adds its v4 challenge and ownership proof, and submits `PUT /api/v2/identity` itself. Enrollment requests fail as unavailable until the release supplies the Face-AMPC party keys. The enclave does not issue credentials or implement interactive biometric challenges.
 
 ## Protocol
 
@@ -12,7 +12,7 @@ The public enclave broker is measured and pinned by the client. Private worker r
 
 Successful results use `FaceEmbedding` with the existing PCP field names: `embedding`, `embedding_type`, `embedding_version`, and `embedding_inference_backend`. These values are preserved verbatim for PCP construction. Capture context, images, shares and credentials belong to the enrollment/package layer.
 
-The sealed CBOR request contains protocol version 1 and an image of at most 8 MiB. The enclave permits one worker operation at a time. Assignments reserve no state and have no per-request expiry; replaying valid ciphertext during the same enclave boot can repeat inference. A restart changes the channel key, so old ciphertext returns `reassign_required`. A response carries either a typed image/quality failure or the original worker vector encoding, type, version and inference backend. Responses are padded to 64 KiB before sealing. Response encryption is not an independently attested or signed extraction statement; credential-issuance verification is outside this protocol. No image, embedding or worker debug report is logged or persisted by the host. Biometric plaintext types erase their owned buffers on drop.
+The sealed CBOR request contains its protocol version and an image of at most 8 MiB. The enclave permits one worker operation at a time. Assignments reserve no state and have no per-request expiry; replaying valid ciphertext during the same enclave boot can repeat inference. A restart changes the channel key, so old ciphertext returns `reassign_required`. A response carries either a typed image/quality failure or the original worker vector encoding, type, version and inference backend. Responses are padded to 64 KiB before sealing. Response encryption is not an independently attested or signed extraction statement; credential-issuance verification is outside this protocol. No image, embedding or worker debug report is logged or persisted by the host. Biometric plaintext types erase their owned buffers on drop.
 
 ## Layout and dependencies
 

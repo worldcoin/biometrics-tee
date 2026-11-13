@@ -49,6 +49,13 @@ Debug reports may contain up to 2 MiB (2,097,152 bytes) of plaintext JSON. The
 sealed size limit includes Pontifex overhead. The worker response budget is 3 MiB
 to accommodate the report alongside the biometric result.
 
+`JOB_RETENTION_SECS` (or `--job-retention-secs`) controls how long new DynamoDB
+job and lock records are retained after init. The default is two weeks
+(1,209,600 seconds); existing records keep their original expiration.
+Configure S3 object retention separately through the PCP bucket's lifecycle
+policy. Both DynamoDB and S3 delete expired data asynchronously. Presigned links
+use `PRESIGNED_URL_TTL_SECS`, which defaults to five minutes (300 seconds).
+
 The [migration debug report](migration/enclave/README.md) contains debug information
 about the TEE migration.
 

@@ -7,6 +7,7 @@ use std::{
 
 use di_migration_enclave_primitives::{self as enclave_primitives, MigrateRequest};
 use di_migration_primitives::{Reason, host_api::JobRequest};
+use orb_wld_data_id::{S3Region, SignupId};
 use telemetry_batteries::reexports::metrics;
 
 use crate::{
@@ -67,7 +68,11 @@ impl JobRunner {
         let outcome = if result.is_ok() { "migrated" } else { "failed" };
         metrics::counter!("migration.host.job_outcomes", "outcome" => outcome).increment(1);
         let recorded = match result {
-            Ok(result_key) => self.job_store.mark_migrated(job, &result_key).await,
+            Ok((result_key, signup_id)) => {
+                self.job_store
+                    .mark_migrated(job, &result_key, &signup_id)
+                    .await
+            }
             Err(reason) => {
                 // Count the observed failure even if persisting the outcome fails.
                 metrics::counter!("migration.host.job_failures", "reason" => reason.as_str())
@@ -96,7 +101,10 @@ impl JobRunner {
         }
     }
 
-    async fn migrate(&self, job: &JobRequest) -> (Result<String, Reason>, Option<Vec<u8>>) {
+    async fn migrate(
+        &self,
+        job: &JobRequest,
+    ) -> (Result<(String, String), Reason>, Option<Vec<u8>>) {
         let blob = match self
             .blob_store
             .get_pcp(&job.object_key)
@@ -124,10 +132,12 @@ impl JobRunner {
             reason
         };
 
+        let signup_id = SignupId::new(S3Region::UsEast1).to_string();
         let started_at = Instant::now();
         let migration = self
             .enclave_client
             .migrate(MigrateRequest {
+                signup_id: signup_id.clone(),
                 blob,
                 sub: job.sub.clone(),
             })
@@ -138,7 +148,7 @@ impl JobRunner {
         )
         .record(started_at.elapsed().as_secs_f64());
         let (pcp, debug_report) = match migration {
-            Ok(response) => (Ok(response.pcp), response.debug_report),
+            Ok(response) => (Ok((response.pcp, signup_id)), response.debug_report),
             Err(error) => {
                 let reason = failure_reason(&error);
                 let debug_report = match error {
@@ -150,11 +160,11 @@ impl JobRunner {
         };
 
         let result = match pcp {
-            Ok(pcp) if pcp.is_empty() => {
+            Ok((pcp, _)) if pcp.is_empty() => {
                 tracing::error!(job_id = %job.job_id, "enclave returned no result artifact");
                 Err(Reason::EnclaveError)
             }
-            Ok(pcp) => self.blob_store.put_result(&job.job_id, pcp).await.map_err(|error| {
+            Ok((pcp, signup_id)) => self.blob_store.put_result(&job.job_id, pcp).await.map(|key| (key, signup_id)).map_err(|error| {
                 tracing::error!(job_id = %job.job_id, %error, dependency = "s3", "failed to write the result");
                 Reason::S3Error
             }),
@@ -257,6 +267,7 @@ mod tests {
 
     use di_migration_enclave_primitives as enclave_primitives;
     use di_migration_primitives::Reason;
+    use orb_wld_data_id::SignupId;
 
     use super::{JobRunner, operation_reason};
     use crate::{
@@ -288,6 +299,12 @@ mod tests {
 
         let migrations = enclave.migrations.lock().expect("migrations lock");
         assert_eq!(migrations.len(), 1);
+        let signup_id = &migrations[0].signup_id;
+        assert!(signup_id.parse::<SignupId>().is_ok());
+        assert_eq!(
+            store.signup_id(&job(1).job_id).as_deref(),
+            Some(signup_id.as_str())
+        );
         drop(migrations);
 
         assert_eq!(

@@ -57,6 +57,9 @@ pub fn run() -> anyhow::Result<()> {
         .block_on(async {
             attestation::connect().await?;
             let attestor = NsmAttestor;
+            // Sealed enrollment stays off (requests fail as `Unavailable`) until the release
+            // configuration supplies the Face-AMPC party keys for `State::with_enrollment`.
+            // The worker measurement is already verified: `runtime.sha384`.
             let mut state = State::new(Arc::new(attestor), Box::new(SandboxEngine::new(worker)))?;
             let refresh = state.refresh();
             let state = Arc::new(state);
