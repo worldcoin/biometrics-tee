@@ -434,10 +434,13 @@ async fn a_migration_runs_from_init_to_download() {
     let acknowledged = client
         .migration_status(&token, &signer, &sub)
         .await
-        .expect_err("acknowledged PCPs are gone");
-    assert!(
-        matches!(acknowledged, Error::Api { status: StatusCode::GONE, code } if code == "already_acknowledged")
-    );
+        .expect("acknowledged migration status");
+    assert!(acknowledged.acknowledged);
+    assert_eq!(acknowledged.status, Status::Migrated);
+    assert!(acknowledged.download_url.is_none());
+    assert!(acknowledged.download_expires_at.is_none());
+    assert!(acknowledged.debug_report_url.is_none());
+    assert!(acknowledged.debug_report_expires_at.is_none());
     assert!(
         JobTable::new(resources.dynamodb.clone(), resources.table.clone())
             .latest_job(&sub)

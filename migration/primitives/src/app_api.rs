@@ -111,6 +111,4 @@ pub mod codes {
     pub const EXPIRED: &str = "expired";
     /// The migration already finished.
     pub const INVALID_STATE: &str = "invalid_state";
-    /// The download was acknowledged and its PCPs were deleted; status returns 410.
-    pub const ALREADY_ACKNOWLEDGED: &str = "already_acknowledged";
 }

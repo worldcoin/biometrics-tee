@@ -1182,14 +1182,11 @@ mod tests {
             .oneshot(migrations_request("GET", "device-key"))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::GONE);
+        assert_eq!(response.status(), StatusCode::OK);
         let status = json(response).await;
-        assert_eq!(status["error"]["code"], "already_acknowledged");
-        assert_eq!(
-            status["error"]["message"],
-            "The migration download was already acknowledged and its PCPs were deleted"
-        );
-        assert_eq!(status["allowRetry"], false);
+        assert_eq!(status["acknowledged"], true);
+        assert_eq!(status["status"], "migrated");
+        assert!(status.get("error").is_none());
         assert!(status.get("download_url").is_none());
         assert!(status.get("download_expires_at").is_none());
         assert!(status.get("debug_report_url").is_none());

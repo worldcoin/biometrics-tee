@@ -8,8 +8,8 @@ endpoint with JSON `{"job_id": "<job ID>"}` from the status response
 key used at init and a `migrated` job; created, running (including timed-out), and
 failed jobs return 409. A successful call returns 204 after deleting `pcp/{job_id}`
 and `result/{job_id}` from S3 and setting the job's `acknowledged` flag in DynamoDB.
-Subsequent status requests return 410 Gone with error code `already_acknowledged`
-and `allowRetry: false`, without PCP or debug report links. Debug report objects
+Subsequent status requests return 200 OK with `acknowledged: true`, without PCP
+or debug report links or their expiries. Debug report objects
 retain their existing retention policy. Repeating acknowledgement still returns 204.
 
 Deletion or table-write failures return a retryable 503. Repeating acknowledgement

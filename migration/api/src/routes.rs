@@ -318,7 +318,7 @@ async fn acknowledge(
 /// The `sub`'s latest job. A `migrating` job past its deadline reads as `failed (timeout)`
 /// without a write; an unacknowledged `migrated` job carries a fresh download URL.
 /// Unacknowledged jobs may include a debug report URL when its lookup and signing succeed.
-/// Acknowledged migrations return 410 because their PCP objects have been deleted.
+/// Acknowledged migrations return their status without artifact links or S3 lookups.
 /// Ownership is checked against the stored attested key thumbprint before issuing a URL.
 async fn migration_status(
     State(state): State<AppState>,
@@ -326,9 +326,6 @@ async fn migration_status(
     Path(sub): Path<String>,
 ) -> Result<Json<MigrationStatus>, ApiError> {
     let (_, job) = owned_job(&state, &headers, &sub).await?;
-    if job.acknowledged {
-        return Err(ApiError::already_acknowledged());
-    }
     let now = unix_now();
     let mut status = MigrationStatus {
         job_id: Some(job.job_id.clone()),
@@ -343,6 +340,9 @@ async fn migration_status(
         debug_report_expires_at: None,
     };
     tracing::info!(%sub, job_id = %job.job_id, status = %job.status.as_str(), "migration status checked");
+    if job.acknowledged {
+        return Ok(Json(status));
+    }
     match job.status {
         Status::Migrating if job.deadline.is_some_and(|deadline| now > deadline) => {
             status.status = Status::Failed;
