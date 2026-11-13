@@ -11,8 +11,8 @@ use axum::{
 use di_migration_primitives::{
     JobId, Reason, Status,
     app_api::{
-        DEVICE_KEY_THUMBPRINT, InitMigrationRequest, InitMigrationResponse, MigrateResponse,
-        MigrationStatus,
+        AcknowledgeMigrationRequest, DEVICE_KEY_THUMBPRINT, InitMigrationRequest,
+        InitMigrationResponse, MigrateResponse, MigrationStatus,
     },
     host_api::JobRequest,
 };
@@ -43,6 +43,7 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(ready))
         .route("/v1/init-migration", post(init_migration))
         .route("/v1/migrations/{sub}", post(migrate).get(migration_status))
+        .route("/v1/migrations/{sub}/ack", post(acknowledge))
         .with_state(state)
 }
 
@@ -268,9 +269,56 @@ async fn migrate(
     }
 }
 
+/// Acknowledges a successful download. Terminal migrated jobs cannot be claimed again,
+/// so deletion cannot race a migration. Persist the flag only after both deletes succeed.
+async fn acknowledge(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(sub): Path<String>,
+    Json(request): Json<AcknowledgeMigrationRequest>,
+) -> Result<StatusCode, ApiError> {
+    let attested_key_thumbprint =
+        attested_key_thumbprint(&headers).ok_or_else(ApiError::invalid_device_key)?;
+    valid_sub(&sub)?;
+    let job = state
+        .jobs
+        .job_by_id(&request.job_id)
+        .await
+        .map_err(|error| ApiError::storage("dynamodb", error.to_string()))?
+        .ok_or_else(ApiError::not_found)?;
+    if job.attested_key_thumbprint != attested_key_thumbprint {
+        return Err(ApiError::device_key_mismatch());
+    }
+    match job.status {
+        Status::Created | Status::Migrating => return Err(ApiError::migration_in_progress()),
+        Status::Failed => return Err(ApiError::invalid_state()),
+        Status::Migrated => {}
+    }
+    if job.acknowledged {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    state
+        .bucket
+        .delete_pcps(&job.job_id)
+        .await
+        .map_err(|error| ApiError::storage("s3", error.to_string()))?;
+    state
+        .jobs
+        .acknowledge(&job.job_id)
+        .await
+        .map_err(|error| match error {
+            StorageError::NotMigrated => ApiError::invalid_state(),
+            error => ApiError::storage("dynamodb", error.to_string()),
+        })?;
+    counter!("migration.acknowledge", "outcome" => "acknowledged").increment(1);
+    tracing::info!(job_id = %job.job_id, "migration PCP download acknowledged");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// The `sub`'s latest job. A `migrating` job past its deadline reads as `failed (timeout)`
-/// without a write; a `migrated` one carries a fresh download URL.
-/// Any status may include a debug report URL when its S3 lookup and signing succeed.
+/// without a write; an unacknowledged `migrated` job carries a fresh download URL.
+/// Unacknowledged jobs may include a debug report URL when its lookup and signing succeed.
+/// Acknowledged migrations return 410 because their PCP objects have been deleted.
 /// Ownership is checked against the stored attested key thumbprint before issuing a URL.
 async fn migration_status(
     State(state): State<AppState>,
@@ -278,8 +326,13 @@ async fn migration_status(
     Path(sub): Path<String>,
 ) -> Result<Json<MigrationStatus>, ApiError> {
     let (_, job) = owned_job(&state, &headers, &sub).await?;
+    if job.acknowledged {
+        return Err(ApiError::already_acknowledged());
+    }
     let now = unix_now();
     let mut status = MigrationStatus {
+        job_id: Some(job.job_id.clone()),
+        acknowledged: job.acknowledged,
         signup_id: job.signup_id,
         status: job.status,
         reason: job.reason,

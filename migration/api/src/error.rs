@@ -159,6 +159,16 @@ impl ApiError {
         )
     }
 
+    /// The app acknowledged the download and the PCP objects were deleted.
+    pub const fn already_acknowledged() -> Self {
+        Self::new(
+            StatusCode::GONE,
+            codes::ALREADY_ACKNOWLEDGED,
+            "The migration download was already acknowledged and its PCPs were deleted",
+            false,
+        )
+    }
+
     /// The job failed, e.g. its host could not take it; the app must init again.
     pub const fn failed(reason: Reason) -> Self {
         Self::new(

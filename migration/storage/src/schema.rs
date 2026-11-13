@@ -13,6 +13,8 @@ pub mod attributes {
     pub const REASON: &str = "reason";
     /// Signup ID of the migrated PCP.
     pub const SIGNUP_ID: &str = "signup_id";
+    /// Both PCP objects were deleted after the app acknowledged the download.
+    pub const ACKNOWLEDGED: &str = "acknowledged";
     /// S3 key of the migrated PCP, or encrypted diagnostic on `failed`.
     pub const RESULT_KEY: &str = "result_key";
     /// The app's attested key thumbprint.
