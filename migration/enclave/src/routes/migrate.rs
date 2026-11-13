@@ -16,7 +16,7 @@ use di_worker_protocol::migration::{FailureCode, MigrationResult};
 use flate2::read::GzDecoder;
 use orb_pcp_defs::v1;
 use pontifex::channel::ResponseSealer;
-use rand::rngs::OsRng;
+use rand::{CryptoRng, Rng, rngs::OsRng};
 use tar::Archive;
 use world_id_primitives::{
     Credential, EdDSAPublicKey, poseidon::ds, sponge::hash_bytes_to_field_element,
@@ -311,6 +311,13 @@ fn prepare_biometrics(
     let right = right_iris.ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
 
     let shares = generate_shares(&left, &right, &iris_model_version, &iris_embedding_version)?;
+    let di_embedding_5_party_shares = generate_5_party_shares(
+        &left,
+        &right,
+        &iris_model_version,
+        &iris_embedding_version,
+        &mut OsRng,
+    )?;
 
     let left_normalized = left
         .normalized
@@ -349,6 +356,7 @@ fn prepare_biometrics(
             }),
         },
         di_embedding_shares: shares,
+        di_embedding_5_party_shares,
         left_normalized: orb_pcp::NormalizedIrisFrame {
             image: left_normalized.image,
             mask: left_normalized.mask,
@@ -433,6 +441,53 @@ fn generate_shares(
         }),
     });
     Ok(shares)
+}
+
+fn generate_5_party_shares<R: Rng + CryptoRng>(
+    left: &di_worker_protocol::migration::EyeResult,
+    right: &di_worker_protocol::migration::EyeResult,
+    model_version: &str,
+    embedding_version: &str,
+    rng: &mut R,
+) -> Result<[v1::DiIrisEmbeddingShares; 5], enclave_primitives::Error> {
+    let mut generate = |embedding: &[u8], eye: &'static str, mirrored: bool| {
+        di_migration_shares::generate_5_party(embedding, rng).map_err(|error| {
+            tracing::error!(%error, eye, mirrored, "failed to generate five-party embedding shares");
+            enclave_primitives::Error::EmbeddingShareGenerationFailed
+        })
+    };
+    let left_shares = generate(&left.embedding, "left", false)?;
+    let left_mirror_shares = generate(&left.mirror_embedding, "left", true)?;
+    let right_shares = generate(&right.embedding, "right", false)?;
+    let right_mirror_shares = generate(&right.mirror_embedding, "right", true)?;
+
+    Ok(std::array::from_fn(|recipient| v1::DiIrisEmbeddingShares {
+        share_v1: Some(v1::DiIrisEmbeddingShareV1 {
+            model_version: model_version.to_owned(),
+            shares_version: di_migration_shares::VERSION.to_owned(),
+            embedding_version: embedding_version.to_owned(),
+            left_share: left_shares[recipient]
+                .iter()
+                .copied()
+                .map(u32::from)
+                .collect(),
+            left_mirror_share: left_mirror_shares[recipient]
+                .iter()
+                .copied()
+                .map(u32::from)
+                .collect(),
+            right_share: right_shares[recipient]
+                .iter()
+                .copied()
+                .map(u32::from)
+                .collect(),
+            right_mirror_share: right_mirror_shares[recipient]
+                .iter()
+                .copied()
+                .map(u32::from)
+                .collect(),
+        }),
+    }))
 }
 
 fn parse_source_pcp(
@@ -554,8 +609,12 @@ mod tests {
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ResponseOpener};
     use world_id_primitives::{Credential, EdDSAPrivateKey, FieldElement};
 
-    use super::{SignupId, finish_migration, handler, prepare_biometrics, seal_debug_report};
+    use super::{
+        SignupId, finish_migration, generate_5_party_shares, handler, prepare_biometrics,
+        seal_debug_report,
+    };
     use crate::{state::EnclaveState, test_support, worker::MigrationOutput};
+    use rand::{SeedableRng, rngs::StdRng};
     use zeroize::Zeroizing;
 
     fn eye(embedding: u8, mirror_embedding: u8) -> EyeResult {
@@ -613,8 +672,103 @@ mod tests {
             assert_eq!(share.left_share.len(), EMBEDDING_SIZE);
             assert_eq!(share.right_mirror_share.len(), EMBEDDING_SIZE);
         }
+        for share in prepared.di_embedding_5_party_shares {
+            let share = share.share_v1.expect("versioned five-party share");
+            assert_eq!(share.model_version, "di-model");
+            assert_eq!(share.embedding_version, "di-embedding");
+            assert_eq!(share.shares_version, di_migration_shares::VERSION);
+            for vector in [
+                &share.left_share,
+                &share.left_mirror_share,
+                &share.right_share,
+                &share.right_mirror_share,
+            ] {
+                assert_eq!(vector.len(), EMBEDDING_SIZE);
+                assert!(vector.iter().all(|&value| u16::try_from(value).is_ok()));
+            }
+        }
         assert_eq!(prepared.left_normalized.image, &[1]);
         assert_eq!(prepared.right_normalized.mask_resized, &[4]);
+    }
+
+    #[test]
+    fn five_party_bundles_preserve_eye_mirror_and_recipient_order_with_fresh_shares() {
+        let left = eye((-8_i8).cast_unsigned(), 7);
+        let right = eye(6, (-7_i8).cast_unsigned());
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut expected_rng = rng.clone();
+        let bundles = generate_5_party_shares(&left, &right, "model", "embedding", &mut rng)
+            .expect("valid embeddings should share");
+        let expected = [
+            &left.embedding,
+            &left.mirror_embedding,
+            &right.embedding,
+            &right.mirror_embedding,
+        ]
+        .map(|input| di_migration_shares::generate_5_party(input, &mut expected_rng).unwrap());
+        let next = generate_5_party_shares(&left, &right, "model", "embedding", &mut rng)
+            .expect("repeated embeddings should share");
+        for (recipient, bundle) in bundles.iter().enumerate() {
+            let share = bundle
+                .share_v1
+                .as_ref()
+                .expect("versioned five-party share");
+            let next = next[recipient].share_v1.as_ref().unwrap();
+            assert_eq!(share.model_version, "model");
+            assert_eq!(share.embedding_version, "embedding");
+            assert_eq!(share.shares_version, di_migration_shares::VERSION);
+            for ((actual, expected), next) in [
+                &share.left_share,
+                &share.left_mirror_share,
+                &share.right_share,
+                &share.right_mirror_share,
+            ]
+            .into_iter()
+            .zip(&expected)
+            .zip([
+                &next.left_share,
+                &next.left_mirror_share,
+                &next.right_share,
+                &next.right_mirror_share,
+            ]) {
+                assert!(
+                    actual
+                        .iter()
+                        .copied()
+                        .eq(expected[recipient].iter().copied().map(u32::from))
+                );
+                assert_ne!(actual, next);
+            }
+        }
+    }
+
+    #[test]
+    fn five_party_generation_errors_propagate_for_each_eye_and_mirror() {
+        for vector in 0..4 {
+            for invalid in [vec![0; EMBEDDING_SIZE - 1], vec![8; EMBEDDING_SIZE]] {
+                let mut left = eye(0, 1);
+                let mut right = eye(2, 3);
+                match vector {
+                    0 => left.embedding = invalid,
+                    1 => left.mirror_embedding = invalid,
+                    2 => right.embedding = invalid,
+                    3 => right.mirror_embedding = invalid,
+                    _ => unreachable!(),
+                }
+                let error = generate_5_party_shares(
+                    &left,
+                    &right,
+                    "model",
+                    "embedding",
+                    &mut StdRng::seed_from_u64(42),
+                )
+                .expect_err("invalid embeddings must fail generation");
+                assert_eq!(
+                    error,
+                    enclave_primitives::Error::EmbeddingShareGenerationFailed
+                );
+            }
+        }
     }
 
     /// Seals `plaintext` to `state`'s key as the app does.

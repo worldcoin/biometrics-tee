@@ -310,6 +310,20 @@ pub fn pipeline() -> PreparedBiometrics {
                 }),
             }
         }),
+        di_embedding_5_party_shares: [1u32, 2, 3, 4, 5].map(|recipient| {
+            let base = 100 * recipient;
+            v1::DiIrisEmbeddingShares {
+                share_v1: Some(v1::DiIrisEmbeddingShareV1 {
+                    model_version: model(),
+                    shares_version: "test-five-party-shares".into(),
+                    embedding_version: encoding(),
+                    left_share: vec![base + 1, base + 2],
+                    left_mirror_share: vec![base + 3, base + 4],
+                    right_share: vec![base + 5, base + 6],
+                    right_mirror_share: vec![base + 7, base + 8],
+                }),
+            }
+        }),
         left_normalized: normalized(),
         right_normalized: normalized(),
         extra_normalized: Default::default(),
@@ -331,6 +345,7 @@ pub fn copy_pipeline(bio: &PreparedBiometrics) -> PreparedBiometrics {
         face_embeddings: bio.face_embeddings.clone(),
         di_embeddings: bio.di_embeddings.clone(),
         di_embedding_shares: bio.di_embedding_shares.clone(),
+        di_embedding_5_party_shares: bio.di_embedding_5_party_shares.clone(),
         left_normalized: frame(&bio.left_normalized),
         right_normalized: frame(&bio.right_normalized),
         extra_normalized: bio
@@ -451,6 +466,12 @@ pub fn open(package: &orb_pcp::Package, keys: &OutputKeys) -> Files {
         }
     }
     files
+}
+
+pub fn seal(plaintext: &[u8], recipient: &[u8; 32]) -> Result<Vec<u8>, alkali::AlkaliError> {
+    let mut ciphertext = vec![0; plaintext.len() + sealedbox::OVERHEAD_LENGTH];
+    sealedbox::encrypt(plaintext, recipient, &mut ciphertext)?;
+    Ok(ciphertext)
 }
 
 /// Open one encrypted tier, rejecting repeated archive members.
