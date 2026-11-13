@@ -53,8 +53,12 @@ pub struct MigrationStatus {
     pub signup_id: Option<String>,
     /// The job's state; a `migrating` job past its deadline reads as `failed`.
     pub status: Status,
-    /// Why it failed, once `failed`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Why it failed, once `failed`. Newer backend reasons deserialize as [`Reason::Unknown`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_reason"
+    )]
     pub reason: Option<Reason>,
     /// Unix seconds the job must finish by, once migrate was called.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,6 +79,14 @@ pub struct MigrationStatus {
     /// Unix seconds `debug_report_url` expires; poll again for a fresh URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug_report_expires_at: Option<u64>,
+}
+
+fn deserialize_reason<'de, D>(deserializer: D) -> Result<Option<Reason>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
+        .map(|reason| reason.map(|value| value.parse().unwrap_or(Reason::Unknown)))
 }
 
 /// Machine-readable error codes. A migrate whose dispatch failed answers with the [`Reason`]
@@ -98,4 +110,68 @@ pub mod codes {
     pub const EXPIRED: &str = "expired";
     /// The migration already finished.
     pub const INVALID_STATE: &str = "invalid_state";
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::MigrationStatus;
+    use crate::Reason;
+
+    #[test]
+    fn known_status_reasons_round_trip() {
+        for reason in Reason::ALL {
+            let status: MigrationStatus = serde_json::from_value(json!({
+                "status": "failed", "reason": reason.as_str(),
+            }))
+            .unwrap();
+            assert_eq!(status.reason, Some(reason));
+            assert_eq!(
+                serde_json::to_value(status).unwrap()["reason"],
+                reason.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn future_status_reasons_fall_back_to_unknown() {
+        let status: MigrationStatus = serde_json::from_value(json!({
+            "status": "failed", "reason": "future_backend_reason", "deadline": 123,
+        }))
+        .unwrap();
+        assert_eq!(status.reason, Some(Reason::Unknown));
+        assert_eq!(status.deadline, Some(123));
+        // Storage parsing remains strict.
+        assert!("future_backend_reason".parse::<Reason>().is_err());
+    }
+
+    #[test]
+    fn absent_status_reasons_remain_absent() {
+        for body in [
+            json!({"status": "created"}),
+            json!({"status": "created", "reason": null}),
+        ] {
+            let status: MigrationStatus = serde_json::from_value(body).unwrap();
+            assert_eq!(status.reason, None);
+            assert!(
+                serde_json::to_value(status)
+                    .unwrap()
+                    .get("reason")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn non_string_status_reasons_are_rejected() {
+        for reason in [json!(42), json!(true), json!([]), json!({})] {
+            assert!(
+                serde_json::from_value::<MigrationStatus>(json!({
+                    "status": "failed", "reason": reason,
+                }))
+                .is_err()
+            );
+        }
+    }
 }
