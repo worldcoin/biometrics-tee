@@ -34,6 +34,14 @@ pub struct Config {
     /// host queue, (queue cap + 1) times the job time.
     #[arg(long, env = "JOB_DEADLINE_SECS", default_value_t = 600)]
     pub job_deadline_secs: u64,
+    /// Job and lock row retention after init. Configure alongside the PCP bucket lifecycle.
+    #[arg(
+        long,
+        env = "JOB_RETENTION_SECS",
+        default_value_t = 28 * 24 * 60 * 60,
+        value_parser = clap::value_parser!(u64).range(1..=i64::MAX as u64)
+    )]
+    pub job_retention_secs: u64,
     /// LocalStack and other S3-compatible endpoints only serve path-style addressing.
     #[arg(long, env = "S3_FORCE_PATH_STYLE", default_value_t = false, action = clap::ArgAction::Set)]
     pub s3_force_path_style: bool,
