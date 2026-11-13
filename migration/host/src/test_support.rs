@@ -142,7 +142,7 @@ impl JobStore for HealthyStore {
         Ok(())
     }
 
-    async fn mark_migrated(&self, _: &JobRequest, _: &str) -> Result<(), StoreError> {
+    async fn mark_migrated(&self, _: &JobRequest, _: &str, _: &str) -> Result<(), StoreError> {
         unimplemented!("not exercised by these tests")
     }
 
@@ -211,6 +211,7 @@ struct Memory {
     results: HashMap<JobId, Vec<u8>>,
     debug_reports: HashMap<JobId, Vec<u8>>,
     outcomes: HashMap<JobId, Outcome>,
+    signup_ids: HashMap<JobId, String>,
     error_keys: HashMap<JobId, String>,
     last_error: Option<StoreError>,
 }
@@ -284,6 +285,10 @@ impl MemoryStore {
         self.lock().error_keys.get(job_id).cloned()
     }
 
+    pub fn signup_id(&self, job_id: &JobId) -> Option<String> {
+        self.lock().signup_ids.get(job_id).cloned()
+    }
+
     pub fn outcome(&self, job_id: &JobId) -> Option<Outcome> {
         self.lock().outcomes.get(job_id).cloned()
     }
@@ -349,8 +354,17 @@ impl JobStore for MemoryStore {
         Ok(())
     }
 
-    async fn mark_migrated(&self, job: &JobRequest, result_key: &str) -> Result<(), StoreError> {
-        self.record(&job.job_id, Outcome::Migrated(result_key.to_owned()))
+    async fn mark_migrated(
+        &self,
+        job: &JobRequest,
+        result_key: &str,
+        signup_id: &str,
+    ) -> Result<(), StoreError> {
+        self.record(&job.job_id, Outcome::Migrated(result_key.to_owned()))?;
+        self.lock()
+            .signup_ids
+            .insert(job.job_id.clone(), signup_id.to_owned());
+        Ok(())
     }
 
     async fn mark_failed(
@@ -404,7 +418,7 @@ impl JobStore for FailingStore {
         Err(unreachable())
     }
 
-    async fn mark_migrated(&self, _: &JobRequest, _: &str) -> Result<(), StoreError> {
+    async fn mark_migrated(&self, _: &JobRequest, _: &str, _: &str) -> Result<(), StoreError> {
         Err(unreachable())
     }
 

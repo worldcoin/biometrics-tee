@@ -11,6 +11,8 @@ pub mod attributes {
     pub const STATUS: &str = "status";
     /// One of [`di_migration_primitives::Reason`], set on `failed`.
     pub const REASON: &str = "reason";
+    /// Signup ID of the migrated PCP.
+    pub const SIGNUP_ID: &str = "signup_id";
     /// S3 key of the migrated PCP, or encrypted diagnostic on `failed`.
     pub const RESULT_KEY: &str = "result_key";
     /// The app's attested key thumbprint.

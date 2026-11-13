@@ -11,7 +11,7 @@ use di_migration_enclave_primitives::{
     self as enclave_primitives, MAX_MIGRATION_DIAGNOSTIC_BYTES, MigrateError, MigrateRequest,
     MigrateResponse, pcp_payload,
 };
-use di_migration_pcp::{MigrationContext, PreparedBiometrics, SourcePcp};
+use di_migration_pcp::{MigrationContext, PreparedBiometrics, SignupId, SourcePcp};
 use di_worker_protocol::migration::{FailureCode, MigrationResult};
 use flate2::read::GzDecoder;
 use orb_pcp_defs::v1;
@@ -46,13 +46,18 @@ pub async fn handler(
         return Err(enclave_primitives::Error::InvalidInput.into());
     }
 
+    let signup_id = request.signup_id.parse::<SignupId>().map_err(|_| {
+        tracing::warn!("migration request carried an invalid signup ID");
+        enclave_primitives::Error::InvalidInput
+    })?;
+
     // Unsealing and sealing are CPU-bound; keep them off the async workers.
     tokio::task::spawn_blocking(move || -> Result<MigrateResponse, MigrateError> {
         let (plaintext, sealer) = state.channel().open(&request.blob).map_err(|error| {
             tracing::warn!(?error, "migrate request was not sealed to this boot");
             enclave_primitives::Error::RequestNotOpened
         })?;
-        let mut report = Report::new(started);
+        let mut report = Report::new(started, signup_id);
         let result = migrate_payload(&state, &plaintext, &request.sub, sealer, &mut report);
         drop(plaintext);
         let error = result.as_ref().err().copied();
@@ -549,7 +554,7 @@ mod tests {
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ResponseOpener};
     use world_id_primitives::{Credential, EdDSAPrivateKey, FieldElement};
 
-    use super::{finish_migration, handler, prepare_biometrics, seal_debug_report};
+    use super::{SignupId, finish_migration, handler, prepare_biometrics, seal_debug_report};
     use crate::{state::EnclaveState, test_support, worker::MigrationOutput};
     use zeroize::Zeroizing;
 
@@ -626,6 +631,7 @@ mod tests {
         let (blob, opener) = consumer.seal_to_enclave(plaintext).expect("should seal");
         (
             MigrateRequest {
+                signup_id: "00000000000000000000000100000000".to_owned(),
                 blob: blob.into(),
                 sub: sub.into(),
             },
@@ -672,6 +678,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_invalid_host_signup_id_is_rejected() {
+        let state = Arc::new(test_support::state());
+        let (mut request, _) = sealed(&state, b"payload", "sub");
+        request.signup_id = "not-a-signup-id".to_owned();
+        let failure = handler(state, request).await.unwrap_err();
+        assert_eq!(failure.error, enclave_primitives::Error::InvalidInput);
+        assert!(failure.debug_report.is_none());
+    }
+
+    #[tokio::test]
     async fn a_source_pcp_must_contain_all_migration_artifacts() {
         let issuer = EdDSAPrivateKey::from_bytes([7u8; 32]);
         let state = Arc::new(test_support::state_with_issuer_pubkey(issuer.public()));
@@ -683,13 +699,14 @@ mod tests {
         let payload = pcp_payload::encode(&pcp, &credential, &[7; 32]).expect("encode");
 
         let (request, opener) = sealed(&state, &payload, sub.to_string());
+        let signup_id: SignupId = request.signup_id.parse().unwrap();
         let failure = handler(state, request).await.unwrap_err();
         assert_eq!(failure.error, enclave_primitives::Error::InvalidPcp);
         let report = opener
             .open_from_enclave(&failure.debug_report.unwrap())
             .unwrap();
         let report: serde_json::Value = serde_json::from_slice(&report).unwrap();
-        assert!(report["signup_id"].is_object());
+        assert_eq!(report["signup_id"], serde_json::json!(signup_id));
         assert!(report["src_signup_id"].is_null());
         assert_eq!(report["metadata"]["signup_status"], "Failure");
         assert_eq!(

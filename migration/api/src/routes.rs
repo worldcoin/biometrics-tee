@@ -280,6 +280,7 @@ async fn migration_status(
     let (_, job) = owned_job(&state, &headers, &sub).await?;
     let now = unix_now();
     let mut status = MigrationStatus {
+        signup_id: job.signup_id,
         status: job.status,
         reason: job.reason,
         deadline: job.deadline,

@@ -107,17 +107,25 @@ pub struct StartMigration<'a, S> {
 impl MigrationApiClient {
     /// Allows 30 seconds to connect and five minutes per request, including body transfer.
     pub fn new(base_url: &Url) -> Result<Self, Error> {
-        if base_url.cannot_be_a_base() {
-            return Err(Error::InvalidBaseUrl {
-                base_url: base_url.clone(),
-            });
-        }
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(Error::Build)?;
 
+        Self::with_http_client(base_url, http)
+    }
+
+    /// Uses the supplied HTTP client for API requests and artifact transfers.
+    ///
+    /// Configure connection and request timeouts on `http` before passing it here.
+    /// [`Self::new`]'s default timeouts are not applied to a supplied client.
+    pub fn with_http_client(base_url: &Url, http: reqwest::Client) -> Result<Self, Error> {
+        if base_url.cannot_be_a_base() {
+            return Err(Error::InvalidBaseUrl {
+                base_url: base_url.clone(),
+            });
+        }
         Ok(Self {
             http,
             base_url: base_url.clone(),
@@ -566,6 +574,15 @@ mod tests {
     }
 
     #[test]
+    fn a_supplied_http_client_still_rejects_invalid_base_urls() {
+        let base_url = "mailto:api@example.com".parse().unwrap();
+        assert!(matches!(
+            MigrationApiClient::with_http_client(&base_url, reqwest::Client::new()),
+            Err(Error::InvalidBaseUrl { .. })
+        ));
+    }
+
+    #[test]
     fn routes_extend_the_base_path_and_keep_the_sub_one_segment() {
         let client = MigrationApiClient::new(&"http://api.test/prefix/".parse().unwrap()).unwrap();
 
@@ -624,6 +641,7 @@ mod tests {
                         parts.headers[di_migration_primitives::app_api::DEVICE_KEY_THUMBPRINT],
                         "device-key"
                     );
+                    assert_eq!(parts.headers["user-agent"], "custom-migration-client");
                     verifier.verify(&parts, &body).await.unwrap();
 
                     let mut tampered_body = body.to_vec();
@@ -651,7 +669,13 @@ mod tests {
 
         let token = test_client.token();
         let signer = Arc::new(test_client.signer);
-        let response = MigrationApiClient::new(&url)
+        let http = reqwest::Client::builder()
+            .user_agent("custom-migration-client")
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let response = MigrationApiClient::with_http_client(&url, http)
             .unwrap()
             .with_attested_key_thumbprint("device-key")
             .init_migration(

@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::test_support;
+use di_migration_pcp::S3Region;
 
 // Synthetic diagnostics: no captured images, templates or real signup data.
 const WORKER_REPORT: &str = r#"{
@@ -27,7 +28,10 @@ const WORKER_REPORT: &str = r#"{
 }"#;
 
 fn report() -> Report {
-    let mut report = Report::new(SystemTime::UNIX_EPOCH + Duration::from_millis(123_500));
+    let mut report = Report::new(
+        SystemTime::UNIX_EPOCH + Duration::from_millis(123_500),
+        SignupId::new(S3Region::UsEast1),
+    );
     report.worker_report(Some(Zeroizing::new(WORKER_REPORT.to_owned())));
     report
 }
@@ -93,10 +97,13 @@ fn zeroed_image_measurements_ignore_parent_pcrs_and_require_complete_digests() {
 
 #[test]
 fn attempt_id_is_stable_across_failure_stages_and_distinct_between_attempts() {
-    let mut report = Report::new(SystemTime::now());
+    let mut report = Report::new(SystemTime::now(), SignupId::new(S3Region::UsEast1));
     let id = json!(report.signup_id);
     assert!(id.is_object());
-    assert_ne!(id, json!(Report::new(SystemTime::now()).signup_id));
+    assert_ne!(
+        id,
+        json!(Report::new(SystemTime::now(), SignupId::new(S3Region::UsEast1)).signup_id)
+    );
     for (stage, error) in [
         (Stage::DecodePayload, Error::InvalidInput),
         (Stage::VerifyCredential, Error::CredentialClaimsMismatch),
@@ -456,7 +463,7 @@ fn versions_come_from_available_engine_metadata_and_must_agree() {
 
 #[test]
 fn an_explicit_worker_engine_version_is_available_before_eye_processing() {
-    let mut report = Report::new(SystemTime::now());
+    let mut report = Report::new(SystemTime::now(), SignupId::new(S3Region::UsEast1));
     report.worker_report(Some(Zeroizing::new(
         r#"{"worker_version":"test-worker","iris_engine_version":"3.6.0","face":null,"iris":null}"#
             .to_owned(),
@@ -514,7 +521,7 @@ fn unavailable_and_invalid_worker_reports_preserve_enclave_failure_context() {
         Some(r#"{"iris":7}"#),
         Some(r#"{"face":{"request_type":7,"outputs":[]}}"#),
     ] {
-        let mut report = Report::new(SystemTime::now());
+        let mut report = Report::new(SystemTime::now(), SignupId::new(S3Region::UsEast1));
         report.stage = Stage::PrepareBiometrics;
         report.worker_report(worker.map(|value| Zeroizing::new(value.to_owned())));
         let value = decode(&report, Some(Error::IncompleteBiometricPipelineResult));
@@ -540,7 +547,7 @@ fn size_limit_applies_to_the_complete_report_without_truncating_engine_output() 
         "x".repeat(MAX_MIGRATION_DIAGNOSTIC_BYTES - 30)
     );
     assert!(source.len() < MAX_MIGRATION_DIAGNOSTIC_BYTES);
-    let mut report = Report::new(SystemTime::now());
+    let mut report = Report::new(SystemTime::now(), SignupId::new(S3Region::UsEast1));
     report.worker_report(Some(Zeroizing::new(source)));
     assert!(report.serialize(&test_support::state(), None).is_none());
 }
@@ -597,7 +604,7 @@ fn report_writer_rejects_overflow_before_appending_bytes() {
 fn deeply_nested_worker_diagnostics_stay_opaque() {
     let nested = format!("{}0{}", "[".repeat(10_000), "]".repeat(10_000));
     let source = format!(r#"{{"iris":{{"detail":{nested}}}}}"#);
-    let mut report = Report::new(SystemTime::now());
+    let mut report = Report::new(SystemTime::now(), SignupId::new(S3Region::UsEast1));
     report.worker_report(Some(Zeroizing::new(source)));
     let encoded = report.serialize(&test_support::state(), None).unwrap();
     assert!(encoded.contains(&nested));
@@ -627,7 +634,7 @@ fn iris_comparison_survives_later_failure_without_worker_json() {
         }),
         ..MigrationResult::default()
     };
-    let mut report = Report::new(SystemTime::now());
+    let mut report = Report::new(SystemTime::now(), SignupId::new(S3Region::UsEast1));
     assert!(
         decode(&report, Some(Error::BiometricPipelineFailed))["iris_code_comparison"].is_null()
     );
@@ -650,7 +657,7 @@ fn iris_comparison_survives_later_failure_without_worker_json() {
 
 #[test]
 fn comparison_engine_version_uses_the_envelope_version_resolution() {
-    let mut report = Report::new(SystemTime::now());
+    let mut report = Report::new(SystemTime::now(), SignupId::new(S3Region::UsEast1));
     report.iris_code_comparison = Some(crate::iris_comparison::Comparison::new(
         None,
         &di_worker_protocol::migration::MigrationResult::default(),

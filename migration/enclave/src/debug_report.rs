@@ -6,7 +6,7 @@
 use std::{collections::BTreeMap, io, sync::LazyLock, time::SystemTime};
 
 use di_migration_enclave_primitives::{Error, MAX_MIGRATION_DIAGNOSTIC_BYTES};
-use di_migration_pcp::{S3Region, SignupId, SourcePcp};
+use di_migration_pcp::{SignupId, SourcePcp};
 use di_worker_protocol::migration::{Failure, ImageRole, invalid_request_reason};
 use pontifex::AttestationDoc;
 use serde::{
@@ -142,10 +142,10 @@ pub(crate) struct Report {
 }
 
 impl Report {
-    pub fn new(started: SystemTime) -> Self {
+    pub fn new(started: SystemTime, signup_id: SignupId) -> Self {
         Self {
             start_timestamp: timestamp(started),
-            signup_id: SignupId::new(S3Region::UsEast1),
+            signup_id,
             src_signup_id: None,
             source_pcp_version: None,
             stage: Stage::DecodePayload,
