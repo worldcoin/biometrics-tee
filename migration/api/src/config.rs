@@ -38,7 +38,7 @@ pub struct Config {
     #[arg(
         long,
         env = "JOB_RETENTION_SECS",
-        default_value_t = 14 * 24 * 60 * 60,
+        default_value_t = 28 * 24 * 60 * 60,
         value_parser = clap::value_parser!(u64).range(1..=i64::MAX as u64)
     )]
     pub job_retention_secs: u64,
