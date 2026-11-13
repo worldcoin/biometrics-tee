@@ -34,6 +34,14 @@ pub struct Config {
     /// host queue, (queue cap + 1) times the job time.
     #[arg(long, env = "JOB_DEADLINE_SECS", default_value_t = 600)]
     pub job_deadline_secs: u64,
+    /// Job and lock row retention after init. Configure alongside the PCP bucket lifecycle.
+    #[arg(
+        long,
+        env = "JOB_RETENTION_SECS",
+        default_value_t = 28 * 24 * 60 * 60,
+        value_parser = clap::value_parser!(u64).range(1..=i64::MAX as u64)
+    )]
+    pub job_retention_secs: u64,
     /// LocalStack and other S3-compatible endpoints only serve path-style addressing.
     #[arg(long, env = "S3_FORCE_PATH_STYLE", default_value_t = false, action = clap::ArgAction::Set)]
     pub s3_force_path_style: bool,
@@ -167,5 +175,54 @@ impl Config {
         }
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Config;
+
+    const REQUIRED: [&str; 11] = [
+        "migration-api",
+        "--dynamodb-table-name",
+        "jobs",
+        "--pcp-bucket",
+        "pcp-bucket",
+        "--proof-verification-host",
+        "https://proof.example",
+        "--proof-jwt-kms-key-id",
+        "key",
+        "--host-service",
+        "hosts",
+    ];
+
+    #[test]
+    fn job_retention_defaults_to_twenty_eight_days() {
+        let config = Config::try_parse_from(REQUIRED).expect("valid config");
+        assert_eq!(config.job_retention_secs, 28 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn job_retention_accepts_two_days() {
+        let config = Config::try_parse_from(
+            REQUIRED
+                .into_iter()
+                .chain(["--job-retention-secs", "172800"]),
+        )
+        .expect("valid retention");
+        assert_eq!(config.job_retention_secs, 2 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn job_retention_rejects_invalid_durations() {
+        for value in ["0", "-1", "9223372036854775808"] {
+            assert!(
+                Config::try_parse_from(REQUIRED.into_iter().chain(["--job-retention-secs", value]))
+                    .is_err(),
+                "accepted {value}"
+            );
+        }
     }
 }

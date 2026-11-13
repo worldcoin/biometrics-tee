@@ -14,6 +14,8 @@ use crate::Error;
 /// Requests the migration of one sealed PCP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MigrateRequest {
+    /// Signup ID allocated by the host for the new PCP and debug report.
+    pub signup_id: String,
     /// The app's [`crate::pcp_payload`], sealed to this boot's channel key, as uploaded.
     pub blob: bytes::Bytes,
     /// Account the ownership proof was verified for; sealed into the new PCP.
@@ -69,6 +71,19 @@ mod tests {
     use pontifex::Request;
 
     use super::MigrateRequest;
+
+    #[test]
+    fn migration_response_round_trips_with_or_without_diagnostics() {
+        for debug_report in [None, Some(vec![2, 3])] {
+            let response = super::MigrateResponse {
+                pcp: vec![1],
+                debug_report,
+            };
+            let encoded = rmp_serde::to_vec(&response).unwrap();
+            let decoded: super::MigrateResponse = rmp_serde::from_slice(&encoded).unwrap();
+            assert_eq!(decoded, response);
+        }
+    }
 
     #[test]
     fn migrate_route_id_is_versioned_and_stable() {

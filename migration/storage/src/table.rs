@@ -40,9 +40,10 @@ impl JobTable {
         Self { client, table_name }
     }
 
-    /// Moves a `migrating` row to `status`, setting `extra` alongside, and releases its `sub`'s
+    /// Moves a `migrating` row to `status`, setting `extra`, `result_key`, and `signup_id`, and releases its `sub`'s
     /// lock so the app can init again. A row past its deadline already reads as `timeout`, and
     /// one in any other state was resolved elsewhere, so both are left alone.
+    #[allow(clippy::too_many_arguments)]
     async fn finish(
         &self,
         job_id: &JobId,
@@ -50,15 +51,15 @@ impl JobTable {
         status: Status,
         extra: (&'static str, String),
         result_key: Option<&str>,
+        signup_id: Option<&str>,
         now: u64,
     ) -> Result<(), StorageError> {
         const OPERATION: &str = "DynamoDB TransactWriteItems";
+        let mut expression =
+            "SET #status = :status, #extra = :extra, #completed_at = :completed_at".to_owned();
         let mut job_row = Update::builder()
             .table_name(&self.table_name)
             .key(attributes::ID, string(&row_id(job_id)))
-            .update_expression(
-                "SET #status = :status, #extra = :extra, #completed_at = :completed_at",
-            )
             .condition_expression("#status = :migrating AND #deadline >= :now")
             .expression_attribute_names("#status", attributes::STATUS)
             .expression_attribute_names("#extra", extra.0)
@@ -70,13 +71,18 @@ impl JobTable {
             .expression_attribute_values(":migrating", string(Status::Migrating.as_str()))
             .expression_attribute_values(":now", number(now));
         if let Some(result_key) = result_key {
+            expression.push_str(", #result = :result");
             job_row = job_row
-                .update_expression(
-                    "SET #status = :status, #extra = :extra, #result = :result, #completed_at = :completed_at",
-                )
                 .expression_attribute_names("#result", attributes::RESULT_KEY)
                 .expression_attribute_values(":result", string(result_key));
         }
+        if let Some(signup_id) = signup_id {
+            expression.push_str(", #signup_id = :signup_id");
+            job_row = job_row
+                .expression_attribute_names("#signup_id", attributes::SIGNUP_ID)
+                .expression_attribute_values(":signup_id", string(signup_id));
+        }
+        job_row = job_row.update_expression(expression);
         let job_row = job_row.build().map_err(|error| failed(OPERATION, &error))?;
 
         match self
@@ -122,7 +128,7 @@ impl JobTable {
         Ok(())
     }
 
-    /// Marks a `migrating` job `migrated` with its result key, and frees its `sub`.
+    /// Marks a `migrating` job `migrated` with its result key and signup ID, and frees its `sub`.
     ///
     /// # Errors
     ///
@@ -133,6 +139,7 @@ impl JobTable {
         job_id: &JobId,
         sub: &str,
         result_key: &str,
+        signup_id: &str,
         now: u64,
     ) -> Result<(), StorageError> {
         self.finish(
@@ -141,6 +148,7 @@ impl JobTable {
             Status::Migrated,
             (attributes::RESULT_KEY, result_key.to_owned()),
             None,
+            Some(signup_id),
             now,
         )
         .await
@@ -167,6 +175,7 @@ impl JobTable {
             Status::Failed,
             (attributes::REASON, reason.as_str().to_owned()),
             result_key,
+            None,
             now,
         )
         .await
@@ -218,6 +227,8 @@ pub struct JobRecord {
     pub deadline: Option<u64>,
     /// S3 key of the migrated PCP, or of an encrypted diagnostic on a failed job.
     pub result_key: Option<String>,
+    /// Signup ID of the migrated PCP, set on success.
+    pub signup_id: Option<String>,
 }
 
 /// A transaction item failed its condition.
@@ -371,6 +382,7 @@ impl JobTable {
                 .ok_or_else(|| malformed(attributes::CREATED_AT))?,
             completed_at: unsigned(&row, attributes::COMPLETED_AT)?,
             deadline: unsigned(&row, attributes::DEADLINE)?,
+            signup_id: optional_text(&row, attributes::SIGNUP_ID).map(str::to_owned),
             result_key: optional_text(&row, attributes::RESULT_KEY).map(str::to_owned),
             job_id,
         }))
@@ -681,12 +693,26 @@ mod tests {
         let (store, seen) = fake(StatusCode::OK, "{}").await;
 
         store
-            .mark_migrated(&id(), "sub", "result/abc", 100)
+            .mark_migrated(&id(), "sub", "result/abc", "new-signup-id", 100)
             .await
             .expect("should update");
 
         let items = seen.lock().expect("lock should hold")[0]["TransactItems"].clone();
         let request = &items[0]["Update"];
+        assert_eq!(
+            request["ExpressionAttributeNames"]["#signup_id"],
+            "signup_id"
+        );
+        assert_eq!(
+            request["ExpressionAttributeValues"][":signup_id"]["S"],
+            "new-signup-id"
+        );
+        assert!(
+            request["UpdateExpression"]
+                .as_str()
+                .unwrap()
+                .contains("#signup_id = :signup_id")
+        );
         assert_eq!(request["Key"]["id"]["S"], format!("job#{ID}"));
         assert_eq!(
             request["ConditionExpression"],
@@ -753,7 +779,7 @@ mod tests {
         .await;
 
         let error = store
-            .mark_migrated(&id(), "sub", "result/abc", 100)
+            .mark_migrated(&id(), "sub", "result/abc", "new-signup-id", 100)
             .await
             .expect_err("should skip");
 

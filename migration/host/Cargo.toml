@@ -24,6 +24,7 @@ di-migration-enclave-primitives.workspace = true
 di-migration-primitives.workspace = true
 di-migration-storage.workspace = true
 di-migration-telemetry.workspace = true
+orb-wld-data-id.workspace = true
 pontifex = { workspace = true, features = ["aws-credentials", "channel", "client", "proxy"] }
 serde.workspace = true
 telemetry-batteries = { workspace = true, features = ["axum", "metrics-statsd"] }

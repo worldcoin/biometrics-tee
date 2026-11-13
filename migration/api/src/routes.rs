@@ -36,9 +36,6 @@ const MAX_DEVICE_KEY_THUMBPRINT_LEN: usize = 1024;
 /// rejected apps do not return together.
 const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 30;
 
-/// How long job rows outlive their job; `DynamoDB` deletes them afterwards.
-const JOB_RETENTION: Duration = Duration::from_secs(2 * 24 * 60 * 60);
-
 /// The public API the app calls, exposed through the gateway.
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -139,7 +136,7 @@ async fn init_migration(
         enclave_id: attestation.enclave_id.clone(),
         created_at: now,
         active_until: now + state.upload_window.as_secs(),
-        expires_at: now + JOB_RETENTION.as_secs(),
+        expires_at: now + state.job_retention.as_secs(),
     };
     // Presign before taking the lock, so a failure here leaves nothing that blocks a retry.
     let upload_url = state
@@ -283,6 +280,7 @@ async fn migration_status(
     let (_, job) = owned_job(&state, &headers, &sub).await?;
     let now = unix_now();
     let mut status = MigrationStatus {
+        signup_id: job.signup_id,
         status: job.status,
         reason: job.reason,
         deadline: job.deadline,
