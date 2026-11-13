@@ -27,7 +27,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use di_migration_client::{Error, MigrationApiClient};
+use di_migration_client::{ClientError, MigrationApiClient};
 use di_migration_primitives::{
     EnclaveId, JobId, Status,
     host_api::{AttestationResponse, Capacity, JobAccepted, JobRequest},
@@ -292,9 +292,12 @@ async fn a_migration_runs_from_init_to_download() {
         proof_verification().await,
     )
     .await;
-    let client = MigrationApiClient::new(&base_url.parse().expect("url"))
-        .expect("client")
-        .with_attested_key_thumbprint(DEVICE_KEY_THUMBPRINT);
+    let client = MigrationApiClient::with_http_client(
+        &base_url.parse().expect("url"),
+        reqwest::Client::new(),
+    )
+    .expect("client")
+    .with_attested_key_thumbprint(DEVICE_KEY_THUMBPRINT);
     let other = client.with_attested_key_thumbprint("other-device");
     let sub = format!("sub-{}", JobId::new());
     let signer = Arc::new(test_signer());
@@ -309,7 +312,7 @@ async fn a_migration_runs_from_init_to_download() {
         other
             .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
             .await,
-        Err(Error::Api { code, .. }) if code == "migration_in_progress"
+        Err(ClientError::HttpResponse { code, .. }) if code == "migration_in_progress"
     ));
     // The same device, e.g. after losing that response, starts over with a new job.
     let init = client
@@ -323,7 +326,7 @@ async fn a_migration_runs_from_init_to_download() {
     // Migrate waits for the upload.
     assert!(matches!(
         client.migrate(&token, &signer, &sub).await,
-        Err(Error::Api { code, .. }) if code == "not_uploaded"
+        Err(ClientError::HttpResponse { code, .. }) if code == "not_uploaded"
     ));
     client
         .upload_pcp(&init.upload_url, PCP.to_vec())
@@ -338,7 +341,7 @@ async fn a_migration_runs_from_init_to_download() {
         client
             .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
             .await,
-        Err(Error::Api { code, .. }) if code == "migration_in_progress"
+        Err(ClientError::HttpResponse { code, .. }) if code == "migration_in_progress"
     ));
     let job = {
         let jobs = jobs.lock().expect("lock");
@@ -390,7 +393,7 @@ async fn a_migration_runs_from_init_to_download() {
     assert_eq!(download.bytes().await.expect("body").as_ref(), PCP);
     assert!(matches!(
         other.migration_status(&token, &signer, &sub).await,
-        Err(Error::Api { code, .. }) if code == "device_key_mismatch"
+        Err(ClientError::HttpResponse { code, .. }) if code == "device_key_mismatch"
     ));
 
     // The finished job frees the sub, so the app can start another migration at once.

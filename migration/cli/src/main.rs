@@ -132,7 +132,13 @@ fn client(
     api_url: &Url,
     attested_key_thumbprint: Option<&str>,
 ) -> Result<MigrationApiClient, String> {
-    let mut client = MigrationApiClient::new(api_url).map_err(|error| error.to_string())?;
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|error| format!("failed to build the HTTP client: {error}"))?;
+    let mut client =
+        MigrationApiClient::with_http_client(api_url, http).map_err(|error| error.to_string())?;
     if let Some(key) = attested_key_thumbprint {
         client = client.with_attested_key_thumbprint(key);
     }
