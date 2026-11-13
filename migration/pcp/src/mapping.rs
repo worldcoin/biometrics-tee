@@ -48,7 +48,7 @@ pub struct PreparedBiometrics {
     pub di_embeddings: v1::DiIrisEmbeddings,
     /// Index `i` belongs to recipient `i`.
     pub di_embedding_shares: [v1::DiIrisEmbeddingShares; 3],
-    /// All five ORBIT5 recipients in index order, each carrying both eyes and mirrors.
+    /// All five recipients in index order, each carrying both eyes and mirrors.
     pub di_embedding_5_party_shares: [v1::DiIrisEmbeddingShares; 5],
     pub left_normalized: orb_pcp::NormalizedIrisFrame,
     pub right_normalized: orb_pcp::NormalizedIrisFrame,
@@ -121,7 +121,7 @@ impl PreparedBiometrics {
     fn validate_di(&self) -> Result<(), Error> {
         const INVALID_EMBEDDINGS: Error = Error::InvalidField("di_embeddings");
         const INVALID_SHARES: Error = Error::InvalidField("di_embedding_shares");
-        const INVALID_ORBIT5_SHARES: Error = Error::InvalidField("di_embedding_5_party_shares");
+        const INVALID_5_PARTY_SHARES: Error = Error::InvalidField("di_embedding_5_party_shares");
         let embedding = self
             .di_embeddings
             .embedding_v1
@@ -178,13 +178,13 @@ impl PreparedBiometrics {
                 return Err(INVALID_SHARES);
             }
         }
-        let mut orbit5_shares_version = None;
+        let mut di_5_party_shares_version = None;
         for share in &self.di_embedding_5_party_shares {
-            let share = share.share_v1.as_ref().ok_or(INVALID_ORBIT5_SHARES)?;
-            nonempty(&share.shares_version, "orbit5_shares_version")?;
+            let share = share.share_v1.as_ref().ok_or(INVALID_5_PARTY_SHARES)?;
+            nonempty(&share.shares_version, "di_5_party_shares_version")?;
             if share.model_version != embedding.model_version
                 || share.embedding_version != embedding.embedding_version
-                || *orbit5_shares_version.get_or_insert(&share.shares_version)
+                || *di_5_party_shares_version.get_or_insert(&share.shares_version)
                     != &share.shares_version
                 || [
                     &share.left_share,
@@ -197,7 +197,7 @@ impl PreparedBiometrics {
                     values.len() != n || values.iter().any(|v| u16::try_from(*v).is_err())
                 })
             {
-                return Err(INVALID_ORBIT5_SHARES);
+                return Err(INVALID_5_PARTY_SHARES);
             }
         }
         Ok(())

@@ -457,7 +457,7 @@ fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
 
 // Validate all five bundles' metadata, vector lengths and u16 bounds before building.
 #[test]
-fn every_orbit5_bundle_is_required_and_validated_before_building() {
+fn every_five_party_bundle_is_required_and_validated_before_building() {
     type Edit = fn(&mut v1::DiIrisEmbeddingShareV1);
     let cases: [(Edit, &str); 12] = [
         (
@@ -474,7 +474,7 @@ fn every_orbit5_bundle_is_required_and_validated_before_building() {
         ),
         (
             |share| share.shares_version.clear(),
-            "orbit5_shares_version",
+            "di_5_party_shares_version",
         ),
         (
             |share| share.left_share.clear(),

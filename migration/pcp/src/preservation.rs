@@ -21,7 +21,7 @@ use crate::{Error, Files, MigrationContext, PreparedBiometrics, SourcePcp, parse
 /// - Raw captures, iris codes and shares equal the source bytes, including JSON
 ///   formatting; none is missing or added.
 /// - The normalized iris images and masks are exactly this run's.
-/// - All five ORBIT5 payloads equal the exact protobuf bytes prepared for this run.
+/// - All five-party payloads equal the exact protobuf bytes prepared for this run.
 /// - `info.json` is compact with sorted keys, carries the context's signup ID,
 ///   keeps every other field of the source that `pcp.v1.Info` defines, and has a
 ///   32-hex-digit salt exactly for each present salted value.
@@ -42,7 +42,7 @@ pub fn verify_completed_pcp(
 ) -> Result<(), Error> {
     verify_preserved(source, files)?;
     verify_normalized(biometrics, files)?;
-    verify_orbit5(biometrics, files)?;
+    verify_5_party_shares(biometrics, files)?;
     let info = verify_info(source, &context.signup_id.to_string(), files)?;
     let expected = crate::builder::migration(source, biometrics, context);
     verify_migration(&expected, files)?;
@@ -115,14 +115,14 @@ fn verify_normalized(biometrics: &PreparedBiometrics, files: &Files) -> Result<(
     Ok(())
 }
 
-fn verify_orbit5(biometrics: &PreparedBiometrics, files: &Files) -> Result<(), Error> {
+fn verify_5_party_shares(biometrics: &PreparedBiometrics, files: &Files) -> Result<(), Error> {
     for (recipient, expected) in biometrics.di_embedding_5_party_shares.iter().enumerate() {
         let name = format!("di_iris_embeddings_5_party_shares_{recipient}.pb");
         let actual = files
             .get(&name)
-            .ok_or(Error::OutputMismatch("orbit5_share_missing"))?;
+            .ok_or(Error::OutputMismatch("di_5_party_share_missing"))?;
         if *actual != expected.encode_to_vec() {
-            return Err(Error::OutputMismatch("orbit5_share_mismatch"));
+            return Err(Error::OutputMismatch("di_5_party_share_mismatch"));
         }
     }
     if files
@@ -131,7 +131,7 @@ fn verify_orbit5(biometrics: &PreparedBiometrics, files: &Files) -> Result<(), E
         .count()
         != biometrics.di_embedding_5_party_shares.len()
     {
-        return Err(Error::OutputMismatch("orbit5_share_unexpected"));
+        return Err(Error::OutputMismatch("di_5_party_share_unexpected"));
     }
     Ok(())
 }

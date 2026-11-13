@@ -41,7 +41,7 @@ fn json_file(files: &Files, name: &str) -> Value {
 /// - the signature callback received the digest of the new `hashes.json`;
 /// - each version's expected capture values, written out as literals;
 /// - every `migration.pb` field;
-/// - the fresh face, DI and ORBIT5 outputs the builder encoded.
+/// - the fresh face, DI and five-party outputs the builder encoded.
 ///
 /// Inference outputs are the fixed synthetic values from `pipeline()`.
 fn round_trip(version: &str, optional: bool) {
@@ -201,7 +201,7 @@ fn round_trip(version: &str, optional: bool) {
     assert_eq!(di.left_embedding, [1, 2]);
     assert_eq!(di.right_mirror_embedding, [3, 4]);
     assert_eq!(di.left_embedding_f32, [0.1, 0.2]);
-    // Check each recipient's encoded ORBIT5 payload and its manifest hash.
+    // Check each recipient's encoded five-party payload and its manifest hash.
     for (recipient, expected) in bio.di_embedding_5_party_shares.iter().enumerate() {
         let name = format!("di_iris_embeddings_5_party_shares_{recipient}.pb");
         let bytes = &new.files[&name];
@@ -424,14 +424,14 @@ fn completion_requires_exactly_this_runs_normalization() {
     }
 }
 
-// Replace old ORBIT5 files with fresh payloads; reject corrupt sources and extra recipients.
+// Replace old five-party files with fresh payloads; reject corrupt sources and extra recipients.
 #[test]
-fn existing_orbit5_outputs_are_verified_and_replaced() {
+fn existing_five_party_outputs_are_verified_and_replaced() {
     let mut old = version_profile("2.8", true);
     for recipient in 0..5 {
         old.insert(
             format!("di_iris_embeddings_5_party_shares_{recipient}.pb"),
-            b"old-orbit5-share".to_vec(),
+            b"old-five-party-share".to_vec(),
         );
     }
     refresh_source_manifest(&mut old);
@@ -458,9 +458,9 @@ fn existing_orbit5_outputs_are_verified_and_replaced() {
     );
 }
 
-// Reject missing, altered or extra ORBIT5 files even after their manifest hashes are updated.
+// Reject missing, altered or extra five-party files even after their manifest hashes are updated.
 #[test]
-fn completion_requires_all_prepared_orbit5_payloads_even_with_matching_hashes() {
+fn completion_requires_all_prepared_five_party_payloads_even_with_matching_hashes() {
     let source = SourcePcp::parse(version_profile("2.8", true)).unwrap();
     let (bio, ctx) = (pipeline(), context());
     let new = build_and_open(&source, &bio, &ctx);
@@ -470,13 +470,13 @@ fn completion_requires_all_prepared_orbit5_payloads_even_with_matching_hashes() 
             let mut files = new.files.clone();
             let reason = if missing {
                 files.remove(&name);
-                "orbit5_share_missing"
+                "di_5_party_share_missing"
             } else {
                 let mut bundle =
                     v1::DiIrisEmbeddingShares::decode(files[&name].as_slice()).unwrap();
                 bundle.share_v1.as_mut().unwrap().left_share[0] ^= 1;
                 files.insert(name.clone(), bundle.encode_to_vec());
-                "orbit5_share_mismatch"
+                "di_5_party_share_mismatch"
             };
             // A self-consistent manifest must not make different or missing
             // payloads pass the comparison against the trusted prepared inputs.
@@ -493,7 +493,7 @@ fn completion_requires_all_prepared_orbit5_payloads_even_with_matching_hashes() 
     refresh_source_manifest(&mut files);
     assert_eq!(
         verify_completed_pcp(&source, &bio, &ctx, &files),
-        Err(Error::OutputMismatch("orbit5_share_unexpected"))
+        Err(Error::OutputMismatch("di_5_party_share_unexpected"))
     );
 }
 

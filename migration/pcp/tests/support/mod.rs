@@ -315,7 +315,7 @@ pub fn pipeline() -> PreparedBiometrics {
             v1::DiIrisEmbeddingShares {
                 share_v1: Some(v1::DiIrisEmbeddingShareV1 {
                     model_version: model(),
-                    shares_version: "test-orbit5-shares".into(),
+                    shares_version: "test-five-party-shares".into(),
                     embedding_version: encoding(),
                     left_share: vec![base + 1, base + 2],
                     left_mirror_share: vec![base + 3, base + 4],

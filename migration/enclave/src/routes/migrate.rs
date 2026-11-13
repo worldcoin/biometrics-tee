@@ -311,7 +311,7 @@ fn prepare_biometrics(
     let right = right_iris.ok_or(enclave_primitives::Error::IncompleteBiometricPipelineResult)?;
 
     let shares = generate_shares(&left, &right, &iris_model_version, &iris_embedding_version)?;
-    let di_embedding_5_party_shares = generate_orbit5_shares(
+    let di_embedding_5_party_shares = generate_5_party_shares(
         &left,
         &right,
         &iris_model_version,
@@ -443,7 +443,7 @@ fn generate_shares(
     Ok(shares)
 }
 
-fn generate_orbit5_shares<R: Rng + CryptoRng>(
+fn generate_5_party_shares<R: Rng + CryptoRng>(
     left: &di_worker_protocol::migration::EyeResult,
     right: &di_worker_protocol::migration::EyeResult,
     model_version: &str,
@@ -451,8 +451,8 @@ fn generate_orbit5_shares<R: Rng + CryptoRng>(
     rng: &mut R,
 ) -> Result<[v1::DiIrisEmbeddingShares; 5], enclave_primitives::Error> {
     let mut generate = |embedding: &[u8], eye: &'static str, mirrored: bool| {
-        di_migration_shares::generate_orbit5(embedding, rng).map_err(|error| {
-            tracing::error!(%error, eye, mirrored, "failed to generate ORBIT5 embedding shares");
+        di_migration_shares::generate_5_party(embedding, rng).map_err(|error| {
+            tracing::error!(%error, eye, mirrored, "failed to generate five-party embedding shares");
             enclave_primitives::Error::EmbeddingShareGenerationFailed
         })
     };
@@ -610,7 +610,7 @@ mod tests {
     use world_id_primitives::{Credential, EdDSAPrivateKey, FieldElement};
 
     use super::{
-        SignupId, finish_migration, generate_orbit5_shares, handler, prepare_biometrics,
+        SignupId, finish_migration, generate_5_party_shares, handler, prepare_biometrics,
         seal_debug_report,
     };
     use crate::{state::EnclaveState, test_support, worker::MigrationOutput};
@@ -673,7 +673,7 @@ mod tests {
             assert_eq!(share.right_mirror_share.len(), EMBEDDING_SIZE);
         }
         for share in prepared.di_embedding_5_party_shares {
-            let share = share.share_v1.expect("versioned ORBIT5 share");
+            let share = share.share_v1.expect("versioned five-party share");
             assert_eq!(share.model_version, "di-model");
             assert_eq!(share.embedding_version, "di-embedding");
             assert_eq!(share.shares_version, di_migration_shares::VERSION);
@@ -692,12 +692,12 @@ mod tests {
     }
 
     #[test]
-    fn orbit5_bundles_preserve_eye_mirror_and_recipient_order_with_fresh_shares() {
+    fn five_party_bundles_preserve_eye_mirror_and_recipient_order_with_fresh_shares() {
         let left = eye((-8_i8).cast_unsigned(), 7);
         let right = eye(6, (-7_i8).cast_unsigned());
         let mut rng = StdRng::seed_from_u64(42);
         let mut expected_rng = rng.clone();
-        let bundles = generate_orbit5_shares(&left, &right, "model", "embedding", &mut rng)
+        let bundles = generate_5_party_shares(&left, &right, "model", "embedding", &mut rng)
             .expect("valid embeddings should share");
         let expected = [
             &left.embedding,
@@ -705,11 +705,14 @@ mod tests {
             &right.embedding,
             &right.mirror_embedding,
         ]
-        .map(|input| di_migration_shares::generate_orbit5(input, &mut expected_rng).unwrap());
-        let next = generate_orbit5_shares(&left, &right, "model", "embedding", &mut rng)
+        .map(|input| di_migration_shares::generate_5_party(input, &mut expected_rng).unwrap());
+        let next = generate_5_party_shares(&left, &right, "model", "embedding", &mut rng)
             .expect("repeated embeddings should share");
         for (recipient, bundle) in bundles.iter().enumerate() {
-            let share = bundle.share_v1.as_ref().expect("versioned ORBIT5 share");
+            let share = bundle
+                .share_v1
+                .as_ref()
+                .expect("versioned five-party share");
             let next = next[recipient].share_v1.as_ref().unwrap();
             assert_eq!(share.model_version, "model");
             assert_eq!(share.embedding_version, "embedding");
@@ -740,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn orbit5_generation_errors_propagate_for_each_eye_and_mirror() {
+    fn five_party_generation_errors_propagate_for_each_eye_and_mirror() {
         for vector in 0..4 {
             for invalid in [vec![0; EMBEDDING_SIZE - 1], vec![8; EMBEDDING_SIZE]] {
                 let mut left = eye(0, 1);
@@ -752,7 +755,7 @@ mod tests {
                     3 => right.mirror_embedding = invalid,
                     _ => unreachable!(),
                 }
-                let error = generate_orbit5_shares(
+                let error = generate_5_party_shares(
                     &left,
                     &right,
                     "model",

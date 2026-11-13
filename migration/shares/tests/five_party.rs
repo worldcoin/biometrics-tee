@@ -2,7 +2,7 @@ use ampc_secret_sharing::{
     GaloisRingElement, basis,
     iris_vector::{IRIS_VECTOR_SIZE, IrisVector},
 };
-use di_migration_shares::{Error, generate_orbit5};
+use di_migration_shares::{Error, generate_5_party};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 
 fn embedding(offset: usize) -> [u8; IRIS_VECTOR_SIZE] {
@@ -15,7 +15,7 @@ fn matches_upstream_shares_and_recipient_order() {
     let mut expected_rng = actual_rng.clone();
     for offset in [0, 1, 4, 5] {
         let input = embedding(offset);
-        let actual = generate_orbit5(&input, &mut actual_rng).unwrap();
+        let actual = generate_5_party(&input, &mut actual_rng).unwrap();
         let expected = IrisVector::new(input.map(u8::cast_signed))
             .secret_share_5_parties(&mut expected_rng)
             .unwrap()
@@ -32,7 +32,7 @@ fn every_triple_of_recipients_reconstructs_each_embedding() {
     let mut rng = StdRng::seed_from_u64(7);
     for offset in [0, 1, 4, 5] {
         let expected = embedding(offset);
-        let vectors = generate_orbit5(&expected, &mut rng).unwrap();
+        let vectors = generate_5_party(&expected, &mut rng).unwrap();
         for a in 0..3 {
             for b in a + 1..4 {
                 for c in b + 1..5 {
@@ -77,8 +77,8 @@ fn every_triple_of_recipients_reconstructs_each_embedding() {
 fn repeated_embeddings_receive_fresh_shares() {
     let input = embedding(0);
     let mut rng = StdRng::seed_from_u64(123);
-    let first = generate_orbit5(&input, &mut rng).unwrap();
-    let second = generate_orbit5(&input, &mut rng).unwrap();
+    let first = generate_5_party(&input, &mut rng).unwrap();
+    let second = generate_5_party(&input, &mut rng).unwrap();
     for recipient in 0..5 {
         assert_ne!(first[recipient], second[recipient]);
     }
@@ -100,7 +100,7 @@ fn invalid_inputs_are_rejected_before_consuming_randomness() {
     for invalid in malformed {
         let mut rng = StdRng::seed_from_u64(99);
         let mut untouched = rng.clone();
-        let error = generate_orbit5(&invalid, &mut rng).unwrap_err();
+        let error = generate_5_party(&invalid, &mut rng).unwrap_err();
         match error {
             Error::InvalidLength { actual } => {
                 assert_eq!(actual, invalid.len());

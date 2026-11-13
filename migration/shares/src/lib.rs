@@ -64,7 +64,7 @@ pub fn generate<R: Rng + CryptoRng>(embedding: &[u8], rng: &mut R) -> Result<[Ve
     Ok(shares.map(|share| share.to_vec()))
 }
 
-/// Generate five 512-element ORBIT5 shares of a quantized embedding.
+/// Generate five-party shares of a 512-element quantized embedding.
 ///
 /// Indices 0–4 map to Shamir IDs 1–5; any three recipients can reconstruct the
 /// embedding. Supply a cryptographic RNG seeded from fresh entropy and advance it
@@ -73,7 +73,7 @@ pub fn generate<R: Rng + CryptoRng>(embedding: &[u8], rng: &mut R) -> Result<[Ve
 /// # Errors
 /// Rejects lengths other than 512 and signed values outside `[-8, 7]` before
 /// consuming randomness. Propagates failures from the sharing library.
-pub fn generate_orbit5<R: Rng + CryptoRng>(
+pub fn generate_5_party<R: Rng + CryptoRng>(
     embedding: &[u8],
     rng: &mut R,
 ) -> Result<[Vec<u16>; 5], Error> {
