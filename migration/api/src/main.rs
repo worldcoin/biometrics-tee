@@ -655,19 +655,21 @@ mod tests {
 
         let signer = Arc::new(test_signer());
         let token = test_integrity_token(&signer);
-        let response =
-            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
-                .unwrap()
-                .with_attested_key_thumbprint("device-key")
-                .init_migration(
-                    &token,
-                    &signer,
-                    "test-sub",
-                    "0xa100ff00deadbeef",
-                    CHALLENGE_ID,
-                )
-                .await
-                .unwrap();
+        let response = di_migration_client::MigrationApiClient::with_http_client(
+            &format!("http://{api}").parse().unwrap(),
+            reqwest::Client::new(),
+        )
+        .unwrap()
+        .with_attested_key_thumbprint("device-key")
+        .init_migration(
+            &token,
+            &signer,
+            "test-sub",
+            "0xa100ff00deadbeef",
+            CHALLENGE_ID,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(response.enclave_id, enclave_id());
         let seen = mock.seen.lock().unwrap().clone();
@@ -1355,10 +1357,12 @@ mod tests {
         let (state, _) =
             migration_state(Some(row), StatusCode::OK, "127.0.0.1:9".parse().unwrap()).await;
         let api = serve(routes::router(state)).await;
-        let client =
-            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
-                .unwrap()
-                .with_attested_key_thumbprint("device-key");
+        let client = di_migration_client::MigrationApiClient::with_http_client(
+            &format!("http://{api}").parse().unwrap(),
+            reqwest::Client::new(),
+        )
+        .unwrap()
+        .with_attested_key_thumbprint("device-key");
         let signer = Arc::new(test_signer());
         let token = test_integrity_token(&signer);
 
@@ -1381,10 +1385,12 @@ mod tests {
         let (state, _) =
             migration_state(Some(job_row("created", now(), &[])), StatusCode::OK, host).await;
         let api = serve(routes::router(state)).await;
-        let client =
-            di_migration_client::MigrationApiClient::new(&format!("http://{api}").parse().unwrap())
-                .unwrap()
-                .with_attested_key_thumbprint("device-key");
+        let client = di_migration_client::MigrationApiClient::with_http_client(
+            &format!("http://{api}").parse().unwrap(),
+            reqwest::Client::new(),
+        )
+        .unwrap()
+        .with_attested_key_thumbprint("device-key");
         let signer = Arc::new(test_signer());
         let token = test_integrity_token(&signer);
 

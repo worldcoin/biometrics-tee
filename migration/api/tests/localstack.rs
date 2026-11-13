@@ -292,9 +292,12 @@ async fn a_migration_runs_from_init_to_download() {
         proof_verification().await,
     )
     .await;
-    let client = MigrationApiClient::new(&base_url.parse().expect("url"))
-        .expect("client")
-        .with_attested_key_thumbprint(DEVICE_KEY_THUMBPRINT);
+    let client = MigrationApiClient::with_http_client(
+        &base_url.parse().expect("url"),
+        reqwest::Client::new(),
+    )
+    .expect("client")
+    .with_attested_key_thumbprint(DEVICE_KEY_THUMBPRINT);
     let other = client.with_attested_key_thumbprint("other-device");
     let sub = format!("sub-{}", JobId::new());
     let signer = Arc::new(test_signer());

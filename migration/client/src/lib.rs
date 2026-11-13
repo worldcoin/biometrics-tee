@@ -216,7 +216,7 @@ impl MigrationApiClient {
     fn url(&self, segments: &[&str]) -> Url {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
-            .expect("checked to be a base URL in new")
+            .expect("checked to be a base URL in with_http_client")
             .pop_if_empty()
             .extend(segments);
         url
@@ -597,7 +597,11 @@ mod tests {
 
     #[test]
     fn routes_extend_the_base_path_and_keep_the_sub_one_segment() {
-        let client = MigrationApiClient::new(&"http://api.test/prefix/".parse().unwrap()).unwrap();
+        let client = MigrationApiClient::with_http_client(
+            &"http://api.test/prefix/".parse().unwrap(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
 
         assert_eq!(
             client.url(&["v1", "init-migration"]).as_str(),
@@ -746,7 +750,7 @@ mod tests {
 
         let signer = Arc::new(test_signer());
         let token = test_token(&signer);
-        let error = MigrationApiClient::new(&url)
+        let error = MigrationApiClient::with_http_client(&url, reqwest::Client::new())
             .unwrap()
             .with_attested_key_thumbprint("device-key")
             .init_migration(
