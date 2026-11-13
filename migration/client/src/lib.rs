@@ -16,56 +16,28 @@ use di_migration_primitives::app_api::{
 };
 use orb_pcp_defs::prost::Message;
 use reqwest::{
-    Request, RequestBuilder, StatusCode, Url,
+    Request, RequestBuilder, Url,
     header::{CONTENT_TYPE, HeaderName, HeaderValue},
 };
 use zeroize::Zeroizing;
 
-use crate::sealing::{EnclaveVerifier, MigrationResponseOpener, SealingError};
+use crate::sealing::{EnclaveVerifier, MigrationResponseOpener};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+mod error;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("failed to build the HTTP client: {0}")]
-    Build(#[source] reqwest::Error),
-    #[error("{base_url} is not a valid migration API base URL")]
-    InvalidBaseUrl { base_url: Url },
-    #[error("failed to encode the request body: {0}")]
-    Encode(#[source] serde_json::Error),
-    #[error("failed to build the canonical request: {0}")]
-    CanonicalRequest(#[source] Box<dyn std::error::Error + Send + Sync>),
-    #[error("failed to sign the request: {0}")]
-    Sign(#[source] Box<dyn std::error::Error + Send + Sync>),
-    #[error("the background signing task failed: {0}")]
-    SigningTask(#[source] tokio::task::JoinError),
-    #[error("the background attestation and sealing task failed: {0}")]
-    SealingTask(#[source] tokio::task::JoinError),
-    #[error("the background response unsealing task failed: {0}")]
-    UnsealingTask(#[source] tokio::task::JoinError),
-    #[error("request to the migration API failed: {0}")]
-    Transport(#[source] reqwest::Error),
-    #[error("migration API answered {status}")]
-    UnexpectedStatus { status: StatusCode },
-    #[error("migration API answered {status}: {code}")]
-    Api { status: StatusCode, code: String },
-    #[error("failed to decode the migration API response: {0}")]
-    Decode(#[source] reqwest::Error),
-    #[error("failed to decode migration.pb: {0}")]
-    DecodeMigration(#[source] orb_pcp_defs::prost::DecodeError),
-    #[error("the sealed debug report exceeds the {limit} byte limit")]
-    DebugReportTooLarge { limit: usize },
-    #[error(transparent)]
-    Sealing(#[from] SealingError),
-}
+pub use error::ClientError;
+
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Decodes the binary `migration.pb` contents extracted from a PCP.
 ///
 /// This only parses metadata; it does not verify the package's manifest or signature.
 /// Missing optional fields remain unset, and unknown protobuf fields are ignored.
-pub fn parse_migration_pb(bytes: &[u8]) -> Result<Migration, Error> {
-    Migration::decode(bytes).map_err(Error::DecodeMigration)
+pub fn parse_migration_pb(bytes: &[u8]) -> Result<Migration, ClientError> {
+    Migration::decode(bytes).map_err(|error| ClientError::ClientOperationFailed {
+        reason: "invalid_migration_pb",
+        source: Box::new(error),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -105,24 +77,14 @@ pub struct StartMigration<'a, S> {
 }
 
 impl MigrationApiClient {
-    /// Allows 30 seconds to connect and five minutes per request, including body transfer.
-    pub fn new(base_url: &Url) -> Result<Self, Error> {
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(Error::Build)?;
-
-        Self::with_http_client(base_url, http)
-    }
-
     /// Uses the supplied HTTP client for API requests and artifact transfers.
     ///
     /// Configure connection and request timeouts on `http` before passing it here.
-    /// [`Self::new`]'s default timeouts are not applied to a supplied client.
-    pub fn with_http_client(base_url: &Url, http: reqwest::Client) -> Result<Self, Error> {
+    /// PCP and debug report downloads override the request timeout to five minutes,
+    /// including body transfer; the supplied connection timeout still applies.
+    pub fn with_http_client(base_url: &Url, http: reqwest::Client) -> Result<Self, ClientError> {
         if base_url.cannot_be_a_base() {
-            return Err(Error::InvalidBaseUrl {
+            return Err(ClientError::InvalidBaseUrl {
                 base_url: base_url.clone(),
             });
         }
@@ -159,7 +121,7 @@ impl MigrationApiClient {
         sub: &str,
         proof: &str,
         challenge_id: &str,
-    ) -> Result<InitMigrationResponse, Error>
+    ) -> Result<InitMigrationResponse, ClientError>
     where
         S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
@@ -169,7 +131,10 @@ impl MigrationApiClient {
             proof: proof.to_owned(),
             challenge_id: challenge_id.to_owned(),
         })
-        .map_err(Error::Encode)?;
+        .map_err(|error| ClientError::ClientOperationFailed {
+            reason: "request_encoding_failed",
+            source: Box::new(error),
+        })?;
 
         let url = self.url(&["v1", "init-migration"]);
         let mut request = self
@@ -182,7 +147,11 @@ impl MigrationApiClient {
         }
 
         let signed = sign(request, integrity_token, Arc::clone(signer)).await?;
-        let response = self.http.execute(signed).await.map_err(Error::Transport)?;
+        let response = self
+            .http
+            .execute(signed)
+            .await
+            .map_err(ClientError::Transport)?;
         decode(response).await
     }
 
@@ -196,7 +165,7 @@ impl MigrationApiClient {
         integrity_token: &str,
         signer: &Arc<S>,
         sub: &str,
-    ) -> Result<MigrateResponse, Error>
+    ) -> Result<MigrateResponse, ClientError>
     where
         S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
@@ -207,7 +176,11 @@ impl MigrationApiClient {
         }
         let request = sign(request, integrity_token, Arc::clone(signer)).await?;
 
-        let response = self.http.execute(request).await.map_err(Error::Transport)?;
+        let response = self
+            .http
+            .execute(request)
+            .await
+            .map_err(ClientError::Transport)?;
         decode(response).await
     }
 
@@ -220,7 +193,7 @@ impl MigrationApiClient {
         integrity_token: &str,
         signer: &Arc<S>,
         sub: &str,
-    ) -> Result<MigrationStatus, Error>
+    ) -> Result<MigrationStatus, ClientError>
     where
         S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
@@ -231,7 +204,11 @@ impl MigrationApiClient {
         }
         let request = sign(request, integrity_token, Arc::clone(signer)).await?;
 
-        let response = self.http.execute(request).await.map_err(Error::Transport)?;
+        let response = self
+            .http
+            .execute(request)
+            .await
+            .map_err(ClientError::Transport)?;
         decode(response).await
     }
 
@@ -249,24 +226,26 @@ impl MigrationApiClient {
     /// its Pontifex response envelope, returning PCP bytes that are zeroized on drop.
     ///
     /// `opener_key` is the secret exported by [`MigrationResponseOpener::into_secret_bytes`]
-    /// for the migration request. Unsealing runs on Tokio's blocking pool.
+    /// for the migration request. The download has a five-minute timeout including
+    /// body transfer. Unsealing runs on Tokio's blocking pool.
     pub async fn fetch_pcp(
         &self,
         download_url: &str,
         opener_key: Zeroizing<Vec<u8>>,
-    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+    ) -> Result<Zeroizing<Vec<u8>>, ClientError> {
         let response = self
             .http
             .get(download_url)
+            .timeout(DOWNLOAD_TIMEOUT)
             .send()
             .await
-            .map_err(Error::Transport)?;
+            .map_err(ClientError::Transport)?;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(Error::UnexpectedStatus { status });
+            return Err(ClientError::http(status));
         }
-        let blob = response.bytes().await.map_err(Error::Transport)?;
+        let blob = response.bytes().await.map_err(ClientError::Transport)?;
         unseal_response(blob, opener_key).await
     }
 
@@ -277,35 +256,37 @@ impl MigrationApiClient {
     /// `opener_key` is the same exported response secret used by
     /// [`Self::fetch_pcp`]. The sealed download is bounded by
     /// [`di_migration_enclave_primitives::MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES`].
+    /// The download has a five-minute timeout including body transfer.
     /// Unsealing runs on Tokio's blocking pool.
     pub async fn fetch_debug_report(
         &self,
         debug_report_url: &str,
         opener_key: Zeroizing<Vec<u8>>,
-    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+    ) -> Result<Zeroizing<Vec<u8>>, ClientError> {
         use di_migration_enclave_primitives::MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES;
 
         let mut response = self
             .http
             .get(debug_report_url)
+            .timeout(DOWNLOAD_TIMEOUT)
             .send()
             .await
-            .map_err(Error::Transport)?;
+            .map_err(ClientError::Transport)?;
         let status = response.status();
         if !status.is_success() {
-            return Err(Error::UnexpectedStatus { status });
+            return Err(ClientError::http(status));
         }
         let limit = MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES;
         if response
             .content_length()
             .is_some_and(|size| size > limit as u64)
         {
-            return Err(Error::DebugReportTooLarge { limit });
+            return Err(ClientError::DebugReportTooLarge { limit });
         }
         let mut blob = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(Error::Transport)? {
+        while let Some(chunk) = response.chunk().await.map_err(ClientError::Transport)? {
             if chunk.len() > limit - blob.len() {
-                return Err(Error::DebugReportTooLarge { limit });
+                return Err(ClientError::DebugReportTooLarge { limit });
             }
             blob.extend_from_slice(&chunk);
         }
@@ -313,20 +294,20 @@ impl MigrationApiClient {
     }
 
     /// Uploads a sealed PCP to a presigned URL returned by [`Self::init_migration`].
-    pub async fn upload_pcp(&self, upload_url: &str, pcp: Vec<u8>) -> Result<(), Error> {
+    pub async fn upload_pcp(&self, upload_url: &str, pcp: Vec<u8>) -> Result<(), ClientError> {
         let response = self
             .http
             .put(upload_url)
             .body(pcp)
             .send()
             .await
-            .map_err(Error::Transport)?;
+            .map_err(ClientError::Transport)?;
 
         let status = response.status();
         if status.is_success() {
             Ok(())
         } else {
-            Err(Error::UnexpectedStatus { status })
+            Err(ClientError::http(status))
         }
     }
 
@@ -351,7 +332,7 @@ impl MigrationApiClient {
             pcp,
             credential,
         }: StartMigration<'_, S>,
-    ) -> Result<Zeroizing<Vec<u8>>, Error>
+    ) -> Result<Zeroizing<Vec<u8>>, ClientError>
     where
         S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
@@ -377,14 +358,17 @@ impl MigrationApiClient {
 async fn unseal_response(
     blob: impl AsRef<[u8]> + Send + 'static,
     opener_key: Zeroizing<Vec<u8>>,
-) -> Result<Zeroizing<Vec<u8>>, Error> {
+) -> Result<Zeroizing<Vec<u8>>, ClientError> {
     tokio::task::spawn_blocking(move || {
         let opener =
-            MigrationResponseOpener::from_secret_bytes(opener_key).map_err(Error::Sealing)?;
-        opener.open(blob.as_ref()).map_err(Error::Sealing)
+            MigrationResponseOpener::from_secret_bytes(opener_key).map_err(ClientError::Sealing)?;
+        opener.open(blob.as_ref()).map_err(ClientError::Sealing)
     })
     .await
-    .map_err(Error::UnsealingTask)?
+    .map_err(|error| ClientError::ClientOperationFailed {
+        reason: "unsealing_task_failed",
+        source: Box::new(error),
+    })?
 }
 
 /// Verifies an enclave's attestation and seals the potentially large PCP off the caller's
@@ -395,17 +379,20 @@ async fn attest_and_seal(
     pcp: Vec<u8>,
     credential: String,
     device_public_key: String,
-) -> Result<(Vec<u8>, MigrationResponseOpener), Error> {
+) -> Result<(Vec<u8>, MigrationResponseOpener), ClientError> {
     let pcp = Zeroizing::new(pcp);
     let credential = Zeroizing::new(credential);
     tokio::task::spawn_blocking(move || {
         verifier
             .attested_channel(&response)
             .and_then(|channel| channel.seal(&pcp, &credential, &device_public_key))
-            .map_err(Error::Sealing)
+            .map_err(ClientError::Sealing)
     })
     .await
-    .map_err(Error::SealingTask)?
+    .map_err(|error| ClientError::ClientOperationFailed {
+        reason: "sealing_task_failed",
+        source: Box::new(error),
+    })?
 }
 
 /// Signs `request` and returns it with the attested-request headers attached.
@@ -413,14 +400,17 @@ async fn sign<S: Signer + Send + Sync + 'static>(
     request: RequestBuilder,
     integrity_token: &str,
     signer: Arc<S>,
-) -> Result<Request, Error>
+) -> Result<Request, ClientError>
 where
     S::Error: std::error::Error + Send + Sync + 'static,
 {
     let integrity_token = integrity_token.to_owned();
     tokio::task::spawn_blocking(move || sign_blocking(request, &integrity_token, signer.as_ref()))
         .await
-        .map_err(Error::SigningTask)?
+        .map_err(|error| ClientError::ClientOperationFailed {
+            reason: "signing_task_failed",
+            source: Box::new(error),
+        })?
 }
 
 /// Performs the potentially blocking hardware-key operation on a blocking thread.
@@ -428,11 +418,11 @@ fn sign_blocking<S: Signer>(
     request: RequestBuilder,
     integrity_token: &str,
     signer: &S,
-) -> Result<Request, Error>
+) -> Result<Request, ClientError>
 where
     S::Error: std::error::Error + Send + Sync + 'static,
 {
-    let mut request = request.build().map_err(Error::Transport)?;
+    let mut request = request.build().map_err(ClientError::Transport)?;
     let signed = {
         let body = request
             .body()
@@ -447,32 +437,52 @@ where
             url.query(),
             body,
         )
-        .map_err(|error| Error::CanonicalRequest(Box::new(error)))?;
-        sign_request(&canonical, integrity_token, signer)
-            .map_err(|error| Error::Sign(error.into()))?
+        .map_err(|error| ClientError::ClientOperationFailed {
+            reason: "canonical_request_failed",
+            source: Box::new(error),
+        })?;
+        sign_request(&canonical, integrity_token, signer).map_err(|error| {
+            ClientError::ClientOperationFailed {
+                reason: "signing_failed",
+                source: error.into(),
+            }
+        })?
     };
     for (name, value) in signed.headers() {
         request.headers_mut().insert(
             HeaderName::from_bytes(name.as_bytes()).expect("attested-request header names"),
-            HeaderValue::from_str(value).map_err(|error| Error::Sign(error.into()))?,
+            HeaderValue::from_str(value).map_err(|error| ClientError::ClientOperationFailed {
+                reason: "signing_failed",
+                source: Box::new(error),
+            })?,
         );
     }
     Ok(request)
 }
 
-/// The success body, or the API's error code.
-async fn decode<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
+/// The success body, or the API's reason, message and retry guidance.
+async fn decode<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, ClientError> {
     let status = response.status();
     if !status.is_success() {
         return Err(match response.json::<ErrorEnvelope>().await {
-            Ok(envelope) => Error::Api {
+            Ok(envelope) => ClientError::HttpResponse {
                 status,
                 code: envelope.error.code,
+                message: envelope.error.message,
+                allow_retry: envelope.allow_retry,
             },
-            Err(_) => Error::UnexpectedStatus { status },
+            Err(_) => ClientError::http(status),
         });
     }
-    response.json().await.map_err(Error::Decode)
+    response
+        .json()
+        .await
+        .map_err(|error| ClientError::ClientOperationFailed {
+            reason: "invalid_response",
+            source: Box::new(error),
+        })
 }
 
 #[cfg(test)]
@@ -491,7 +501,7 @@ mod tests {
     };
     use axum::{Json, Router, http::StatusCode, routing::post};
 
-    use super::{Error, Migration, MigrationApiClient, parse_migration_pb, sign};
+    use super::{ClientError, Migration, MigrationApiClient, parse_migration_pb, sign};
     use orb_pcp_defs::prost::Message;
 
     #[test]
@@ -527,7 +537,10 @@ mod tests {
         for bytes in [&b"\x42\x03ab"[..], &b"\x42\x01\xff"[..]] {
             assert!(matches!(
                 parse_migration_pb(bytes),
-                Err(Error::DecodeMigration(_))
+                Err(ClientError::ClientOperationFailed {
+                    reason: "invalid_migration_pb",
+                    ..
+                })
             ));
         }
     }
@@ -578,7 +591,7 @@ mod tests {
         let base_url = "mailto:api@example.com".parse().unwrap();
         assert!(matches!(
             MigrationApiClient::with_http_client(&base_url, reqwest::Client::new()),
-            Err(Error::InvalidBaseUrl { .. })
+            Err(ClientError::InvalidBaseUrl { .. })
         ));
     }
 
@@ -694,6 +707,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_failures_preserve_reason_message_and_retry_guidance() {
+        for allow_retry in [false, true] {
+            let (url, server) = serve(Router::new().route(
+                "/",
+                post(move || async move {
+                    (
+                        StatusCode::CONFLICT,
+                        Json(serde_json::json!({
+                            "allowRetry": allow_retry,
+                            "error": {"code": "not_uploaded", "message": "Upload the PCP first"},
+                        })),
+                    )
+                }),
+            ))
+            .await;
+            let response = reqwest::Client::new().post(url).send().await.unwrap();
+            let error = super::decode::<serde_json::Value>(response)
+                .await
+                .unwrap_err();
+            assert_eq!(error.reason(), "not_uploaded");
+            assert_eq!(error.allow_retry(), allow_retry);
+            assert!(
+                matches!(error, ClientError::HttpResponse { status: StatusCode::CONFLICT, ref message, .. }
+                if message == "Upload the PCP first")
+            );
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
     async fn init_migration_surfaces_error_statuses() {
         let (url, server) = serve(Router::new().route(
             "/v1/init-migration",
@@ -717,7 +760,14 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(error, Error::UnexpectedStatus { status } if status == StatusCode::SERVICE_UNAVAILABLE),
+            matches!(
+                error,
+                ClientError::HttpResponse {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    allow_retry: true,
+                    ..
+                }
+            ),
             "{error}"
         );
         server.abort();

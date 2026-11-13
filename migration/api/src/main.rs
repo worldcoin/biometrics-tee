@@ -1402,7 +1402,7 @@ mod tests {
             other
                 .migration_status(&token, &signer, "test-sub")
                 .await,
-            Err(di_migration_client::Error::Api { code, .. }) if code == "device_key_mismatch"
+            Err(di_migration_client::ClientError::HttpResponse { code, .. }) if code == "device_key_mismatch"
         ));
     }
 }
