@@ -170,6 +170,51 @@ pub enum Reason {
 }
 
 impl Reason {
+    /// Whether a new migration attempt may succeed without changing the input.
+    ///
+    /// A failed job is terminal: retry by initializing a new migration and sealing
+    /// the PCP again. Input, configuration and unknown failures require investigation
+    /// or correction before retrying. Callers should bound retries and use backoff.
+    #[must_use]
+    pub const fn is_retriable(self) -> bool {
+        match self {
+            Self::HostBusy
+            | Self::EnclaveChanged
+            | Self::EnclaveError
+            | Self::Transport
+            | Self::MigrationTaskCancelled
+            | Self::MigrationDiagnosticSealingFailed
+            | Self::PcpRecipientKeyGenerationFailed
+            | Self::PcpResponseSealingFailed
+            | Self::BiometricPipelineFailed
+            | Self::EmbeddingShareGenerationFailed
+            | Self::AttestationFailed
+            | Self::ChannelKeyGenerationFailed
+            | Self::S3Error
+            | Self::Timeout => true,
+            Self::InvalidDebugReport
+            | Self::InvalidInput
+            | Self::InvalidPcp
+            | Self::InvalidSourceIrisData
+            | Self::FailedToBuildPcp
+            | Self::Unknown
+            | Self::InvalidSystemTime
+            | Self::ManifestSignerUnavailable
+            | Self::BiometricInvalidRequest
+            | Self::BiometricInvalidImage
+            | Self::BiometricQualityRejected
+            | Self::BiometricSpoofDetected
+            | Self::IncompleteBiometricPipelineResult
+            | Self::PcpKeyDecryptionFailed
+            | Self::CredentialSubMismatch
+            | Self::CredentialDeserializationFailed
+            | Self::CredentialSignatureVerificationFailed
+            | Self::CredentialSignatureInvalid
+            | Self::CredentialClaimsMismatch
+            | Self::InvalidDevicePublicKeyEncoding => false,
+        }
+    }
+
     /// Every reason, for parsing.
     pub const ALL: [Self; 34] = [
         Self::HostBusy,
@@ -324,6 +369,40 @@ mod tests {
     fn unknown_values_do_not_parse() {
         assert!("pending".parse::<Status>().is_err());
         assert!("oom".parse::<Reason>().is_err());
+    }
+
+    #[test]
+    fn transient_failures_allow_a_new_migration_attempt() {
+        for reason in [
+            Reason::HostBusy,
+            Reason::EnclaveChanged,
+            Reason::Transport,
+            Reason::MigrationTaskCancelled,
+            Reason::S3Error,
+            Reason::Timeout,
+        ] {
+            assert!(reason.is_retriable(), "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn input_configuration_and_unknown_failures_do_not_allow_retry() {
+        for reason in [
+            Reason::InvalidInput,
+            Reason::InvalidPcp,
+            Reason::InvalidSourceIrisData,
+            Reason::InvalidDevicePublicKeyEncoding,
+            Reason::CredentialSubMismatch,
+            Reason::CredentialSignatureInvalid,
+            Reason::CredentialClaimsMismatch,
+            Reason::BiometricQualityRejected,
+            Reason::BiometricSpoofDetected,
+            Reason::ManifestSignerUnavailable,
+            Reason::InvalidSystemTime,
+            Reason::Unknown,
+        ] {
+            assert!(!reason.is_retriable(), "{reason:?}");
+        }
     }
 
     /// Pins the values; the app and API branch on them, and the job table stores them.
