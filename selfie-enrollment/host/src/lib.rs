@@ -1,4 +1,4 @@
-//! Bounded ciphertext relay: one assignment and one encrypted extraction per socket.
+//! Bounded ciphertext relay for extraction or a begin/submit enrollment session.
 use axum::{
     Router,
     extract::{
@@ -61,15 +61,18 @@ impl AppState {
     /// Reject new sessions and await all upgraded sockets, bounded by their session deadline.
     pub async fn drain(&self) -> anyhow::Result<()> {
         self.connections.close();
-        timeout(Duration::from_secs(91), async {
-            loop {
-                let finished = self.session_finished.notified();
-                if self.connections.available_permits() == self.max_connections {
-                    break;
+        timeout(
+            Duration::from_secs(ENROLLMENT_SESSION_TIMEOUT_SECS + 1),
+            async {
+                loop {
+                    let finished = self.session_finished.notified();
+                    if self.connections.available_permits() == self.max_connections {
+                        break;
+                    }
+                    finished.await;
                 }
-                finished.await;
-            }
-        })
+            },
+        )
         .await
         .map_err(|_| anyhow::anyhow!("enrollment sessions did not drain"))
     }
@@ -100,13 +103,16 @@ async fn upgrade(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Re
         finished: state.session_finished.clone(),
     };
     upgrade
-        .max_message_size(MAX_REQUEST_BYTES)
-        .max_frame_size(MAX_REQUEST_BYTES)
+        .max_message_size(MAX_BATCH_REQUEST_BYTES)
+        .max_frame_size(MAX_BATCH_REQUEST_BYTES)
         .on_upgrade(move |mut socket| async move {
             let _permit = permit;
-            let result = timeout(Duration::from_secs(90), serve(&mut socket, &state))
-                .await
-                .unwrap_or(Err(ErrorCode::Timeout));
+            let result = timeout(
+                Duration::from_secs(ENROLLMENT_SESSION_TIMEOUT_SECS),
+                serve(&mut socket, &state),
+            )
+            .await
+            .unwrap_or(Err(ErrorCode::Timeout));
             let close_deadline = Instant::now() + Duration::from_secs(1);
             if let Err(code) = result {
                 // Codes contain no payloads or underlying dependency errors.
@@ -153,8 +159,9 @@ async fn serve(socket: &mut WebSocket, state: &AppState) -> Result<(), ErrorCode
     if text.len() > MAX_CONTROL_BYTES {
         return Err(ErrorCode::InvalidMessage);
     }
-    let ClientMessage::AssignmentRequest =
+    let message: ClientMessage =
         serde_json::from_str(&text).map_err(|_| ErrorCode::InvalidMessage)?;
+    let enrollment = matches!(message, ClientMessage::EnrollmentAssignmentRequest);
     let assignment = timeout(Duration::from_secs(3), state.enclave.assignment())
         .await
         .map_err(|_| ErrorCode::Timeout)??;
@@ -166,30 +173,54 @@ async fn serve(socket: &mut WebSocket, state: &AppState) -> Result<(), ErrorCode
         }),
     )
     .await?;
-    let Message::Binary(ciphertext) = next(socket, Duration::from_secs(30)).await? else {
-        return Err(ErrorCode::InvalidMessage);
-    };
-    if ciphertext.is_empty() || ciphertext.len() > MAX_REQUEST_BYTES {
-        return Err(ErrorCode::InvalidMessage);
+    for exchange in 0..if enrollment { 2 } else { 1 } {
+        let wait = if enrollment && exchange == 1 {
+            POSEGUARD_SESSION_TTL_SECS
+        } else {
+            30
+        };
+        let message = next(socket, Duration::from_secs(wait)).await?;
+        if matches!(message, Message::Close(_)) {
+            return Ok(());
+        }
+        let Message::Binary(ciphertext) = message else {
+            return Err(ErrorCode::InvalidMessage);
+        };
+        let limit = if enrollment && exchange == 1 {
+            MAX_BATCH_REQUEST_BYTES
+        } else if enrollment {
+            MAX_CONTROL_BYTES
+        } else {
+            MAX_REQUEST_BYTES
+        };
+        if ciphertext.is_empty() || ciphertext.len() > limit {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        let response = timeout(
+            Duration::from_secs(WORKER_TIMEOUT_SECS + 5),
+            state.enclave.extract(ExtractRequest {
+                ciphertext: ciphertext.to_vec(),
+            }),
+        )
+        .await
+        .map_err(|_| ErrorCode::Timeout)??;
+        let limit = if enrollment && exchange == 0 {
+            MAX_CHALLENGE_RESPONSE_BYTES
+        } else {
+            MAX_RESPONSE_BYTES
+        };
+        if response.ciphertext.len() > limit {
+            return Err(ErrorCode::Unavailable);
+        }
+        timeout(
+            Duration::from_secs(5),
+            socket.send(Message::Binary(response.ciphertext.into())),
+        )
+        .await
+        .map_err(|_| ErrorCode::Timeout)?
+        .map_err(|_| ErrorCode::Unavailable)?;
     }
-    let response = timeout(
-        Duration::from_secs(35),
-        state.enclave.extract(ExtractRequest {
-            ciphertext: ciphertext.to_vec(),
-        }),
-    )
-    .await
-    .map_err(|_| ErrorCode::Timeout)??;
-    if response.ciphertext.len() > MAX_RESPONSE_BYTES {
-        return Err(ErrorCode::Unavailable);
-    }
-    timeout(
-        Duration::from_secs(5),
-        socket.send(Message::Binary(response.ciphertext.into())),
-    )
-    .await
-    .map_err(|_| ErrorCode::Timeout)?
-    .map_err(|_| ErrorCode::Unavailable)
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

@@ -1,11 +1,17 @@
-//! Public enrollment messages. One assignment, then one sealed request and response.
+//! Public messages: one assignment, then one extraction or two sealed enrollment exchanges.
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
-/// Sealed enrollment requests: a capture becomes an attested v2 web enrollment and a PCP.
+/// Legacy single-image enrollment requests, explicitly rejected by PoseGuard releases.
 pub const ENROLLMENT_PROTOCOL_VERSION: u32 = 2;
 pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_REQUEST_BYTES: usize = MAX_IMAGE_BYTES + 8192;
+pub const POSEGUARD_CHALLENGE_COUNT: usize = 3;
+pub const MAX_BATCH_IMAGE_BYTES: usize = MAX_IMAGE_BYTES * (1 + POSEGUARD_CHALLENGE_COUNT);
+pub const MAX_BATCH_REQUEST_BYTES: usize = MAX_BATCH_IMAGE_BYTES + 8192;
+pub const POSEGUARD_SESSION_TTL_SECS: u64 = 90;
+pub const WORKER_TIMEOUT_SECS: u64 = 30;
+pub const ENROLLMENT_SESSION_TIMEOUT_SECS: u64 = 180;
 /// A sealed Face PCP: the image plus bounded metadata, archive overhead and a 48-byte sealed box.
 pub const MAX_ENCRYPTED_PCP_BYTES: usize = MAX_IMAGE_BYTES + 256 * 1024 + 48;
 /// Every enrollment result is padded to this size, so its length reveals nothing to the host.
@@ -13,6 +19,7 @@ pub const PADDED_ENROLLMENT_RESULT_BYTES: usize = MAX_ENCRYPTED_PCP_BYTES + 64 *
 /// Largest sealed response: an enrollment result plus channel encryption overhead.
 pub const MAX_RESPONSE_BYTES: usize = PADDED_ENROLLMENT_RESULT_BYTES + 8192;
 pub const MAX_CONTROL_BYTES: usize = 32 * 1024;
+pub const MAX_CHALLENGE_RESPONSE_BYTES: usize = 64 * 1024 + 8192;
 pub const CHANNEL_DOMAIN: &str = "selfie-enrollment/embedding/v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +33,7 @@ pub struct Assignment {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientMessage {
     AssignmentRequest,
+    EnrollmentAssignmentRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,0 +1,185 @@
+/**
+ * DeepIdentifier migration of an Orb signup.
+ *
+ * Re-processes the archived face RGB image and both IR iris captures of a signup into a
+ * current face embedding, the legacy iris codes and the DeepIdentifier iris embeddings.
+ */
+syntax = "proto3";
+package biometric_engines.migration.v1;
+
+/*
+ * Migration request for one signup. Every image is required and encoded as stored in the PCP.
+ *
+ * The face image runs the Orb credential face pipeline, including its spoof checks. Each iris
+ * capture runs capture QA, the full iris pipeline with its validators, and presentation attack
+ * detection. Any failure fails the whole request.
+ */
+message MigrationRequest {
+  // Orb RGB face image.
+  bytes face = 1;
+  // IR captures, PNG-encoded (`left_ir.png`, `right_ir.png`).
+  bytes left_iris = 2;
+  bytes right_iris = 3;
+}
+
+message MigrationResult {
+  FaceEmbedding face_embedding = 1;
+  EyeResult left_iris = 2;
+  EyeResult right_iris = 3;
+  string iris_code_version = 4;
+  string iris_model_version = 5;
+  string iris_embedding_version = 6;
+  string iris_inference_backend = 7;
+  optional string debug_report = 8;
+}
+
+// Same fields as the PCP's `face_embeddings.json` entries.
+message FaceEmbedding {
+  string vector = 1;
+  string type = 2;
+  string version = 3;
+  string inference_backend = 4;
+}
+
+message EyeResult {
+  // Base64 of the packed template, byte-identical to the Orb's `iris_codes.json` entries.
+  string iris_code = 1;
+  string mask_code = 2;
+  // Int4-quantized DeepIdentifier embedding and its mirror, one value in [-8, 7] per byte.
+  bytes embedding = 3;
+  bytes mirror_embedding = 4;
+  // L2-normalized f32 embedding and its mirror before quantization.
+  repeated float embedding_f32 = 5;
+  repeated float mirror_embedding_f32 = 6;
+  // Normalization from this run, as the Orb writes it to the PCP
+  // (`*_normalized_{image,mask}.bin`): 128 x 1024.
+  NormalizedIris normalized = 7;
+  // The same, resized (`*_normalized_{image,mask}_resized.bin`): 100 x 400.
+  NormalizedIris normalized_resized = 8;
+}
+
+message NormalizedIris {
+  // Row-major u8 pixels.
+  bytes image = 1;
+  // Row-major u8 validity mask aligned with `image`: 0 marks an invalid pixel, any other
+  // value a valid one.
+  bytes mask = 2;
+}
+
+
+/*
+ * Failure information in case of request processing failures.
+ *
+ * Failure fields carry high-level information about reason of failures, while the debug report
+ * contains more detailed information and individual failing scores.
+ */
+message Failure {
+  FailureCode code = 1;
+  // Required for every code except INTERNAL.
+  ImageRole image = 2;
+  // Required exactly when code is INVALID_REQUEST.
+  InvalidRequestReason invalid_request_reason = 3;
+  optional string debug_report = 4;
+  // Detailed failure source info supplementing the general
+  // failure code categorization.
+  oneof detail {
+    QualityReason quality_reason = 5;
+    SpoofReason spoof_reason = 6;
+    InternalReason internal_reason = 7;
+  }
+}
+
+enum FailureCode {
+  FAILURE_CODE_UNSPECIFIED = 0;
+  FAILURE_CODE_INVALID_REQUEST = 1;
+  // The image cannot be decoded.
+  FAILURE_CODE_INVALID_IMAGE = 2;
+  // A quality check rejected the image.
+  FAILURE_CODE_QUALITY_REJECTED = 3;
+  // A spoof or presentation attack check flagged the image.
+  FAILURE_CODE_SPOOF_DETECTED = 4;
+  FAILURE_CODE_INTERNAL = 5;
+}
+
+enum ImageRole {
+  IMAGE_ROLE_UNSPECIFIED = 0;
+  IMAGE_ROLE_FACE = 1;
+  IMAGE_ROLE_LEFT_IRIS = 2;
+  IMAGE_ROLE_RIGHT_IRIS = 3;
+  IMAGE_ROLE_IRIS_PAIR = 4;
+}
+
+message InvalidRequestReason {
+  oneof reason {
+    EmptyReason missing_image = 1;
+    ByteLimitExceeded image_too_large = 2;
+  }
+}
+
+message EmptyReason {}
+
+enum QualityReason {
+  QUALITY_REASON_UNSPECIFIED = 0;
+  QUALITY_REASON_NO_EYE_DETECTED = 1;
+  QUALITY_REASON_IMAGE_UNSHARP = 2;
+  QUALITY_REASON_IMAGE_TOO_DARK = 3;
+  QUALITY_REASON_OFFGAZE_DETECTED = 4;
+  QUALITY_REASON_IRIS_COVERED = 5;
+  QUALITY_REASON_EYE_CLOSED = 6;
+  QUALITY_REASON_PUPIL_TOO_DILATED = 7;
+  QUALITY_REASON_PUPIL_TOO_CONSTRICTED = 8;
+  QUALITY_REASON_IRIS_UNSHARP = 9;
+  QUALITY_REASON_IRIS_MISALIGNED = 10;
+  QUALITY_REASON_IMAGE_TOO_BRIGHT = 11;
+  QUALITY_REASON_WRONG_ORIENTATION = 12;
+  QUALITY_REASON_PUPIL_CENTER_OUTSIDE_IMAGE = 13;
+  QUALITY_REASON_IRIS_CENTER_OUTSIDE_IMAGE = 14;
+  QUALITY_REASON_PUPIL_TO_IRIS_RATIO_TOO_SMALL = 15;
+  QUALITY_REASON_PUPIL_TO_IRIS_RATIO_TOO_LARGE = 16;
+  QUALITY_REASON_PUPIL_IRIS_OFFCENTER = 17;
+  QUALITY_REASON_PUPIL_POLYGON_TOO_SHORT = 18;
+  QUALITY_REASON_IRIS_POLYGON_TOO_SHORT = 19;
+  QUALITY_REASON_PUPIL_POLYGON_OUTSIDE_IMAGE = 20;
+  QUALITY_REASON_IRIS_POLYGON_OUTSIDE_IMAGE = 21;
+  QUALITY_REASON_SCLERA_POLYGON_OUTSIDE_IMAGE = 22;
+  QUALITY_REASON_OCCLUSION_ERROR = 23;
+  QUALITY_REASON_IS_MASK_GOOD_VALIDATOR_ERROR = 24;
+  QUALITY_REASON_IS_MASK_GOOD_VALIDATOR_ERROR_UPPER = 25;
+  QUALITY_REASON_IS_MASK_GOOD_VALIDATOR_ERROR_LOWER = 26;
+  QUALITY_REASON_IS_MASK_GOOD_VALIDATOR_ERROR_ABNORMAL = 27;
+  QUALITY_REASON_IS_MASK_GOOD_VALIDATOR_ERROR_WEIGHTED_ABNORMAL = 28;
+  QUALITY_REASON_IS_IRIS_CODE_BIT_BALANCED_ERROR = 29;
+}
+
+enum SpoofReason {
+  SPOOF_REASON_UNSPECIFIED = 0;
+  SPOOF_REASON_CONTACT_LENS_DETECTED = 1;
+  SPOOF_REASON_SAME_EYE_DETECTED = 2;
+  SPOOF_REASON_MID_FACE_MIRROR_DETECTED = 3;
+  SPOOF_REASON_EYE_COMBINATION_DETECTED = 4;
+}
+
+enum InternalReason {
+  INTERNAL_REASON_UNSPECIFIED = 0;
+  INTERNAL_REASON_CAPTURE_QA_EXECUTION_FAILED = 1;
+  INTERNAL_REASON_PIPELINE_EXECUTION_FAILED = 2;
+  INTERNAL_REASON_PAD_EXECUTION_FAILED = 3;
+  INTERNAL_REASON_EMPTY_EMBEDDING = 4;
+  INTERNAL_REASON_UNCOMPARABLE_EMBEDDING = 5;
+  INTERNAL_REASON_MISSING_EYE_COMBINATION_RESULT = 6;
+  INTERNAL_REASON_NON_FINITE_SIMILARITY = 7;
+  INTERNAL_REASON_MISSING_IRIS_CODE = 8;
+  INTERNAL_REASON_IRIS_CODE_MISMATCH = 9;
+  INTERNAL_REASON_NON_FINITE_DISTANCE = 10;
+  INTERNAL_REASON_IRIS_CODE_MIRROR_FAILED = 11;
+  INTERNAL_REASON_MISSING_IRIS_EMBEDDING = 12;
+  INTERNAL_REASON_EMBEDDING_QUANTIZATION_FAILURE = 13;
+  INTERNAL_REASON_SIMILARITY_EXCEEDS_LIMITS = 14;
+  INTERNAL_REASON_MISSING_MIRRORED_EMBEDDING = 15;
+  INTERNAL_REASON_IRIS_CODE_ENCODING_FAILED = 16;
+  INTERNAL_REASON_MISSING_NORMALIZED_IMAGE = 17;
+  INTERNAL_REASON_MISSING_NORMALIZED_RESIZED_IMAGE = 18;
+  INTERNAL_REASON_MISSING_PIPELINE_OUTPUT = 19;
+}
+
+message ByteLimitExceeded { uint64 limit_bytes = 1; }

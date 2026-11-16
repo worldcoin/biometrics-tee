@@ -165,3 +165,73 @@ async fn shutdown_waits_for_upgraded_sockets_and_rejects_new_sessions() {
     assert_eq!(state.connections.available_permits(), 1);
     task.abort();
 }
+
+#[tokio::test]
+async fn enrollment_relays_exactly_two_exchanges_and_accepts_a_batched_second_frame() {
+    let (url, state, enclave, task) = server().await;
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    socket
+        .send(Message::Text(
+            r#"{"type":"enrollment_assignment_request"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(next(&mut socket).await["type"], "assignment");
+    for size in [16, MAX_REQUEST_BYTES + 1] {
+        socket
+            .send(Message::Binary(vec![1; size].into()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+    }
+    assert!(matches!(
+        socket.next().await.unwrap().unwrap(),
+        Message::Close(_)
+    ));
+    assert_eq!(enclave.extractions.load(Ordering::SeqCst), 2);
+    drop(socket);
+    state.drain().await.unwrap();
+    task.abort();
+}
+
+#[tokio::test]
+async fn enrollment_begin_has_a_small_limit_and_untrusted_attestation_withholds_it() {
+    let (url, _, enclave, task) = server().await;
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    socket
+        .send(Message::Text(
+            r#"{"type":"enrollment_assignment_request"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    next(&mut socket).await;
+    socket
+        .send(Message::Binary(vec![1; MAX_CONTROL_BYTES + 1].into()))
+        .await
+        .unwrap();
+    let error: ErrorEnvelope = serde_json::from_value(next(&mut socket).await).unwrap();
+    assert_eq!(error.error.code, ErrorCode::InvalidMessage);
+    assert_eq!(enclave.extractions.load(Ordering::SeqCst), 0);
+    task.abort();
+
+    let (url, _, enclave, task) = server().await;
+    let client =
+        selfie_enrollment_client::EnrollmentClient::new(selfie_enrollment_client::Config {
+            endpoint: url,
+            releases: vec![selfie_enrollment_client::Release {
+                pcr0: "1".repeat(96),
+                pcr1: "2".repeat(96),
+                pcr2: "3".repeat(96),
+            }],
+        })
+        .unwrap();
+    assert!(matches!(
+        client.begin_enrollment("0x1f".into(), [8; 32]).await,
+        Err(selfie_enrollment_client::Error::Attestation)
+    ));
+    assert_eq!(enclave.extractions.load(Ordering::SeqCst), 0);
+    task.abort();
+}

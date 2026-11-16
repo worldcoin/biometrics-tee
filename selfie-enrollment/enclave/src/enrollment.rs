@@ -1,8 +1,8 @@
 //! Native enclave producer: extract, assemble, attest and encrypt custody data for
 //! signup-service's v4-only web enrollment, `PUT /api/v2/identity`.
 //!
-//! The browser sends a capture, its canonical v4 subject and its custody public key over the
-//! attested channel ([`State::enroll_sealed`]). The enclave returns the attested capture fields,
+//! The browser submits a PoseGuard batch in a session bound to its v4 subject and custody key
+//! through the attested channel ([`State::extract`]). The enclave returns the attested capture fields,
 //! the Nitro attestation header and the user's Face PCP sealed to that custody key. The browser
 //! adds its v4 challenge and ownership proof and submits the request itself; signup-service
 //! verifies subject ownership. There is no v3 identity. Clock, capture ID, AMPC recipient keys
@@ -14,13 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crypto_box::PublicKey;
 use rand::rngs::OsRng;
 use selfie_enrollment_api_types::MAX_IMAGE_BYTES;
-use selfie_enrollment_enclave_types::Error as EnclaveError;
 use selfie_enrollment_identity::{
     Capture, CaptureAttestor, Form, Inputs, assemble, custody, validate_sub,
 };
-use selfie_enrollment_sealed_types::{
-    EnrollmentBundle, EnrollmentField, EnrollmentRequest, EnrollmentResult, Failure,
-};
+use selfie_enrollment_sealed_types::{Failure, poseguard::PoseTarget};
 use uuid::Uuid;
 
 use crate::State;
@@ -50,8 +47,8 @@ impl TrustedContext {
 
 /// The enclave's enrollment capability: its trusted context and per-capture attestor.
 pub struct Producer {
-    context: TrustedContext,
-    attestor: Arc<dyn CaptureAttestor + Send + Sync>,
+    pub(crate) context: TrustedContext,
+    pub(crate) attestor: Arc<dyn CaptureAttestor + Send + Sync>,
 }
 
 impl Producer {
@@ -63,8 +60,9 @@ impl Producer {
 
 /// Obtain these bytes through the verified encrypted enrollment channel. The image
 /// must be PNG; JPEG-to-PNG conversion is not silently delegated to the host.
-pub struct CaptureRequest<'a> {
+pub(crate) struct CaptureRequest<'a> {
     pub image_png: &'a [u8],
+    pub challenges: [(&'a [u8], PoseTarget); 3],
     /// The browser's canonical v4 subject, bound into the attested capture.
     pub sub: &'a str,
     /// The user's custody public key; the PCP is sealed to it.
@@ -74,7 +72,7 @@ pub struct CaptureRequest<'a> {
 /// Contains submission metadata and encrypted custody data, never the image,
 /// raw embedding, plaintext shares or identity secrets. No Debug implementation.
 /// The browser submits `form`, plus its challenge and proof, with `attestation_header`.
-pub struct PreparedEnrollment {
+pub(crate) struct PreparedEnrollment {
     pub form: Form,
     pub attestation_header: String,
     pub encrypted_custody: Vec<u8>,
@@ -98,6 +96,12 @@ fn validate(request: &CaptureRequest<'_>) -> Result<(), Error> {
     {
         return Err(Error::InvalidRequest);
     }
+    for (image, target) in &request.challenges {
+        if image.is_empty() || image.len() > MAX_IMAGE_BYTES {
+            return Err(Error::InvalidRequest);
+        }
+        target.validate().map_err(|_| Error::InvalidRequest)?;
+    }
     validate_sub(request.sub).map_err(|_| Error::InvalidRequest)?;
     embedding_shares::validate_recipients(std::slice::from_ref(request.custody_key))
         .map_err(|_| Error::InvalidRequest)
@@ -110,7 +114,8 @@ impl State {
     /// # Errors
     /// Reject invalid inputs, worker contention, failed extraction or unavailable
     /// attestation or custody encryption. No partial enrollment is returned.
-    pub fn prepare_enrollment(
+    #[cfg(test)]
+    fn prepare_enrollment(
         &self,
         request: CaptureRequest<'_>,
         context: &TrustedContext,
@@ -121,68 +126,34 @@ impl State {
         self.produce(&request, context, attestor)
     }
 
-    /// Serves one sealed enrollment request. The caller holds the processing permit.
-    /// Invalid input and rejected captures become a sealed failure for the browser;
-    /// a missing capability or an internal failure is a transport-level `Unavailable`.
-    pub(crate) fn enroll_sealed(
-        &self,
-        request: &EnrollmentRequest,
-    ) -> Result<EnrollmentResult, EnclaveError> {
-        let producer = self.enrollment.as_ref().ok_or(EnclaveError::Unavailable)?;
-        let key: [u8; 32] = request
-            .custody_public_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| EnclaveError::InvalidMessage)?;
-        let custody_key = PublicKey::from(key);
-        let capture = CaptureRequest {
-            image_png: &request.image,
-            sub: &request.sub,
-            custody_key: &custody_key,
-        };
-        let prepared = match validate(&capture)
-            .and_then(|()| self.produce(&capture, &producer.context, producer.attestor.as_ref()))
-        {
-            Ok(prepared) => prepared,
-            Err(Error::InvalidRequest) => {
-                return Ok(EnrollmentResult::Failed {
-                    reason: Failure::InvalidRequest,
-                });
-            }
-            Err(Error::Capture(reason)) => return Ok(EnrollmentResult::Failed { reason }),
-            Err(Error::Busy | Error::Unavailable) => return Err(EnclaveError::Unavailable),
-        };
-        let fields = prepared
-            .form
-            .parts()
-            .into_iter()
-            .map(|(name, value)| {
-                std::str::from_utf8(value).map(|value| EnrollmentField {
-                    name: name.to_owned(),
-                    value: value.to_owned(),
-                })
-            })
-            .collect::<Result<_, _>>()
-            .map_err(|_| EnclaveError::Unavailable)?;
-        Ok(EnrollmentResult::Success {
-            enrollment: EnrollmentBundle {
-                fields,
-                attestation_header: prepared.attestation_header,
-                encrypted_custody: prepared.encrypted_custody,
-            },
-        })
-    }
-
     /// Extracts, assembles, attests and seals custody. The caller holds the permit.
-    fn produce(
+    pub(crate) fn produce(
         &self,
         request: &CaptureRequest<'_>,
         context: &TrustedContext,
         attestor: &dyn CaptureAttestor,
     ) -> Result<PreparedEnrollment, Error> {
-        let embedding = self
-            .engine
-            .extract(request.image_png)
+        use biometric_engines_protocol::face::{
+            FaceImage, PoseGuard, PoseGuardCapture, face_image::Source,
+        };
+        validate(request)?;
+        let mut image = FaceImage {
+            source: Some(Source::PoseGuard(PoseGuard {
+                central_image: request.image_png.to_vec(),
+                challenges: request
+                    .challenges
+                    .iter()
+                    .map(|(bytes, target)| PoseGuardCapture {
+                        image: bytes.to_vec(),
+                        target_pitch: f32::from(target.pitch),
+                        target_yaw: f32::from(target.yaw),
+                    })
+                    .collect(),
+            })),
+        };
+        let result = self.engine.extract(&image);
+        crate::engine::erase_image(&mut image);
+        let embedding = result
             .map_err(|_| Error::Unavailable)?
             .map_err(Error::Capture)?;
         let captured_at = SystemTime::now()
@@ -240,8 +211,17 @@ mod tests {
         reject: bool,
     }
     impl crate::engine::Engine for Engine {
-        fn extract(&self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
-            assert_eq!(image, b"\x89PNG\r\n\x1a\nfixture");
+        fn extract(
+            &self,
+            image: &biometric_engines_protocol::face::FaceImage,
+        ) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
+            let Some(biometric_engines_protocol::face::face_image::Source::PoseGuard(capture)) =
+                &image.source
+            else {
+                panic!("enrollment must use PoseGuard")
+            };
+            assert_eq!(capture.central_image, b"\x89PNG\r\n\x1a\nfixture");
+            assert_eq!(capture.challenges.len(), 3);
             if self.reject {
                 return Ok(Err(Failure::QualityRejected));
             }
@@ -290,6 +270,7 @@ mod tests {
     fn request(key: &PublicKey) -> CaptureRequest<'_> {
         CaptureRequest {
             image_png: b"\x89PNG\r\n\x1a\nfixture",
+            challenges: [(b"jpeg", PoseTarget { pitch: 15, yaw: 25 }); 3],
             sub: "0x1f",
             custody_key: key,
         }
@@ -336,7 +317,10 @@ mod tests {
     fn malformed_subjects_fail_before_acquiring_a_slot_or_running_extraction() {
         struct NeverExtract;
         impl crate::engine::Engine for NeverExtract {
-            fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
+            fn extract(
+                &self,
+                _: &biometric_engines_protocol::face::FaceImage,
+            ) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
                 panic!("malformed subjects must not reach extraction");
             }
             fn check_health(&self) -> Result<(), EnclaveError> {

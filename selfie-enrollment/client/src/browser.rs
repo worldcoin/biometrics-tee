@@ -171,46 +171,6 @@ pub async fn extract(
     session.extract(std::mem::take(&mut *image)).await
 }
 
-/// One-shot browser enrollment: the result carries the attested capture fields, the
-/// attestation header and the user's PCP sealed to `custody_public_key`.
-pub async fn enroll(
-    config: Config,
-    image: Vec<u8>,
-    sub: String,
-    custody_public_key: [u8; 32],
-    signal: Option<AbortSignal>,
-) -> Result<selfie_enrollment_sealed_types::EnrollmentResult, Error> {
-    let mut image = zeroize::Zeroizing::new(image);
-    let client = EnrollmentClient::new(config)?;
-    let session = client.connect(signal).await?;
-    session
-        .enroll(std::mem::take(&mut *image), sub, custody_public_key)
-        .await
-}
-
-#[cfg(feature = "js-export")]
-#[wasm_bindgen(js_name=enroll)]
-pub async fn enroll_capture(
-    config_json: String,
-    image: Vec<u8>,
-    sub: String,
-    custody_public_key: Vec<u8>,
-    signal: Option<AbortSignal>,
-) -> Result<JsValue, JsValue> {
-    let mut image = zeroize::Zeroizing::new(image);
-    let operation = async {
-        let config: Config = serde_json::from_str(&config_json).map_err(|_| Error::Config)?;
-        let key: [u8; 32] = custody_public_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| Error::Config)?;
-        let result = enroll(config, std::mem::take(&mut *image), sub, key, signal).await?;
-        serde_wasm_bindgen::to_value(&result).map_err(|_| Error::Protocol)
-    }
-    .await;
-    operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
-}
-
 #[cfg(feature = "js-export")]
 #[wasm_bindgen(js_name=extractEmbedding)]
 pub async fn extract_embedding(
@@ -226,4 +186,82 @@ pub async fn extract_embedding(
     }
     .await;
     operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
+}
+
+impl EnrollmentClient {
+    pub async fn begin_enrollment(
+        &self,
+        sub: String,
+        custody_public_key: [u8; 32],
+        signal: Option<AbortSignal>,
+    ) -> Result<crate::poseguard::PoseGuardSession<BrowserTransport>, Error> {
+        self.connect_enrollment_transport(
+            BrowserTransport::connect(&self.config, signal).await?,
+            sub,
+            custody_public_key,
+        )
+        .await
+    }
+}
+
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_name = EnrollmentSession)]
+pub struct BrowserEnrollmentSession {
+    inner: Option<crate::poseguard::PoseGuardSession<BrowserTransport>>,
+}
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_class = EnrollmentSession)]
+impl BrowserEnrollmentSession {
+    #[wasm_bindgen(getter)]
+    pub fn challenge(&self) -> Result<JsValue, JsValue> {
+        let session = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| js_error(Error::Protocol))?;
+        serde_wasm_bindgen::to_value(session.challenge()).map_err(|_| js_error(Error::Protocol))
+    }
+    pub async fn enroll(
+        &mut self,
+        central_png: Vec<u8>,
+        challenge_0: Vec<u8>,
+        challenge_1: Vec<u8>,
+        challenge_2: Vec<u8>,
+    ) -> Result<JsValue, JsValue> {
+        use selfie_enrollment_sealed_types::poseguard::{CaptureBatch, ChallengeImage};
+        let capture = CaptureBatch {
+            central_png,
+            challenges: [challenge_0, challenge_1, challenge_2].map(ChallengeImage),
+        };
+        let session = self.inner.take().ok_or_else(|| js_error(Error::Protocol))?;
+        let result = session.enroll(capture).await.map_err(js_error)?;
+        serde_wasm_bindgen::to_value(&result).map_err(|_| js_error(Error::Protocol))
+    }
+    pub async fn cancel(&mut self) -> Result<(), JsValue> {
+        let session = self.inner.take().ok_or_else(|| js_error(Error::Protocol))?;
+        session.cancel().await.map_err(js_error)
+    }
+}
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_name = beginEnrollment)]
+pub async fn begin_enrollment(
+    config_json: String,
+    sub: String,
+    custody_public_key: Vec<u8>,
+    signal: Option<AbortSignal>,
+) -> Result<BrowserEnrollmentSession, JsValue> {
+    let config: Config = serde_json::from_str(&config_json).map_err(|_| js_error(Error::Config))?;
+    let key = custody_public_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| js_error(Error::Config))?;
+    let inner = EnrollmentClient::new(config)
+        .map_err(js_error)?
+        .begin_enrollment(sub, key, signal)
+        .await
+        .map_err(js_error)?;
+    Ok(BrowserEnrollmentSession { inner: Some(inner) })
+}
+#[cfg(feature = "js-export")]
+fn js_error(error: Error) -> JsValue {
+    JsValue::from_str(&error.to_string())
 }

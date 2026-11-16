@@ -41,8 +41,8 @@ pub fn run() -> anyhow::Result<()> {
             output: WorkerOutput::Discard,
         },
         ConnectionConfig {
-            request_timeout: Duration::from_secs(30),
-            max_request_bytes: selfie_enrollment_api_types::MAX_REQUEST_BYTES,
+            request_timeout: Duration::from_secs(selfie_enrollment_api_types::WORKER_TIMEOUT_SECS),
+            max_request_bytes: selfie_enrollment_api_types::MAX_BATCH_REQUEST_BYTES,
             max_response_bytes: 256 * 1024,
             ..Default::default()
         },

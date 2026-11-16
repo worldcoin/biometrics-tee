@@ -5,12 +5,12 @@ use pontifex::{
     attestation::{PcrConfig, VerifiedAttestation, Verifier},
 };
 use selfie_enrollment_api_types::*;
-use selfie_enrollment_sealed_types::{
-    EmbeddingRequest, EmbeddingResult, EnrollmentRequest, EnrollmentResult,
-};
+use selfie_enrollment_sealed_types::{EmbeddingRequest, EmbeddingResult};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use zeroize::Zeroizing;
+
+pub mod poseguard;
 
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
@@ -141,20 +141,6 @@ impl VerifiedAssignment {
         };
         self.seal_plaintext(&request.encode().map_err(|_| Error::Protocol)?)
     }
-    fn seal_enrollment(
-        &self,
-        image: Vec<u8>,
-        sub: String,
-        custody_public_key: [u8; 32],
-    ) -> Result<(Vec<u8>, PendingResult), Error> {
-        let request = EnrollmentRequest {
-            version: ENROLLMENT_PROTOCOL_VERSION,
-            image,
-            sub,
-            custody_public_key: custody_public_key.to_vec(),
-        };
-        self.seal_plaintext(&request.encode().map_err(|_| Error::Protocol)?)
-    }
     fn seal_plaintext(&self, plaintext: &[u8]) -> Result<(Vec<u8>, PendingResult), Error> {
         let (sealed, opener) = self
             .consumer
@@ -172,9 +158,6 @@ struct PendingResult {
 impl PendingResult {
     fn open(self, ciphertext: &[u8]) -> Result<EmbeddingResult, Error> {
         EmbeddingResult::decode(&self.open_plaintext(ciphertext)?).map_err(|_| Error::Protocol)
-    }
-    fn open_enrollment(self, ciphertext: &[u8]) -> Result<EnrollmentResult, Error> {
-        EnrollmentResult::decode(&self.open_plaintext(ciphertext)?).map_err(|_| Error::Protocol)
     }
     fn open_plaintext(self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error> {
         if ciphertext.len() > MAX_RESPONSE_BYTES {
@@ -210,11 +193,37 @@ impl EnrollmentClient {
 
     async fn connect_transport<T: Transport>(
         &self,
+        socket: T,
+    ) -> Result<EnrollmentSession<T>, Error> {
+        self.assign_transport(socket, ClientMessage::AssignmentRequest)
+            .await
+    }
+
+    async fn connect_enrollment_transport<T: Transport>(
+        &self,
+        socket: T,
+        sub: String,
+        custody_public_key: [u8; 32],
+    ) -> Result<poseguard::PoseGuardSession<T>, Error> {
+        let session = self
+            .assign_transport(socket, ClientMessage::EnrollmentAssignmentRequest)
+            .await?;
+        poseguard::PoseGuardSession::begin(
+            session.socket,
+            session.assignment.consumer,
+            sub,
+            custody_public_key,
+        )
+        .await
+    }
+
+    async fn assign_transport<T: Transport>(
+        &self,
         mut socket: T,
+        message: ClientMessage,
     ) -> Result<EnrollmentSession<T>, Error> {
         let result = async {
-            let request = serde_json::to_string(&ClientMessage::AssignmentRequest)
-                .map_err(|_| Error::Protocol)?;
+            let request = serde_json::to_string(&message).map_err(|_| Error::Protocol)?;
             socket
                 .send(Frame::Text(request), Duration::from_secs(5))
                 .await?;
@@ -248,22 +257,6 @@ impl<T: Transport> EnrollmentSession<T> {
         let (request, pending) = self.assignment.seal(image)?;
         let response = self.round_trip(request).await?;
         pending.open(&response)
-    }
-
-    /// Consumes the session: one encrypted enrollment. On success the result carries the
-    /// attested capture fields, the attestation header and the user's PCP, sealed to
-    /// `custody_public_key`. The caller adds its v4 challenge and proof and submits.
-    pub async fn enroll(
-        self,
-        image: Vec<u8>,
-        sub: String,
-        custody_public_key: [u8; 32],
-    ) -> Result<EnrollmentResult, Error> {
-        let (request, pending) = self
-            .assignment
-            .seal_enrollment(image, sub, custody_public_key)?;
-        let response = self.round_trip(request).await?;
-        pending.open_enrollment(&response)
     }
 
     async fn round_trip(mut self, request: Vec<u8>) -> Result<Vec<u8>, Error> {

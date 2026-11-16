@@ -75,3 +75,18 @@ impl EnrollmentClient {
             .await
     }
 }
+
+impl EnrollmentClient {
+    pub async fn begin_enrollment(
+        &self,
+        sub: String,
+        custody_public_key: [u8; 32],
+    ) -> Result<crate::poseguard::PoseGuardSession<NativeTransport>, Error> {
+        self.connect_enrollment_transport(
+            NativeTransport::connect(&self.config).await?,
+            sub,
+            custody_public_key,
+        )
+        .await
+    }
+}

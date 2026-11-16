@@ -1,4 +1,5 @@
 //! Plaintext types used only by the client and enclave. Sensitive buffers are redacted and erased.
+pub mod poseguard;
 use selfie_enrollment_api_types::{
     ENROLLMENT_PROTOCOL_VERSION, MAX_ENCRYPTED_PCP_BYTES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES,
     PADDED_ENROLLMENT_RESULT_BYTES, PROTOCOL_VERSION,
@@ -57,6 +58,29 @@ pub enum Failure {
     QualityRejected,
     ExtractionFailed,
     InvalidRequest,
+    Challenge {
+        index: u32,
+        reason: ChallengeFailure,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeFailure {
+    InvalidImage,
+    QualityRejected,
+    ExtractionFailed,
+    PoseMismatch,
+    IdentityMismatch,
+}
+impl Failure {
+    fn validate(&self) -> Result<(), Error> {
+        if matches!(self, Self::Challenge { index, .. } if *index >= selfie_enrollment_api_types::POSEGUARD_CHALLENGE_COUNT as u32)
+        {
+            return Err(Error);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -67,6 +91,9 @@ pub enum EmbeddingResult {
 }
 impl EmbeddingResult {
     fn validate(&self) -> Result<(), Error> {
+        if let Self::Failed { reason } = self {
+            return reason.validate();
+        }
         if let Self::Success { embedding: e } = self
             && (e.embedding.is_empty()
                 || e.embedding.len() > 4096
@@ -117,7 +144,7 @@ const MAX_ATTESTATION_HEADER_BYTES: usize = 16_000;
 const CUSTODY_PUBLIC_KEY_BYTES: usize = 32;
 const SEALED_BOX_OVERHEAD_BYTES: usize = 48;
 
-/// One capture to enroll. The canonical subject is checked by the enclave before extraction.
+/// Legacy single-image enrollment payload, decoded only for explicit rejection.
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollmentRequest {
@@ -161,10 +188,11 @@ impl EnrollmentRequest {
 pub enum Request {
     Embedding(EmbeddingRequest),
     Enrollment(EnrollmentRequest),
+    PoseGuard(poseguard::Request),
 }
 impl Request {
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() > MAX_REQUEST_BYTES {
+        if bytes.len() > selfie_enrollment_api_types::MAX_BATCH_REQUEST_BYTES {
             return Err(Error);
         }
         #[derive(Deserialize)]
@@ -175,6 +203,7 @@ impl Request {
         match version {
             PROTOCOL_VERSION => EmbeddingRequest::decode(bytes).map(Self::Embedding),
             ENROLLMENT_PROTOCOL_VERSION => EnrollmentRequest::decode(bytes).map(Self::Enrollment),
+            poseguard::VERSION => poseguard::Request::decode(bytes).map(Self::PoseGuard),
             _ => Err(Error),
         }
     }
@@ -209,6 +238,9 @@ pub enum EnrollmentResult {
 }
 impl EnrollmentResult {
     fn validate(&self) -> Result<(), Error> {
+        if let Self::Failed { reason } = self {
+            return reason.validate();
+        }
         let Self::Success { enrollment } = self else {
             return Ok(());
         };
@@ -254,6 +286,30 @@ fn encode<T: Serialize>(value: &T) -> Result<Zeroizing<Vec<u8>>, Error> {
     let mut buffer = Zeroizing::new(Vec::new());
     ciborium::into_writer(value, &mut *buffer).map_err(|_| Error)?;
     Ok(buffer)
+}
+fn encode_bounded<T: Serialize>(value: &T, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
+    struct Bounded {
+        bytes: Zeroizing<Vec<u8>>,
+        limit: usize,
+    }
+    impl std::io::Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit - self.bytes.len() {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Bounded {
+        bytes: Zeroizing::new(Vec::with_capacity(limit)),
+        limit,
+    };
+    ciborium::into_writer(value, &mut writer).map_err(|_| Error)?;
+    Ok(writer.bytes)
 }
 /// A big-endian `u32` body length, the body, then zeros up to exactly `size` bytes.
 fn encode_padded<T: Serialize>(value: &T, size: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
