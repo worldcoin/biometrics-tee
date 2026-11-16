@@ -7,7 +7,7 @@ use pontifex::{
 use selfie_enrollment_api_types::*;
 pub use selfie_enrollment_sealed_types::PoseGuardCapture;
 use selfie_enrollment_sealed_types::{
-    EmbeddingRequest, EmbeddingResult, EnrollmentRequest, EnrollmentResult,
+    EmbeddingRequest, EmbeddingResult, EnrollmentOperation, EnrollmentRequest, EnrollmentResult,
     PoseGuardEnrollmentRequest,
 };
 use serde::{Deserialize, Serialize};
@@ -277,7 +277,8 @@ impl<T: Transport> EnrollmentSession<T> {
         custody_public_key: [u8; 32],
     ) -> Result<EnrollmentResult, Error> {
         let input = PoseGuardEnrollmentRequest {
-            version: POSEGUARD_ENROLLMENT_PROTOCOL_VERSION,
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::EnrollWithPoseGuard,
             central_png,
             captures,
             sub,

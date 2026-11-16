@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Sealed enrollment requests: a capture becomes an attested v2 web enrollment and a PCP.
 pub const ENROLLMENT_PROTOCOL_VERSION: u32 = 2;
-pub const POSEGUARD_ENROLLMENT_PROTOCOL_VERSION: u32 = 3;
 pub const POSEGUARD_CHALLENGE_COUNT: usize = 3;
 pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_REQUEST_BYTES: usize = MAX_IMAGE_BYTES + 8192;

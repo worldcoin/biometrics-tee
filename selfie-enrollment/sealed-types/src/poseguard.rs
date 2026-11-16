@@ -1,7 +1,7 @@
 use crate::{Error, MAX_SUB_BYTES, decode};
 use selfie_enrollment_api_types::{
-    MAX_IMAGE_BYTES, MAX_POSEGUARD_REQUEST_BYTES, POSEGUARD_CHALLENGE_COUNT,
-    POSEGUARD_ENROLLMENT_PROTOCOL_VERSION,
+    ENROLLMENT_PROTOCOL_VERSION, MAX_IMAGE_BYTES, MAX_POSEGUARD_REQUEST_BYTES,
+    POSEGUARD_CHALLENGE_COUNT,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
@@ -21,12 +21,19 @@ pub struct PoseGuardCapture {
 #[serde(deny_unknown_fields)]
 pub struct PoseGuardEnrollmentRequest {
     pub version: u32,
+    pub operation: EnrollmentOperation,
     #[serde(with = "serde_bytes")]
     pub central_png: Vec<u8>,
     pub captures: [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT],
     pub sub: String,
     #[serde(with = "serde_bytes")]
     pub custody_public_key: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Zeroize)]
+pub enum EnrollmentOperation {
+    #[serde(rename = "enroll_with_poseguard")]
+    EnrollWithPoseGuard,
 }
 
 impl PoseGuardEnrollmentRequest {
@@ -57,7 +64,7 @@ impl PoseGuardEnrollmentRequest {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
-        if self.version != POSEGUARD_ENROLLMENT_PROTOCOL_VERSION
+        if self.version != ENROLLMENT_PROTOCOL_VERSION
             || !self.central_png.starts_with(b"\x89PNG\r\n\x1a\n")
             || self.central_png.len() > MAX_IMAGE_BYTES
             || self.sub.is_empty()
@@ -139,6 +146,48 @@ mod tests {
     }
 
     #[test]
+    fn poseguard_keeps_enrollment_version_and_requires_its_operation_tag() {
+        let bytes = request().encode().unwrap();
+        let mut value: ciborium::Value = decode(&bytes).unwrap();
+        let ciborium::Value::Map(fields) = &mut value else {
+            panic!()
+        };
+        let field = |name| {
+            fields
+                .iter()
+                .find(|(key, _)| key.as_text() == Some(name))
+                .unwrap()
+                .1
+                .clone()
+        };
+        assert_eq!(
+            field("version"),
+            ciborium::Value::Integer(ENROLLMENT_PROTOCOL_VERSION.into())
+        );
+        assert_eq!(
+            field("operation"),
+            ciborium::Value::Text("enroll_with_poseguard".into())
+        );
+        for (version, operation) in [
+            (ENROLLMENT_PROTOCOL_VERSION, None),
+            (ENROLLMENT_PROTOCOL_VERSION, Some("unknown")),
+            (PROTOCOL_VERSION, Some("enroll_with_poseguard")),
+            (3, Some("enroll_with_poseguard")),
+        ] {
+            let mut value: ciborium::Value = decode(&bytes).unwrap();
+            let ciborium::Value::Map(fields) = &mut value else {
+                panic!()
+            };
+            fields.retain(|(key, _)| !matches!(key.as_text(), Some("version" | "operation")));
+            fields.push(("version".into(), version.into()));
+            if let Some(operation) = operation {
+                fields.push(("operation".into(), operation.into()));
+            }
+            assert!(Request::decode(&encode(&value).unwrap()).is_err());
+        }
+    }
+
+    #[test]
     fn rejects_bad_images_targets_counts_and_metadata() {
         for change in [
             (|r: &mut PoseGuardEnrollmentRequest| r.central_png.clear())
@@ -152,7 +201,7 @@ mod tests {
             |r| r.captures[0].target_yaw = -35.1,
             |r| r.sub.clear(),
             |r| r.custody_public_key.clear(),
-            |r| r.version = ENROLLMENT_PROTOCOL_VERSION,
+            |r| r.version = PROTOCOL_VERSION,
         ] {
             let mut request = request();
             change(&mut request);
@@ -178,7 +227,8 @@ mod tests {
 
     fn request() -> PoseGuardEnrollmentRequest {
         PoseGuardEnrollmentRequest {
-            version: POSEGUARD_ENROLLMENT_PROTOCOL_VERSION,
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::EnrollWithPoseGuard,
             central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
             captures: std::array::from_fn(|i| PoseGuardCapture {
                 image: vec![i as u8 + 1],

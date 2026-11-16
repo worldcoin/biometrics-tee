@@ -368,8 +368,9 @@ mod tests {
     #[tokio::test]
     async fn poseguard_reuses_the_enrollment_bundle_and_never_attests_a_rejected_batch() {
         use pontifex::{ChannelConsumer, ChannelDomain};
-        use selfie_enrollment_api_types::{CHANNEL_DOMAIN, POSEGUARD_ENROLLMENT_PROTOCOL_VERSION};
+        use selfie_enrollment_api_types::{CHANNEL_DOMAIN, ENROLLMENT_PROTOCOL_VERSION};
         use selfie_enrollment_enclave_types::ExtractRequest;
+        use selfie_enrollment_sealed_types::EnrollmentOperation;
         for reject in [false, true] {
             let attestor = Arc::new(Attestor::default());
             let state = Arc::new(
@@ -379,7 +380,8 @@ mod tests {
             );
             let custody = SecretKey::generate(&mut OsRng);
             let request = PoseGuardEnrollmentRequest {
-                version: POSEGUARD_ENROLLMENT_PROTOCOL_VERSION,
+                version: ENROLLMENT_PROTOCOL_VERSION,
+                operation: EnrollmentOperation::EnrollWithPoseGuard,
                 central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
                 captures: std::array::from_fn(|i| PoseGuardCapture {
                     image: vec![i as u8 + 1],
