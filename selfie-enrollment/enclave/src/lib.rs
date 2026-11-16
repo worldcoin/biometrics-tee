@@ -9,9 +9,10 @@ pub mod rng;
 #[cfg(target_os = "linux")]
 pub mod runtime;
 use attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
+use biometric_engines_protocol::face::{FaceImage, face_image::Source};
 use engine::Engine;
 use pontifex::{ChannelDomain, ChannelEnclave};
-use selfie_enrollment_api_types::{CHANNEL_DOMAIN, MAX_REQUEST_BYTES};
+use selfie_enrollment_api_types::{CHANNEL_DOMAIN, MAX_POSEGUARD_REQUEST_BYTES};
 use selfie_enrollment_enclave_types::{Error, ExtractRequest, ExtractResponse, KeyAttestation};
 use selfie_enrollment_sealed_types::{EmbeddingResult, Failure, Request};
 use std::sync::Arc;
@@ -66,7 +67,7 @@ impl State {
         self: &Arc<Self>,
         request: ExtractRequest,
     ) -> Result<ExtractResponse, Error> {
-        if request.ciphertext.len() > MAX_REQUEST_BYTES {
+        if request.ciphertext.len() > MAX_POSEGUARD_REQUEST_BYTES {
             return Err(Error::InvalidMessage);
         }
         let permit = self
@@ -87,12 +88,22 @@ impl State {
                     reason: Failure::InvalidRequest,
                 }
                 .encode(),
-                Ok(Request::Embedding(input)) => match state.engine.extract(&input.image)? {
-                    Ok(embedding) => EmbeddingResult::Success { embedding },
-                    Err(reason) => EmbeddingResult::Failed { reason },
+                Ok(Request::Embedding(mut input)) => {
+                    let mut image = FaceImage {
+                        source: Some(Source::VanillaSelfie(std::mem::take(&mut input.image))),
+                    };
+                    let result = state.engine.extract(&image);
+                    engine::erase_image(&mut image);
+                    match result? {
+                        Ok(embedding) => EmbeddingResult::Success { embedding },
+                        Err(reason) => EmbeddingResult::Failed { reason },
+                    }
+                    .encode()
                 }
-                .encode(),
                 Ok(Request::Enrollment(input)) => state.enroll_sealed(&input)?.encode(),
+                Ok(Request::PoseGuardEnrollment(input)) => {
+                    state.enroll_poseguard_sealed(&input)?.encode()
+                }
             }
             .map_err(|_| Error::Unavailable)?;
             let ciphertext = sealer.seal(&encoded).map_err(|_| Error::Unavailable)?;
@@ -125,7 +136,7 @@ mod tests {
     }
     struct FakeEngine;
     impl Engine for FakeEngine {
-        fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
+        fn extract(&self, _: &FaceImage) -> Result<Result<FaceEmbedding, Failure>, Error> {
             Ok(Ok(FaceEmbedding {
                 embedding: "AA==".into(),
                 embedding_type: "test".into(),
@@ -153,7 +164,7 @@ mod tests {
         forbid: bool,
     }
     impl Engine for EnrollEngine {
-        fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
+        fn extract(&self, _: &FaceImage) -> Result<Result<FaceEmbedding, Failure>, Error> {
             assert!(
                 !self.forbid,
                 "invalid enrollment requests must not reach extraction"

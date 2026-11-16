@@ -100,8 +100,8 @@ async fn upgrade(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Re
         finished: state.session_finished.clone(),
     };
     upgrade
-        .max_message_size(MAX_REQUEST_BYTES)
-        .max_frame_size(MAX_REQUEST_BYTES)
+        .max_message_size(MAX_POSEGUARD_REQUEST_BYTES)
+        .max_frame_size(MAX_POSEGUARD_REQUEST_BYTES)
         .on_upgrade(move |mut socket| async move {
             let _permit = permit;
             let result = timeout(Duration::from_secs(90), serve(&mut socket, &state))
@@ -169,7 +169,7 @@ async fn serve(socket: &mut WebSocket, state: &AppState) -> Result<(), ErrorCode
     let Message::Binary(ciphertext) = next(socket, Duration::from_secs(30)).await? else {
         return Err(ErrorCode::InvalidMessage);
     };
-    if ciphertext.is_empty() || ciphertext.len() > MAX_REQUEST_BYTES {
+    if ciphertext.is_empty() || ciphertext.len() > MAX_POSEGUARD_REQUEST_BYTES {
         return Err(ErrorCode::InvalidMessage);
     }
     let response = timeout(

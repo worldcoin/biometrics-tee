@@ -11,6 +11,9 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use biometric_engines_protocol::face::{
+    FaceImage, PoseGuard, PoseGuardCapture as WorkerCapture, face_image::Source,
+};
 use crypto_box::PublicKey;
 use rand::rngs::OsRng;
 use selfie_enrollment_api_types::MAX_IMAGE_BYTES;
@@ -20,6 +23,7 @@ use selfie_enrollment_identity::{
 };
 use selfie_enrollment_sealed_types::{
     EnrollmentBundle, EnrollmentField, EnrollmentRequest, EnrollmentResult, Failure,
+    PoseGuardCapture, PoseGuardEnrollmentRequest,
 };
 use uuid::Uuid;
 
@@ -118,7 +122,7 @@ impl State {
     ) -> Result<PreparedEnrollment, Error> {
         validate(&request)?;
         let _permit = self.processing.try_acquire().map_err(|_| Error::Busy)?;
-        self.produce(&request, context, attestor)
+        self.produce(&request, None, context, attestor)
     }
 
     /// Serves one sealed enrollment request. The caller holds the processing permit.
@@ -128,21 +132,54 @@ impl State {
         &self,
         request: &EnrollmentRequest,
     ) -> Result<EnrollmentResult, EnclaveError> {
+        self.enroll_capture(
+            &request.image,
+            &request.sub,
+            &request.custody_public_key,
+            None,
+        )
+    }
+
+    pub(crate) fn enroll_poseguard_sealed(
+        &self,
+        request: &PoseGuardEnrollmentRequest,
+    ) -> Result<EnrollmentResult, EnclaveError> {
+        request
+            .validate()
+            .map_err(|_| EnclaveError::InvalidMessage)?;
+        self.enroll_capture(
+            &request.central_png,
+            &request.sub,
+            &request.custody_public_key,
+            Some(&request.captures),
+        )
+    }
+
+    fn enroll_capture(
+        &self,
+        image_png: &[u8],
+        sub: &str,
+        custody_public_key: &[u8],
+        captures: Option<&[PoseGuardCapture; 3]>,
+    ) -> Result<EnrollmentResult, EnclaveError> {
         let producer = self.enrollment.as_ref().ok_or(EnclaveError::Unavailable)?;
-        let key: [u8; 32] = request
-            .custody_public_key
-            .as_slice()
+        let key: [u8; 32] = custody_public_key
             .try_into()
             .map_err(|_| EnclaveError::InvalidMessage)?;
         let custody_key = PublicKey::from(key);
         let capture = CaptureRequest {
-            image_png: &request.image,
-            sub: &request.sub,
+            image_png,
+            sub,
             custody_key: &custody_key,
         };
-        let prepared = match validate(&capture)
-            .and_then(|()| self.produce(&capture, &producer.context, producer.attestor.as_ref()))
-        {
+        let prepared = match validate(&capture).and_then(|()| {
+            self.produce(
+                &capture,
+                captures,
+                &producer.context,
+                producer.attestor.as_ref(),
+            )
+        }) {
             Ok(prepared) => prepared,
             Err(Error::InvalidRequest) => {
                 return Ok(EnrollmentResult::Failed {
@@ -177,12 +214,30 @@ impl State {
     fn produce(
         &self,
         request: &CaptureRequest<'_>,
+        captures: Option<&[PoseGuardCapture; 3]>,
         context: &TrustedContext,
         attestor: &dyn CaptureAttestor,
     ) -> Result<PreparedEnrollment, Error> {
-        let embedding = self
-            .engine
-            .extract(request.image_png)
+        let source = match captures {
+            Some(captures) => Source::PoseGuard(PoseGuard {
+                central_image: request.image_png.to_vec(),
+                challenges: captures
+                    .iter()
+                    .map(|capture| WorkerCapture {
+                        image: capture.image.clone(),
+                        target_pitch: capture.target_pitch,
+                        target_yaw: capture.target_yaw,
+                    })
+                    .collect(),
+            }),
+            None => Source::VanillaSelfie(request.image_png.to_vec()),
+        };
+        let mut image = FaceImage {
+            source: Some(source),
+        };
+        let result = self.engine.extract(&image);
+        crate::engine::erase_image(&mut image);
+        let embedding = result
             .map_err(|_| Error::Unavailable)?
             .map_err(Error::Capture)?;
         let captured_at = SystemTime::now()
@@ -240,8 +295,23 @@ mod tests {
         reject: bool,
     }
     impl crate::engine::Engine for Engine {
-        fn extract(&self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
-            assert_eq!(image, b"\x89PNG\r\n\x1a\nfixture");
+        fn extract(
+            &self,
+            image: &FaceImage,
+        ) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
+            match image.source.as_ref().unwrap() {
+                Source::VanillaSelfie(bytes) => assert_eq!(bytes, b"\x89PNG\r\n\x1a\nfixture"),
+                Source::PoseGuard(batch) => {
+                    assert_eq!(batch.central_image, b"\x89PNG\r\n\x1a\nfixture");
+                    assert_eq!(batch.challenges.len(), 3);
+                    for (index, capture) in batch.challenges.iter().enumerate() {
+                        assert_eq!(capture.image, vec![index as u8 + 1]);
+                        assert_eq!(capture.target_pitch, 10.0 + index as f32);
+                        assert_eq!(capture.target_yaw, -20.0 - index as f32);
+                    }
+                }
+                _ => panic!("unexpected image source"),
+            }
             if self.reject {
                 return Ok(Err(Failure::QualityRejected));
             }
@@ -295,6 +365,74 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn poseguard_reuses_the_enrollment_bundle_and_never_attests_a_rejected_batch() {
+        use pontifex::{ChannelConsumer, ChannelDomain};
+        use selfie_enrollment_api_types::{CHANNEL_DOMAIN, POSEGUARD_ENROLLMENT_PROTOCOL_VERSION};
+        use selfie_enrollment_enclave_types::ExtractRequest;
+        for reject in [false, true] {
+            let attestor = Arc::new(Attestor::default());
+            let state = Arc::new(
+                State::new(Arc::new(BootAttestor), Box::new(Engine { reject }))
+                    .unwrap()
+                    .with_enrollment(Producer::new(context(), attestor.clone())),
+            );
+            let custody = SecretKey::generate(&mut OsRng);
+            let request = PoseGuardEnrollmentRequest {
+                version: POSEGUARD_ENROLLMENT_PROTOCOL_VERSION,
+                central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+                captures: std::array::from_fn(|i| PoseGuardCapture {
+                    image: vec![i as u8 + 1],
+                    target_pitch: 10.0 + i as f32,
+                    target_yaw: -20.0 - i as f32,
+                }),
+                sub: "0x1f".into(),
+                custody_public_key: custody.public_key().as_bytes().to_vec(),
+            };
+            let assignment = state.assignment().await.unwrap();
+            let consumer = ChannelConsumer::from_unverified_public_key(
+                ChannelDomain::new(CHANNEL_DOMAIN),
+                &assignment.public_key,
+            )
+            .unwrap();
+            let (ciphertext, opener) = consumer
+                .seal_to_enclave(&request.encode().unwrap())
+                .unwrap();
+            let response = state.extract(ExtractRequest { ciphertext }).await.unwrap();
+            let result =
+                EnrollmentResult::decode(&opener.open_from_enclave(&response.ciphertext).unwrap())
+                    .unwrap();
+            if reject {
+                assert!(matches!(
+                    result,
+                    EnrollmentResult::Failed {
+                        reason: Failure::QualityRejected
+                    }
+                ));
+                assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
+            } else {
+                let EnrollmentResult::Success { enrollment } = &result else {
+                    panic!("expected enrollment")
+                };
+                assert_eq!(
+                    enrollment
+                        .fields
+                        .iter()
+                        .map(|field| field.name.as_str())
+                        .collect::<Vec<_>>(),
+                    selfie_enrollment_sealed_types::ENROLLMENT_FIELDS
+                );
+                assert!(
+                    custody
+                        .unseal(&enrollment.encrypted_custody)
+                        .unwrap()
+                        .starts_with(&[0x1f, 0x8b])
+                );
+                assert_eq!(attestor.calls.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
     #[test]
     fn successful_extraction_returns_only_public_fields_and_encrypted_custody() {
         let state = State::new(Arc::new(BootAttestor), Box::new(Engine { reject: false })).unwrap();
@@ -336,7 +474,10 @@ mod tests {
     fn malformed_subjects_fail_before_acquiring_a_slot_or_running_extraction() {
         struct NeverExtract;
         impl crate::engine::Engine for NeverExtract {
-            fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
+            fn extract(
+                &self,
+                _: &FaceImage,
+            ) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
                 panic!("malformed subjects must not reach extraction");
             }
             fn check_health(&self) -> Result<(), EnclaveError> {
