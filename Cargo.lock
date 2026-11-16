@@ -148,6 +148,22 @@ dependencies = [
 [[package]]
 name = "ampc-secret-sharing"
 version = "0.1.0"
+source = "git+https://github.com/worldcoin/ampc-common?rev=3dfb4aacd8152329d03c4fe71dd81ee05589f360#3dfb4aacd8152329d03c4fe71dd81ee05589f360"
+dependencies = [
+ "aes-prng",
+ "base64 0.22.1",
+ "bytemuck",
+ "eyre",
+ "itertools 0.13.0",
+ "num-traits",
+ "rand 0.8.8",
+ "rand_distr",
+ "serde",
+]
+
+[[package]]
+name = "ampc-secret-sharing"
+version = "0.1.0"
 source = "git+https://github.com/worldcoin/ampc-common?rev=f27c39547b75b6ab7b87dd64c513cc70b003b83a#f27c39547b75b6ab7b87dd64c513cc70b003b83a"
 dependencies = [
  "aes-prng",
@@ -2438,7 +2454,7 @@ dependencies = [
 name = "di-migration-shares"
 version = "0.1.0"
 dependencies = [
- "ampc-secret-sharing",
+ "ampc-secret-sharing 0.1.0 (git+https://github.com/worldcoin/ampc-common?rev=3dfb4aacd8152329d03c4fe71dd81ee05589f360)",
  "rand 0.8.8",
  "thiserror 2.0.20",
 ]
@@ -2665,7 +2681,7 @@ dependencies = [
 name = "embedding-shares"
 version = "0.1.0"
 dependencies = [
- "ampc-secret-sharing",
+ "ampc-secret-sharing 0.1.0 (git+https://github.com/worldcoin/ampc-common?rev=f27c39547b75b6ab7b87dd64c513cc70b003b83a)",
  "base64 0.22.1",
  "bincode",
  "crypto_box",
@@ -4334,7 +4350,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orb-pcp"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=53ba3ca3a636496b95cb44cf3497247caa1e5f3f#53ba3ca3a636496b95cb44cf3497247caa1e5f3f"
+source = "git+https://github.com/worldcoin/orb-software?rev=0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f#0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f"
 dependencies = [
  "bon",
  "data-encoding",
@@ -4353,7 +4369,7 @@ dependencies = [
 [[package]]
 name = "orb-pcp-defs"
 version = "0.0.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=53ba3ca3a636496b95cb44cf3497247caa1e5f3f#53ba3ca3a636496b95cb44cf3497247caa1e5f3f"
+source = "git+https://github.com/worldcoin/orb-software?rev=0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f#0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f"
 dependencies = [
  "pbjson",
  "pbjson-build",
@@ -4366,7 +4382,7 @@ dependencies = [
 [[package]]
 name = "orb-wld-data-id"
 version = "0.0.0"
-source = "git+https://github.com/worldcoin/orb-software?rev=53ba3ca3a636496b95cb44cf3497247caa1e5f3f#53ba3ca3a636496b95cb44cf3497247caa1e5f3f"
+source = "git+https://github.com/worldcoin/orb-software?rev=0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f#0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f"
 dependencies = [
  "eyre",
  "rand 0.8.8",

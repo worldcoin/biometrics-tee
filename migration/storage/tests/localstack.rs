@@ -88,6 +88,11 @@ async fn the_job_lifecycle_honours_the_sub_lock() {
     assert_eq!(latest.job_id, first.job_id);
     assert_eq!(latest.status, Status::Created);
     assert_eq!(latest.enclave_id, first.enclave_id);
+    assert!(!latest.acknowledged);
+    assert_eq!(
+        jobs.acknowledge(&first.job_id).await,
+        Err(StorageError::NotMigrated)
+    );
 
     // A second init for the same sub is refused while the first is active; another sub is not.
     assert_eq!(
@@ -109,6 +114,10 @@ async fn the_job_lifecycle_honours_the_sub_lock() {
     );
     let latest = jobs.latest_job("sub-a").await.expect("read").expect("job");
     assert_eq!(latest.status, Status::Migrating);
+    assert_eq!(
+        jobs.acknowledge(&first.job_id).await,
+        Err(StorageError::NotMigrated)
+    );
     assert_eq!(latest.deadline, Some(deadline));
     assert_eq!(
         jobs.create_job(&new_job("sub-a", NOW + 500)).await,

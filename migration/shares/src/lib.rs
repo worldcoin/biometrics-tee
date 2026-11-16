@@ -10,7 +10,7 @@ use rand::{CryptoRng, Rng};
 /// Locked Git revision of the AMPC implementation used to produce these shares.
 ///
 /// This must match the `ampc-secret-sharing` revision pinned in this crate's `Cargo.toml`.
-pub const VERSION: &str = "f27c39547b75b6ab7b87dd64c513cc70b003b83a";
+pub const VERSION: &str = "3dfb4aacd8152329d03c4fe71dd81ee05589f360";
 
 /// Sharing failures without embedding values. The caller supplies eye and mirror context.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +58,35 @@ pub fn generate<R: Rng + CryptoRng>(embedding: &[u8], rng: &mut R) -> Result<[Ve
     }
     let shares = IrisVector::new(values)
         .secret_share(rng)
+        .map_err(|source| Error::Sharing {
+            source: source.into(),
+        })?;
+    Ok(shares.map(|share| share.to_vec()))
+}
+
+/// Generate five-party shares of a 512-element quantized embedding.
+///
+/// Indices 0–4 map to Shamir IDs 1–5; any three recipients can reconstruct the
+/// embedding. Supply a cryptographic RNG seeded from fresh entropy and advance it
+/// across calls for each eye, mirror and share family. Never log the returned shares.
+///
+/// # Errors
+/// Rejects lengths other than 512 and signed values outside `[-8, 7]` before
+/// consuming randomness. Propagates failures from the sharing library.
+pub fn generate_5_party<R: Rng + CryptoRng>(
+    embedding: &[u8],
+    rng: &mut R,
+) -> Result<[Vec<u16>; 5], Error> {
+    let bytes: &[u8; IRIS_VECTOR_SIZE] =
+        embedding.try_into().map_err(|_| Error::InvalidLength {
+            actual: embedding.len(),
+        })?;
+    let values = bytes.map(u8::cast_signed);
+    if values.iter().any(|value| !(-8..=7).contains(value)) {
+        return Err(Error::InvalidValue);
+    }
+    let shares = IrisVector::new(values)
+        .secret_share_5_parties(rng)
         .map_err(|source| Error::Sharing {
             source: source.into(),
         })?;

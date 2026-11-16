@@ -47,6 +47,7 @@ fn frame(fill: u8) -> orb_pcp::NormalizedIrisFrame {
     }
 }
 
+// Migrate every supported version while preserving captures and recording migration metadata.
 #[test]
 fn all_supported_versions_preserve_capture_and_fill_absence() {
     for version in VERSIONS {
@@ -454,6 +455,101 @@ fn incomplete_and_inconsistent_pipeline_results_never_fall_back_to_old_data() {
     }
 }
 
+// Validate all five bundles' metadata, vector lengths and u16 bounds before building.
+#[test]
+fn every_five_party_bundle_is_required_and_validated_before_building() {
+    type Edit = fn(&mut v1::DiIrisEmbeddingShareV1);
+    let cases: [(Edit, &str); 12] = [
+        (
+            |share| share.model_version = "other".into(),
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.embedding_version = "other".into(),
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.shares_version = "other".into(),
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.shares_version.clear(),
+            "di_5_party_shares_version",
+        ),
+        (
+            |share| share.left_share.clear(),
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.left_mirror_share.truncate(1),
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.right_share.push(0),
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.right_mirror_share.truncate(1),
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.left_share[1] = 65536,
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.left_mirror_share[1] = 65536,
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.right_share[1] = 65536,
+            "di_embedding_5_party_shares",
+        ),
+        (
+            |share| share.right_mirror_share[1] = 65536,
+            "di_embedding_5_party_shares",
+        ),
+    ];
+    let source = SourcePcp::parse(source_files("2.8")).unwrap();
+    let ctx = context();
+    let mut valid = pipeline();
+    // Each family has its own sharing version; the full u16 range is valid.
+    for bundle in &mut valid.di_embedding_5_party_shares {
+        let share = bundle.share_v1.as_mut().unwrap();
+        for vector in [
+            &mut share.left_share,
+            &mut share.left_mirror_share,
+            &mut share.right_share,
+            &mut share.right_mirror_share,
+        ] {
+            vector[1] = u32::from(u16::MAX);
+        }
+    }
+    check_request(&source, &valid, &ctx).unwrap();
+    for recipient in 0..5 {
+        let mut bio = pipeline();
+        bio.di_embedding_5_party_shares[recipient].share_v1 = None;
+        assert_eq!(
+            check_request(&source, &bio, &ctx),
+            Err(Error::InvalidField("di_embedding_5_party_shares"))
+        );
+        for (edit, field) in cases {
+            let mut bio = pipeline();
+            edit(
+                bio.di_embedding_5_party_shares[recipient]
+                    .share_v1
+                    .as_mut()
+                    .unwrap(),
+            );
+            assert_eq!(
+                check_request(&source, &bio, &ctx),
+                Err(Error::InvalidField(field)),
+                "recipient {recipient}: {field}"
+            );
+        }
+    }
+}
+
+// Forward multiframe images and both share families to the builder in recipient order.
 #[test]
 fn builder_bridge_retains_multiframe_images_and_recipient_order() {
     let mut files = source_files("2.8");
@@ -464,26 +560,47 @@ fn builder_bridge_retains_multiframe_images_and_recipient_order() {
     refresh_source_manifest(&mut files);
     let source = SourcePcp::parse(files).unwrap();
     let (bio, ctx) = (pipeline(), context());
-    let output = build_and_open(&source, &bio, &ctx);
-    verify_completed_pcp(&source, &bio, &ctx, &output.files).unwrap();
-    assert_eq!(output.files[&format!("iris/{FRAME_A}.png")], [9]);
+    let new = build_and_open(&source, &bio, &ctx);
+    verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
+    assert_eq!(new.files[&format!("iris/{FRAME_A}.png")], [9]);
+    let info: v1::Info = serde_json::from_slice(&new.files["info.json"]).unwrap();
+    assert_eq!(info.left_ir_multiframe_image_ids, [FRAME_A]);
     assert_eq!(
-        output.files["normalized_iris/left_normalized_image.bin"],
+        new.files["normalized_iris/left_normalized_image.bin"],
         [1; 16]
     );
-    for (index, expected) in bio.di_embedding_shares.iter().enumerate() {
-        let actual = v1::DiIrisEmbeddingShares::decode(
-            output.files[&format!("di_iris_embeddings_shares_{index}.pb")].as_slice(),
-        )
-        .unwrap();
-        assert_eq!(&actual, expected);
+    let iris_share: v1::IrisCodeShares =
+        serde_json::from_slice(&new.files["iris_code_shares_2.json"]).unwrap();
+    assert_eq!(
+        iris_share.left_iris_code_shares.as_deref(),
+        Some("old-share-2")
+    );
+    assert_eq!(
+        v1::DiIrisEmbeddings::decode(new.files["di_iris_embeddings.pb"].as_slice()).unwrap(),
+        bio.di_embeddings
+    );
+    for (recipient, expected) in bio.di_embedding_shares.iter().enumerate() {
+        let name = format!("di_iris_embeddings_shares_{recipient}.pb");
+        assert_eq!(
+            v1::DiIrisEmbeddingShares::decode(new.files[&name].as_slice()).unwrap(),
+            *expected
+        );
     }
-    let actual =
-        v1::DiIrisEmbeddings::decode(output.files["di_iris_embeddings.pb"].as_slice()).unwrap();
-    assert_eq!(actual, bio.di_embeddings);
-    let faces: Vec<v1::FaceEmbedding> =
-        serde_json::from_slice(&output.files["face_embeddings.json"]).unwrap();
-    assert_eq!(faces, bio.face_embeddings);
+    for (recipient, expected) in bio.di_embedding_5_party_shares.iter().enumerate() {
+        let name = format!("di_iris_embeddings_5_party_shares_{recipient}.pb");
+        assert_eq!(
+            v1::DiIrisEmbeddingShares::decode(new.files[&name].as_slice()).unwrap(),
+            *expected
+        );
+    }
+    let share =
+        v1::DiIrisEmbeddingShares::decode(new.files["di_iris_embeddings_shares_2.pb"].as_slice())
+            .unwrap();
+    assert_eq!(share.share_v1.unwrap().left_share, [31, 32]);
+    let face: Vec<v1::FaceEmbedding> =
+        serde_json::from_slice(&new.files["face_embeddings.json"]).unwrap();
+    assert_eq!(face[0].embedding.as_deref(), Some("new-face"));
+    assert_eq!(face, bio.face_embeddings);
 }
 
 #[test]
@@ -611,6 +728,7 @@ fn face_outputs_retain_individual_model_versions_and_backends() {
     assert_eq!(faces[1]["embedding_inference_backend"], "another-runtime");
 }
 
+// An Orb-style PCP produced by the shared builder can be reopened as a migration source.
 #[test]
 fn builder_generated_orb_captures_open_as_sources() {
     // The reader's logical paths must match the shared builder's output.
@@ -703,6 +821,12 @@ fn builder_bridge_carries_fresh_multiframe_normalization_and_rejects_unmapped_ou
     let ctx = context();
     let new = build_and_open(&source, &bio, &ctx);
     verify_completed_pcp(&source, &bio, &ctx, &new.files).unwrap();
+    assert_eq!(new.files[&format!("iris/{FRAME_A}.png")], [9]);
+    assert_eq!(new.files[&format!("iris/{FRAME_B}.png")], [8]);
+    assert!(
+        !new.files
+            .contains_key(&format!("normalized_iris/{FRAME_B}_normalized_image.bin"))
+    );
     assert_eq!(
         new.files[&format!("normalized_iris/{FRAME_A}_normalized_image.bin")],
         [5; 16]
@@ -763,4 +887,62 @@ fn source_shares_without_a_sharing_version_are_carried_as_they_are() {
         new.files["iris_code_shares_1.json"],
         files["iris_code_shares_1.json"]
     );
+}
+
+// Present legacy iris records still need all values required by the new constructor.
+#[test]
+fn shared_builder_rejects_incomplete_iris_records_during_preflight() {
+    for (artifact, field) in [
+        ("iris_codes.json", "right_iris_code"),
+        ("iris_code_shares_1.json", "right_mask_code_shares"),
+    ] {
+        let mut files = source_files("2.1");
+        let mut record: Value = serde_json::from_slice(&files[artifact]).unwrap();
+        record.as_object_mut().unwrap().remove(field);
+        files.insert(artifact.into(), serde_json::to_vec(&record).unwrap());
+        refresh_source_manifest(&mut files);
+        let source = SourcePcp::parse(files).unwrap();
+        let (bio, ctx) = (pipeline(), context());
+        assert_eq!(
+            check_request(&source, &bio, &ctx),
+            Err(Error::InvalidSourceIrisData)
+        );
+        let keys = OutputKeys::generate();
+        let result = di_migration_pcp::build(
+            &source,
+            bio,
+            &ctx,
+            keys.recipients(),
+            |_| -> Result<Vec<u8>, std::convert::Infallible> {
+                panic!("invalid iris records must not reach the signer")
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(BuildError::Mapping(Error::InvalidSourceIrisData))
+        ));
+    }
+}
+
+// The caller-provided sealer must propagate encryption failure before manifest signing.
+#[test]
+fn shared_builder_sealing_errors_propagate_without_signing() {
+    let source = SourcePcp::parse(source_files("2.8")).unwrap();
+    let (bio, ctx) = (pipeline(), context());
+    let keys = OutputKeys::generate();
+    let mut recipients = keys.recipients();
+    recipients.backend_keys.face.public_key = [0; 32];
+    let result = di_migration_pcp::build(
+        &source,
+        bio,
+        &ctx,
+        recipients,
+        |_| -> Result<Vec<u8>, std::convert::Infallible> {
+            panic!("failed encryption must not reach the signer")
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(BuildError::Build(orb_pcp::BuildError::Encryption(_)))
+    ));
 }
