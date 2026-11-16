@@ -31,6 +31,9 @@ pub enum StorageError {
     /// The job is no longer `created`, or another job for its `sub` superseded it.
     #[error("job is no longer created")]
     NotCreated,
+    /// Only successfully migrated jobs may have their PCP download acknowledged.
+    #[error("job is not migrated")]
+    NotMigrated,
     /// The job's upload window passed before migrate; the app must init again.
     #[error("the job's upload window has passed")]
     UploadWindowPassed,

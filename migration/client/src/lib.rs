@@ -11,8 +11,8 @@ use attested_request::{
     sign::{Signer, sign_request},
 };
 use di_migration_primitives::app_api::{
-    DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest, InitMigrationResponse,
-    MigrateResponse, MigrationStatus,
+    AcknowledgeMigrationRequest, DEVICE_KEY_THUMBPRINT, ErrorEnvelope, InitMigrationRequest,
+    InitMigrationResponse, MigrateResponse, MigrationStatus,
 };
 use orb_pcp_defs::prost::Message;
 use reqwest::{
@@ -211,7 +211,39 @@ impl MigrationApiClient {
         decode(response).await
     }
 
-    /// The `sub`'s latest migration, with a download URL once `migrated`.
+    /// Acknowledges a downloaded PCP and deletes the input and resulting PCP from S3.
+    /// Only migrated jobs can be acknowledged. Repeating acknowledgement is safe;
+    /// debug reports are retained but no longer linked. Requests use the same device key as init.
+    pub async fn acknowledge<S>(
+        &self,
+        integrity_token: &str,
+        signer: &Arc<S>,
+        sub: &str,
+        job_id: &di_migration_primitives::JobId,
+    ) -> Result<(), Error>
+    where
+        S: Signer + Send + Sync + 'static,
+        S::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let mut request = self
+            .http
+            .post(self.url(&["v1", "migrations", sub, "ack"]))
+            .json(&AcknowledgeMigrationRequest {
+                job_id: job_id.clone(),
+            });
+        if let Some(attested_key_thumbprint) = &self.attested_key_thumbprint {
+            request = request.header(DEVICE_KEY_THUMBPRINT, attested_key_thumbprint);
+        }
+        let request = sign(request, integrity_token, Arc::clone(signer)).await?;
+        let response = self.http.execute(request).await.map_err(Error::Transport)?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            decode::<serde::de::IgnoredAny>(response).await.map(|_| ())
+        }
+    }
+
+    /// The `sub`'s latest migration, with a download URL once `migrated` and unacknowledged.
     ///
     /// The request is signed with `signer` and the Attestation Gateway `integrity_token`.
     /// Signing runs on Tokio's blocking pool, keeping the caller's executor thread responsive.
@@ -691,6 +723,43 @@ mod tests {
         assert_eq!(response.enclave_id.as_str(), "ab".repeat(32));
         assert_eq!(response.upload_url, "http://s3.test/pcp/1");
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_accepts_an_empty_response_and_surfaces_api_errors() {
+        for status in [StatusCode::NO_CONTENT, StatusCode::CONFLICT] {
+            let (url, server) = serve(Router::new().route(
+                "/v1/migrations/test-sub/ack",
+                post(move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                    assert_eq!(headers["x-attested-key-thumbprint"], "device-key");
+                    assert_eq!(body["job_id"], "3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a");
+                    assert!(body.get("signup_id").is_none());
+                    (status, Json(serde_json::json!({
+                        "allowRetry": false,
+                        "error": {"code": "migration_in_progress", "message": "Job in progress"},
+                    })))
+                }),
+            )).await;
+            let signer = Arc::new(test_signer());
+            let result = MigrationApiClient::new(&url)
+                .unwrap()
+                .with_attested_key_thumbprint("device-key")
+                .acknowledge(
+                    &test_token(&signer),
+                    &signer,
+                    "test-sub",
+                    &"3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a".parse().unwrap(),
+                )
+                .await;
+            if status == StatusCode::NO_CONTENT {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(result, Err(Error::Api { code, .. }) if code == "migration_in_progress")
+                );
+            }
+            server.abort();
+        }
     }
 
     #[tokio::test]

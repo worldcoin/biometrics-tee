@@ -355,6 +355,10 @@ async fn a_migration_runs_from_init_to_download() {
             .status,
         Status::Migrating
     );
+    assert!(matches!(
+        client.acknowledge(&token, &signer, &sub, &job.job_id).await,
+        Err(Error::Api { code, .. }) if code == "migration_in_progress"
+    ));
 
     // The host's side, through the same storage crate: echo the PCP into the result.
     let bucket = PcpBucket::new(resources.s3.clone(), resources.bucket.clone());
@@ -393,11 +397,69 @@ async fn a_migration_runs_from_init_to_download() {
         Err(Error::Api { code, .. }) if code == "device_key_mismatch"
     ));
 
+    assert!(matches!(
+        other.acknowledge(&token, &signer, &sub, &job.job_id).await,
+        Err(Error::Api { code, .. }) if code == "device_key_mismatch"
+    ));
+    bucket
+        .put_debug_report(&job.job_id, b"encrypted diagnostic".to_vec())
+        .await
+        .expect("report");
+    for _ in 0..2 {
+        client
+            .acknowledge(&token, &signer, &sub, &job.job_id)
+            .await
+            .expect("acknowledge");
+    }
+    assert!(!bucket.pcp_exists(&job.job_id).await.expect("input lookup"));
+    let result = resources
+        .s3
+        .head_object()
+        .bucket(&resources.bucket)
+        .key(&result_key)
+        .send()
+        .await;
+    assert!(
+        result
+            .unwrap_err()
+            .as_service_error()
+            .is_some_and(|error| error.is_not_found())
+    );
+    assert!(
+        bucket
+            .debug_report_exists(&job.job_id)
+            .await
+            .expect("report retained")
+    );
+    let acknowledged = client
+        .migration_status(&token, &signer, &sub)
+        .await
+        .expect("acknowledged migration status");
+    assert!(acknowledged.acknowledged);
+    assert_eq!(acknowledged.status, Status::Migrated);
+    assert!(acknowledged.download_url.is_none());
+    assert!(acknowledged.download_expires_at.is_none());
+    assert!(acknowledged.debug_report_url.is_none());
+    assert!(acknowledged.debug_report_expires_at.is_none());
+    assert!(
+        JobTable::new(resources.dynamodb.clone(), resources.table.clone())
+            .latest_job(&sub)
+            .await
+            .expect("job lookup")
+            .expect("job")
+            .acknowledged
+    );
+
     // The finished job frees the sub, so the app can start another migration at once.
     client
         .init_migration(&token, &signer, &sub, "YQ==", CHALLENGE_ID)
         .await
         .expect("a finished migration no longer blocks init");
+
+    client
+        .acknowledge(&token, &signer, &sub, &job.job_id)
+        .await
+        .expect("the earlier job can still be acknowledged after a new init");
 
     resources.delete().await;
 }

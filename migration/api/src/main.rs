@@ -803,6 +803,8 @@ mod tests {
     struct Table {
         job: Option<serde_json::Value>,
         writes: Vec<serde_json::Value>,
+        write_status: Option<StatusCode>,
+        latest_job_id: Option<&'static str>,
     }
 
     const JOB_ID: &str = "3f0c5e2a-8a51-4c47-9d8e-0b9f3c1d2e4a";
@@ -849,16 +851,28 @@ mod tests {
                             (None, _) => serde_json::json!({}),
                             (Some(_), true) => serde_json::json!({"Item": {
                                 "id": {"S": id},
-                                "job_id": {"S": JOB_ID},
+                                "job_id": {"S": table.latest_job_id.unwrap_or(JOB_ID)},
                                 "active_until": {"N": "0"},
                             }}),
-                            (Some(job), false) => serde_json::json!({"Item": job}),
+                            (Some(job), false) if job["id"]["S"] == id => {
+                                serde_json::json!({"Item": job})
+                            }
+                            (Some(_), false) => serde_json::json!({}),
                         }
                     } else {
                         table.writes.push(body);
                         serde_json::json!({})
                     };
-                    ([(header::CONTENT_TYPE, AMZ_JSON)], reply.to_string())
+                    let status = if target.ends_with("GetItem") {
+                        StatusCode::OK
+                    } else {
+                        table.write_status.unwrap_or(StatusCode::OK)
+                    };
+                    (
+                        status,
+                        [(header::CONTENT_TYPE, AMZ_JSON)],
+                        reply.to_string(),
+                    )
                 },
             ),
         ))
@@ -912,7 +926,7 @@ mod tests {
     ) -> (AppState, Arc<Mutex<Table>>) {
         let table = Arc::new(Mutex::new(Table {
             job,
-            writes: Vec::new(),
+            ..Table::default()
         }));
         let state = AppState {
             jobs: job_table(&format!(
@@ -939,6 +953,284 @@ mod tests {
             .header(DEVICE_KEY_THUMBPRINT, device_key)
             .body(Body::empty())
             .unwrap()
+    }
+
+    fn acknowledgement_request(device_key: &str) -> Request<Body> {
+        let mut request = migrations_request("POST", device_key);
+        *request.uri_mut() = "/v1/migrations/test-sub/ack".parse().unwrap();
+        request
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        *request.body_mut() = Body::from(serde_json::json!({"job_id": JOB_ID}).to_string());
+        request
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_checks_ownership_and_requires_a_migrated_job() {
+        let host = "127.0.0.1:9".parse().unwrap();
+        for (row, key, status, code) in [
+            (None, "device-key", StatusCode::NOT_FOUND, "not_found"),
+            (
+                Some(job_row(
+                    "migrated",
+                    now(),
+                    &[("signup_id", serde_json::json!({"S": "new-signup-id"}))],
+                )),
+                "",
+                StatusCode::BAD_REQUEST,
+                "invalid_device_key",
+            ),
+            (
+                Some(job_row(
+                    "migrated",
+                    now(),
+                    &[("signup_id", serde_json::json!({"S": "new-signup-id"}))],
+                )),
+                "other-key",
+                StatusCode::FORBIDDEN,
+                "device_key_mismatch",
+            ),
+            (
+                Some(job_row("created", now(), &[])),
+                "device-key",
+                StatusCode::CONFLICT,
+                "migration_in_progress",
+            ),
+            (
+                Some(job_row(
+                    "migrating",
+                    now(),
+                    &[("deadline", serde_json::json!({"N": "0"}))],
+                )),
+                "device-key",
+                StatusCode::CONFLICT,
+                "migration_in_progress",
+            ),
+            (
+                Some(job_row("failed", now(), &[])),
+                "device-key",
+                StatusCode::CONFLICT,
+                "invalid_state",
+            ),
+        ] {
+            let (state, table) = migration_state(row, StatusCode::OK, host).await;
+            let response = routes::router(state)
+                .oneshot(acknowledgement_request(key))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+            assert_eq!(error_code(response).await, code);
+            assert!(table.lock().unwrap().writes.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_rejects_a_stale_or_malformed_job_id() {
+        let (state, table) = migration_state(
+            Some(job_row(
+                "migrated",
+                now(),
+                &[("signup_id", serde_json::json!({"S": "new-signup-id"}))],
+            )),
+            StatusCode::OK,
+            "127.0.0.1:9".parse().unwrap(),
+        )
+        .await;
+        let router = routes::router(state);
+        for (job_id, expected) in [
+            (
+                "00000000-0000-0000-0000-000000000000",
+                StatusCode::NOT_FOUND,
+            ),
+            ("not-a-uuid", StatusCode::UNPROCESSABLE_ENTITY),
+            ("", StatusCode::UNPROCESSABLE_ENTITY),
+        ] {
+            let mut request = acknowledgement_request("device-key");
+            *request.body_mut() = Body::from(serde_json::json!({"job_id": job_id}).to_string());
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        let mut request = acknowledgement_request("device-key");
+        *request.body_mut() = Body::from("{}");
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(table.lock().unwrap().writes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_reads_the_requested_job_instead_of_the_latest_job() {
+        let (mut state, table) = migration_state(
+            Some(job_row("migrated", now(), &[])),
+            StatusCode::OK,
+            "127.0.0.1:9".parse().unwrap(),
+        )
+        .await;
+        table.lock().unwrap().latest_job_id = Some("00000000-0000-0000-0000-000000000000");
+        state.bucket =
+            bucket(serve(Router::new().fallback(|| async { StatusCode::NO_CONTENT })).await);
+        let router = routes::router(state);
+        let rejected = router
+            .clone()
+            .oneshot(acknowledgement_request("other-key"))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+        assert!(table.lock().unwrap().writes.is_empty());
+        let response = router
+            .oneshot(acknowledgement_request("device-key"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let table = table.lock().unwrap();
+        assert_eq!(
+            table.writes[0]["TransactItems"][0]["Update"]["Key"]["id"]["S"],
+            format!("job#{JOB_ID}")
+        );
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_retries_partial_deletion_before_recording_success() {
+        let (mut state, table) = migration_state(
+            Some(job_row(
+                "migrated",
+                now(),
+                &[("signup_id", serde_json::json!({"S": "new-signup-id"}))],
+            )),
+            StatusCode::OK,
+            "127.0.0.1:9".parse().unwrap(),
+        )
+        .await;
+        let deleted = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&deleted);
+        let job_table = Arc::clone(&table);
+        state.bucket = bucket(
+            serve(
+                Router::new()
+                    .route(
+                        &format!("/test-bucket/result/debug-report/{JOB_ID}"),
+                        head(|| async { StatusCode::NOT_FOUND }),
+                    )
+                    .fallback(move |request: Request<Body>| {
+                        let recorder = Arc::clone(&recorder);
+                        let job_table = Arc::clone(&job_table);
+                        async move {
+                            assert_eq!(request.method(), "DELETE");
+                            assert!(
+                                job_table.lock().unwrap().writes.is_empty(),
+                                "delete before acknowledging"
+                            );
+                            let mut deleted = recorder.lock().unwrap();
+                            deleted.push(request.uri().path().to_owned());
+                            if deleted.len() == 2 {
+                                StatusCode::INTERNAL_SERVER_ERROR
+                            } else {
+                                StatusCode::NO_CONTENT
+                            }
+                        }
+                    }),
+            )
+            .await,
+        );
+        let router = routes::router(state);
+        let failed = router
+            .clone()
+            .oneshot(acknowledgement_request("device-key"))
+            .await
+            .unwrap();
+        assert_eq!(failed.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(table.lock().unwrap().writes.is_empty());
+        let success = router
+            .clone()
+            .oneshot(acknowledgement_request("device-key"))
+            .await
+            .unwrap();
+        assert_eq!(success.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            *deleted.lock().unwrap(),
+            [
+                format!("/test-bucket/pcp/{JOB_ID}"),
+                format!("/test-bucket/result/{JOB_ID}"),
+                format!("/test-bucket/pcp/{JOB_ID}"),
+                format!("/test-bucket/result/{JOB_ID}"),
+            ]
+        );
+        {
+            let mut table = table.lock().unwrap();
+            let update = &table.writes[0]["TransactItems"][0]["Update"];
+            assert_eq!(
+                update["ExpressionAttributeValues"][":acknowledged"]["BOOL"],
+                true
+            );
+            // Reflect the successful write in the fake table's subsequent reads.
+            table.job.as_mut().unwrap()["acknowledged"] = serde_json::json!({"BOOL": true});
+        }
+        let repeated = router
+            .clone()
+            .oneshot(acknowledgement_request("device-key"))
+            .await
+            .unwrap();
+        assert_eq!(repeated.status(), StatusCode::NO_CONTENT);
+        assert_eq!(deleted.lock().unwrap().len(), 4);
+        assert_eq!(table.lock().unwrap().writes.len(), 1);
+        let denied = router
+            .clone()
+            .oneshot(migrations_request("GET", "other-key"))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let response = router
+            .oneshot(migrations_request("GET", "device-key"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let status = json(response).await;
+        assert_eq!(status["acknowledged"], true);
+        assert_eq!(status["status"], "migrated");
+        assert!(status.get("error").is_none());
+        assert!(status.get("download_url").is_none());
+        assert!(status.get("download_expires_at").is_none());
+        assert!(status.get("debug_report_url").is_none());
+        assert!(status.get("debug_report_expires_at").is_none());
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_surfaces_a_failed_table_write_and_can_be_retried() {
+        let (mut state, table) = migration_state(
+            Some(job_row(
+                "migrated",
+                now(),
+                &[("signup_id", serde_json::json!({"S": "new-signup-id"}))],
+            )),
+            StatusCode::OK,
+            "127.0.0.1:9".parse().unwrap(),
+        )
+        .await;
+        state.bucket =
+            bucket(serve(Router::new().fallback(|| async { StatusCode::NO_CONTENT })).await);
+        table.lock().unwrap().write_status = Some(StatusCode::INTERNAL_SERVER_ERROR);
+        let router = routes::router(state);
+        let failed = router
+            .clone()
+            .oneshot(acknowledgement_request("device-key"))
+            .await
+            .unwrap();
+        assert_eq!(failed.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            table
+                .lock()
+                .unwrap()
+                .job
+                .as_ref()
+                .unwrap()
+                .get("acknowledged")
+                .is_none()
+        );
+        table.lock().unwrap().write_status = None;
+        let success = router
+            .oneshot(acknowledgement_request("device-key"))
+            .await
+            .unwrap();
+        assert_eq!(success.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -1015,7 +1307,11 @@ mod tests {
             ),
             (
                 "already migrated",
-                Some(job_row("migrated", now(), &[])),
+                Some(job_row(
+                    "migrated",
+                    now(),
+                    &[("signup_id", serde_json::json!({"S": "new-signup-id"}))],
+                )),
                 StatusCode::OK,
                 "device-key",
                 StatusCode::CONFLICT,
@@ -1139,7 +1435,9 @@ mod tests {
             ),
         ];
 
-        for (row, expected) in cases {
+        for (row, mut expected) in cases {
+            expected["acknowledged"] = serde_json::json!(false);
+            expected["job_id"] = serde_json::json!(JOB_ID);
             let (state, table) = migration_state(Some(row), StatusCode::OK, host).await;
             let response = routes::router(state)
                 .oneshot(migrations_request("GET", "device-key"))

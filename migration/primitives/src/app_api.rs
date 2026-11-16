@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EnclaveId, Reason, Status};
+use crate::{EnclaveId, JobId, Reason, Status};
 
 pub use crate::host_api::{ErrorBody, ErrorEnvelope};
 
@@ -48,6 +48,12 @@ pub struct MigrateResponse {
 /// `200` body of `GET /v1/migrations/{sub}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrationStatus {
+    /// Identifies this attempt when acknowledging its download. Absent from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<JobId>,
+    /// The app acknowledged the download and both PCP objects were deleted.
+    #[serde(default)]
+    pub acknowledged: bool,
     /// Signup ID of the migrated PCP, present once migration succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signup_id: Option<String>,
@@ -59,7 +65,7 @@ pub struct MigrationStatus {
     /// Unix seconds the job must finish by, once migrate was called.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<u64>,
-    /// Presigned S3 URL of the result, sealed to the app, once `migrated`.
+    /// Presigned S3 URL of the result, sealed to the app, once `migrated` and unacknowledged.
     /// Issued only to the job's stored attested key thumbprint; possession of the URL
     /// authorizes an S3 download until it expires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,7 +73,7 @@ pub struct MigrationStatus {
     /// Unix seconds `download_url` stops working; poll again for a fresh one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_expires_at: Option<u64>,
-    /// Presigned URL of the job's debug report, when present, regardless of migration status.
+    /// Presigned URL of the job's debug report, when present and not acknowledged.
     /// The report is sealed to the personal-custody key.
     /// Issued only to the stored attested key thumbprint; possession authorizes S3 download.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,6 +81,13 @@ pub struct MigrationStatus {
     /// Unix seconds `debug_report_url` expires; poll again for a fresh URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug_report_expires_at: Option<u64>,
+}
+
+/// `POST /v1/migrations/{sub}/ack`. Binds deletion to the downloaded attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcknowledgeMigrationRequest {
+    /// The job ID returned with the downloaded PCP's status.
+    pub job_id: JobId,
 }
 
 /// Machine-readable error codes. A migrate whose dispatch failed answers with the [`Reason`]

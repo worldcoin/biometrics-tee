@@ -96,6 +96,32 @@ impl PcpBucket {
         self.presign_get(&result_key(job_id), ttl).await
     }
 
+    /// Deletes the input and resulting PCP, keeping the separate debug report.
+    /// Missing objects count as deleted, so a partial failure can safely be retried.
+    ///
+    /// # Errors
+    ///
+    /// Either `DeleteObject` timed out or failed. A successful return means both were deleted.
+    pub async fn delete_pcps(&self, job_id: &JobId) -> Result<(), StorageError> {
+        const OPERATION: &str = "S3 DeleteObject";
+        for key in [pcp_key(job_id), result_key(job_id)] {
+            timeout(
+                OBJECT_TIMEOUT,
+                self.client
+                    .delete_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .send(),
+            )
+            .await
+            .map_err(|_| StorageError::Timeout {
+                operation: OPERATION,
+            })?
+            .map_err(|error| failed(OPERATION, &error))?;
+        }
+        Ok(())
+    }
+
     /// A URL for the encrypted debug report. Signing makes no network call.
     ///
     /// # Errors
