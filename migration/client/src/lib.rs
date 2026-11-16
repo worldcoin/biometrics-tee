@@ -193,7 +193,7 @@ impl MigrationApiClient {
         signer: &Arc<S>,
         sub: &str,
         job_id: &di_migration_primitives::JobId,
-    ) -> Result<(), Error>
+    ) -> Result<(), ClientError>
     where
         S: Signer + Send + Sync + 'static,
         S::Error: std::error::Error + Send + Sync + 'static,
@@ -208,7 +208,11 @@ impl MigrationApiClient {
             request = request.header(DEVICE_KEY_THUMBPRINT, attested_key_thumbprint);
         }
         let request = sign(request, integrity_token, Arc::clone(signer)).await?;
-        let response = self.http.execute(request).await.map_err(Error::Transport)?;
+        let response = self
+            .http
+            .execute(request)
+            .await
+            .map_err(ClientError::Transport)?;
         if response.status().is_success() {
             Ok(())
         } else {
@@ -768,6 +772,9 @@ mod tests {
                 matches!(error, ClientError::HttpResponse { status: StatusCode::CONFLICT, ref message, .. }
                 if message == "Upload the PCP first")
             );
+            server.abort();
+        }
+    }
 
     #[tokio::test]
     async fn acknowledgement_accepts_an_empty_response_and_surfaces_api_errors() {
@@ -785,7 +792,7 @@ mod tests {
                 }),
             )).await;
             let signer = Arc::new(test_signer());
-            let result = MigrationApiClient::new(&url)
+            let result = MigrationApiClient::with_http_client(&url, reqwest::Client::new())
                 .unwrap()
                 .with_attested_key_thumbprint("device-key")
                 .acknowledge(
@@ -799,7 +806,7 @@ mod tests {
                 result.unwrap();
             } else {
                 assert!(
-                    matches!(result, Err(Error::Api { code, .. }) if code == "migration_in_progress")
+                    matches!(result, Err(ClientError::HttpResponse { code, .. }) if code == "migration_in_progress")
                 );
             }
             server.abort();

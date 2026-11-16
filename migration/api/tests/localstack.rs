@@ -360,7 +360,7 @@ async fn a_migration_runs_from_init_to_download() {
     );
     assert!(matches!(
         client.acknowledge(&token, &signer, &sub, &job.job_id).await,
-        Err(Error::Api { code, .. }) if code == "migration_in_progress"
+        Err(ClientError::HttpResponse { code, .. }) if code == "migration_in_progress"
     ));
 
     // The host's side, through the same storage crate: echo the PCP into the result.
@@ -402,7 +402,7 @@ async fn a_migration_runs_from_init_to_download() {
 
     assert!(matches!(
         other.acknowledge(&token, &signer, &sub, &job.job_id).await,
-        Err(Error::Api { code, .. }) if code == "device_key_mismatch"
+        Err(ClientError::HttpResponse { code, .. }) if code == "device_key_mismatch"
     ));
     bucket
         .put_debug_report(&job.job_id, b"encrypted diagnostic".to_vec())
