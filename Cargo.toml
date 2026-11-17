@@ -78,7 +78,7 @@ orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13
 orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
 di-migration-client = { path = "migration/client" }
 pontifex = { version = "3.1.0", default-features = false }
-world-id-proof-verification-client = { git = "https://github.com/worldcoin/world-id-proof-verification", rev = "174ac8ff87715b673eadf3911919a811300eb6a7" }
+world-id-proof-verification-client = { git = "https://github.com/worldcoin/world-id-proof-verification", tag = "v1.0.0" }
 fastrand = "2"
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",

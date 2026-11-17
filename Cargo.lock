@@ -245,7 +245,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "api-types"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/world-id-proof-verification?rev=174ac8ff87715b673eadf3911919a811300eb6a7#174ac8ff87715b673eadf3911919a811300eb6a7"
+source = "git+https://github.com/worldcoin/world-id-proof-verification?tag=v1.0.0#174ac8ff87715b673eadf3911919a811300eb6a7"
 dependencies = [
  "axum",
  "chrono",
@@ -7435,7 +7435,7 @@ dependencies = [
 [[package]]
 name = "world-id-proof-verification-client"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/world-id-proof-verification?rev=174ac8ff87715b673eadf3911919a811300eb6a7#174ac8ff87715b673eadf3911919a811300eb6a7"
+source = "git+https://github.com/worldcoin/world-id-proof-verification?tag=v1.0.0#174ac8ff87715b673eadf3911919a811300eb6a7"
 dependencies = [
  "api-types",
  "async-trait",

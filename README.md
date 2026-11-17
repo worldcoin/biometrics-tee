@@ -3,7 +3,7 @@
 WIP
 
 The API uses the [shared proof verification client](https://github.com/worldcoin/world-id-proof-verification/tree/main/client),
-pinned by commit in `Cargo.toml`, for verification and cached KMS-signed service JWTs.
+pinned to tag `v1.0.0` in `Cargo.toml`, for verification and cached KMS-signed service JWTs.
 The verification service must support its request body: UUID `challenge_id`,
 `credential_sub`, and `proof`. Challenge type is recovered from the stored challenge;
 `PROOF_CHALLENGE_TYPE` is no longer configured on the migration API.
