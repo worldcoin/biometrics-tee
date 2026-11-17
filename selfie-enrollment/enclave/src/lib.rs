@@ -5,6 +5,7 @@ pub mod engine;
 pub mod enrollment;
 #[cfg(any(target_os = "linux", test))]
 mod enrollment_config;
+mod poseguard;
 pub mod rng;
 #[cfg(target_os = "linux")]
 pub mod runtime;
@@ -25,6 +26,7 @@ pub struct State {
     processing: Arc<tokio::sync::Semaphore>,
     /// Absent until the release supplies Face-AMPC keys and the worker measurement.
     enrollment: Option<enrollment::Producer>,
+    challenges: poseguard::Challenges,
 }
 impl State {
     pub fn new(attestor: Arc<dyn Attestor>, engine: Box<dyn Engine>) -> Result<Self, Error> {
@@ -41,6 +43,7 @@ impl State {
             engine,
             processing: Arc::new(tokio::sync::Semaphore::new(1)),
             enrollment: None,
+            challenges: Default::default(),
         })
     }
     /// Enables sealed PoseGuard enrollment; without it those requests fail as `Unavailable`.
@@ -82,6 +85,7 @@ impl State {
                 .channel
                 .open(&request.ciphertext)
                 .map_err(|_| Error::ReassignRequired)?;
+            let mut await_capture = false;
             let encoded = match Request::decode(&plain) {
                 // Undecodable plaintext keeps the v1 reply that existing clients expect.
                 Err(_) => EmbeddingResult::Failed {
@@ -107,10 +111,18 @@ impl State {
                 Ok(Request::PoseGuardEnrollment(input)) => {
                     state.enroll_poseguard_sealed(&input)?.encode()
                 }
+                Ok(Request::GeneratePoseGuardTargets(input)) => {
+                    let result = state.generate_poseguard_targets(&input)?;
+                    await_capture = true;
+                    result.encode()
+                }
             }
             .map_err(|_| Error::Unavailable)?;
             let ciphertext = sealer.seal(&encoded).map_err(|_| Error::Unavailable)?;
-            Ok(ExtractResponse { ciphertext })
+            Ok(ExtractResponse {
+                ciphertext,
+                await_capture,
+            })
         })
         .await
         .map_err(|_| Error::Unavailable)?
@@ -267,15 +279,21 @@ mod tests {
         sub: &str,
         custody: &SecretKey,
     ) -> Result<EnrollmentResult, Error> {
+        let captures = std::array::from_fn(|i| PoseGuardCapture {
+            image: vec![i as u8 + 1],
+            target_pitch: 10.0,
+            target_yaw: -20.0,
+        });
+        let challenge_token =
+            state
+                .challenges
+                .fixture(sub, custody.public_key().as_bytes(), &captures);
         let request = PoseGuardEnrollmentRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
             operation: EnrollmentOperation::EnrollWithPoseGuard,
             central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
-            captures: std::array::from_fn(|i| PoseGuardCapture {
-                image: vec![i as u8 + 1],
-                target_pitch: 10.0,
-                target_yaw: -20.0,
-            }),
+            captures,
+            challenge_token,
             sub: sub.into(),
             custody_public_key: custody.public_key().as_bytes().to_vec(),
         };

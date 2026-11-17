@@ -9,7 +9,10 @@ use std::io::Cursor;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 mod poseguard;
-pub use poseguard::{EnrollmentOperation, PoseGuardCapture, PoseGuardEnrollmentRequest};
+pub use poseguard::{
+    EnrollmentOperation, GeneratePoseGuardTargetsRequest, PoseGuardCapture, PoseGuardChallenge,
+    PoseGuardEnrollmentRequest, PoseGuardTarget, PoseGuardTargetsResult,
+};
 
 pub const PADDED_RESULT_BYTES: usize = 64 * 1024;
 
@@ -180,6 +183,7 @@ pub enum Request {
     Embedding(EmbeddingRequest),
     Enrollment(EnrollmentRequest),
     PoseGuardEnrollment(PoseGuardEnrollmentRequest),
+    GeneratePoseGuardTargets(GeneratePoseGuardTargetsRequest),
 }
 impl Request {
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
@@ -199,6 +203,9 @@ impl Request {
             }
             (ENROLLMENT_PROTOCOL_VERSION, Some(EnrollmentOperation::EnrollWithPoseGuard)) => {
                 PoseGuardEnrollmentRequest::decode(bytes).map(Self::PoseGuardEnrollment)
+            }
+            (ENROLLMENT_PROTOCOL_VERSION, Some(EnrollmentOperation::GeneratePoseGuardTargets)) => {
+                GeneratePoseGuardTargetsRequest::decode(bytes).map(Self::GeneratePoseGuardTargets)
             }
             _ => Err(Error),
         }

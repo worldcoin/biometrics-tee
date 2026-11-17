@@ -31,6 +31,8 @@ pub struct ExtractRequest {
 pub struct ExtractResponse {
     #[serde(with = "serde_bytes")]
     pub ciphertext: Vec<u8>,
+    /// Only target generation permits one more sealed exchange on this socket.
+    pub await_capture: bool,
 }
 impl Request for ExtractRequest {
     const ROUTE_ID: &'static str = "/selfie-enrollment/v1/extract";

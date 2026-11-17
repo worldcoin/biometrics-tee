@@ -4,14 +4,17 @@ use pontifex::{
     ChannelConsumer, ChannelDomain, ResponseOpener,
     attestation::{PcrConfig, VerifiedAttestation, Verifier},
 };
+use rand::RngCore;
 use selfie_enrollment_api_types::*;
-pub use selfie_enrollment_sealed_types::PoseGuardCapture;
 use selfie_enrollment_sealed_types::{
     EmbeddingRequest, EmbeddingResult, EnrollmentOperation, EnrollmentRequest, EnrollmentResult,
-    PoseGuardEnrollmentRequest,
+    GeneratePoseGuardTargetsRequest, PoseGuardChallenge, PoseGuardEnrollmentRequest,
+    PoseGuardTargetsResult,
 };
+pub use selfie_enrollment_sealed_types::{PoseGuardCapture, PoseGuardTarget};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use web_time::Instant;
 use zeroize::Zeroizing;
 
 #[cfg(target_arch = "wasm32")]
@@ -105,6 +108,8 @@ pub enum Error {
 pub struct VerifiedAssignment {
     attestation: VerifiedAttestation,
     consumer: ChannelConsumer,
+    verifier: Verifier,
+    commitment: [u8; 32],
 }
 impl VerifiedAssignment {
     pub fn verify(config: &Config, assignment: &Assignment) -> Result<Self, Error> {
@@ -118,9 +123,10 @@ impl VerifiedAssignment {
         let public_key = STANDARD
             .decode(&assignment.public_key)
             .map_err(|_| Error::Protocol)?;
+        let verifier = config.verifier()?;
         let (consumer, verified) = ChannelConsumer::from_attestation(
             ChannelDomain::new(CHANNEL_DOMAIN),
-            &config.verifier()?,
+            &verifier,
             &doc,
             &public_key,
         )
@@ -128,6 +134,8 @@ impl VerifiedAssignment {
         Ok(Self {
             attestation: verified,
             consumer,
+            verifier,
+            commitment: ChannelDomain::new(CHANNEL_DOMAIN).public_key_commitment(&public_key),
         })
     }
     pub fn attestation(&self) -> &VerifiedAttestation {
@@ -268,46 +276,142 @@ impl<T: Transport> EnrollmentSession<T> {
         pending.open_enrollment(&response)
     }
 
-    /// Evaluates the central image and three caller-supplied pose captures before enrollment.
-    pub async fn enroll_with_poseguard(
-        self,
-        central_png: Vec<u8>,
-        captures: [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT],
+    /// Generates an authenticated challenge and retains this socket and assignment for capture.
+    pub async fn generate_poseguard_targets(
+        mut self,
         sub: String,
         custody_public_key: [u8; 32],
+    ) -> Result<PendingPoseGuardEnrollment<T>, Error> {
+        let deadline = Instant::now() + Duration::from_secs(POSEGUARD_CHALLENGE_TTL_SECS);
+        let result = async {
+            let mut nonce = [0; 32];
+            rand::rngs::OsRng
+                .try_fill_bytes(&mut nonce)
+                .map_err(|_| Error::Authentication)?;
+            let mut input = GeneratePoseGuardTargetsRequest {
+                version: ENROLLMENT_PROTOCOL_VERSION,
+                operation: EnrollmentOperation::GeneratePoseGuardTargets,
+                sub,
+                custody_public_key: custody_public_key.to_vec(),
+                nonce,
+            };
+            let (request, pending) = self
+                .assignment
+                .seal_plaintext(&input.encode().map_err(|_| Error::Protocol)?)?;
+            let response = self.exchange(request).await?;
+            let result = PoseGuardTargetsResult::decode(&pending.open_plaintext(&response)?)
+                .map_err(|_| Error::Protocol)?;
+            let expected = result
+                .challenge
+                .attestation_nonce(&input, &self.assignment.commitment)
+                .map_err(|_| Error::Protocol)?;
+            // Channel response encryption alone does not authenticate its sender.
+            let proof = self
+                .assignment
+                .verifier
+                .verify_attestation_document(&result.attestation)
+                .map_err(|_| Error::Attestation)?;
+            if proof
+                .document()
+                .nonce
+                .as_ref()
+                .map(|nonce| nonce.as_slice())
+                != Some(expected.as_slice())
+            {
+                return Err(Error::Authentication);
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Timeout);
+            }
+            Ok((result.challenge.clone(), std::mem::take(&mut input.sub)))
+        }
+        .await;
+        match result {
+            Ok((challenge, sub)) => Ok(PendingPoseGuardEnrollment {
+                session: self,
+                challenge,
+                sub,
+                custody_public_key,
+                deadline,
+            }),
+            Err(error) => {
+                self.socket.close().await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn round_trip(mut self, request: Vec<u8>) -> Result<Vec<u8>, Error> {
+        let result = self.exchange(request).await;
+        self.socket.close().await;
+        result
+    }
+
+    async fn exchange(&mut self, request: Vec<u8>) -> Result<Vec<u8>, Error> {
+        self.socket
+            .send(Frame::Binary(request), Duration::from_secs(10))
+            .await?;
+        match self.socket.receive(Duration::from_secs(40)).await? {
+            Frame::Binary(response) => Ok(response),
+            frame => {
+                host_message(frame)?;
+                Err(Error::Protocol)
+            }
+        }
+    }
+}
+
+/// An issued challenge and the already-verified connection that owns its enrollment attempt.
+/// Consuming this handle prevents another submission through the same client session.
+pub struct PendingPoseGuardEnrollment<T: Transport> {
+    session: EnrollmentSession<T>,
+    challenge: PoseGuardChallenge,
+    sub: String,
+    custody_public_key: [u8; 32],
+    deadline: Instant,
+}
+
+impl<T: Transport> PendingPoseGuardEnrollment<T> {
+    pub fn targets(&self) -> &[PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT] {
+        &self.challenge.targets
+    }
+    pub fn expires_at(&self) -> u64 {
+        self.challenge.expires_at
+    }
+
+    pub async fn enroll_with_poseguard(
+        mut self,
+        central_png: Vec<u8>,
+        captures: [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT],
     ) -> Result<EnrollmentResult, Error> {
         let input = PoseGuardEnrollmentRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
             operation: EnrollmentOperation::EnrollWithPoseGuard,
             central_png,
             captures,
-            sub,
-            custody_public_key: custody_public_key.to_vec(),
+            sub: std::mem::take(&mut self.sub),
+            custody_public_key: self.custody_public_key.to_vec(),
+            challenge_token: self.challenge.challenge_token,
         };
-        let (request, pending) = self
-            .assignment
-            .seal_plaintext(&input.encode().map_err(|_| Error::Protocol)?)?;
-        drop(input);
-        let response = self.round_trip(request).await?;
-        pending.open_enrollment(&response)
-    }
-
-    async fn round_trip(mut self, request: Vec<u8>) -> Result<Vec<u8>, Error> {
         let result = async {
-            self.socket
-                .send(Frame::Binary(request), Duration::from_secs(10))
-                .await?;
-            match self.socket.receive(Duration::from_secs(40)).await? {
-                Frame::Binary(response) => Ok(response),
-                frame => {
-                    host_message(frame)?;
-                    Err(Error::Protocol)
-                }
+            if Instant::now() >= self.deadline {
+                return Err(Error::Timeout);
             }
+            let (request, pending) = self
+                .session
+                .assignment
+                .seal_plaintext(&input.encode().map_err(|_| Error::Protocol)?)?;
+            drop(input);
+            let response = self.session.exchange(request).await?;
+            pending.open_enrollment(&response)
         }
         .await;
-        self.socket.close().await;
+        self.session.socket.close().await;
         result
+    }
+
+    pub async fn cancel(mut self) {
+        self.session.socket.close().await;
     }
 }
 fn host_message(frame: Frame) -> Result<HostMessage, Error> {

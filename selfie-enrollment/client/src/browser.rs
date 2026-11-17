@@ -229,37 +229,78 @@ pub async fn extract_embedding(
 }
 
 #[cfg(feature = "js-export")]
-#[wasm_bindgen(js_name=enrollWithPoseGuard)]
-pub async fn enroll_with_poseguard(
+#[wasm_bindgen(js_name=generatePoseGuardTargets)]
+pub async fn generate_poseguard_targets(
     config_json: String,
-    central_png: Vec<u8>,
-    captures: JsValue,
     sub: String,
     custody_public_key: Vec<u8>,
     signal: Option<AbortSignal>,
-) -> Result<JsValue, JsValue> {
-    let mut central_png = zeroize::Zeroizing::new(central_png);
+) -> Result<PoseGuardEnrollment, JsValue> {
     let operation = async {
         let config: Config = serde_json::from_str(&config_json).map_err(|_| Error::Config)?;
-        let captures = captures
-            .dyn_into::<js_sys::Array>()
-            .map_err(|_| Error::Protocol)?;
-        if captures.length() as usize != selfie_enrollment_api_types::POSEGUARD_CHALLENGE_COUNT {
-            return Err(Error::Protocol);
-        }
-        let captures =
-            serde_wasm_bindgen::from_value(captures.into()).map_err(|_| Error::Protocol)?;
         let key = custody_public_key
             .as_slice()
             .try_into()
             .map_err(|_| Error::Config)?;
         let client = EnrollmentClient::new(config)?;
         let session = client.connect(signal).await?;
-        let result = session
-            .enroll_with_poseguard(std::mem::take(&mut *central_png), captures, sub, key)
-            .await?;
-        serde_wasm_bindgen::to_value(&result).map_err(|_| Error::Protocol)
+        let inner = session.generate_poseguard_targets(sub, key).await?;
+        Ok(PoseGuardEnrollment { inner })
     }
     .await;
     operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
+}
+
+#[cfg(feature = "js-export")]
+#[wasm_bindgen]
+pub struct PoseGuardEnrollment {
+    inner: crate::PendingPoseGuardEnrollment<BrowserTransport>,
+}
+
+#[cfg(feature = "js-export")]
+#[wasm_bindgen]
+impl PoseGuardEnrollment {
+    #[wasm_bindgen(getter)]
+    pub fn targets(&self) -> Result<JsValue, JsValue> {
+        serde_wasm_bindgen::to_value(self.inner.targets())
+            .map_err(|_| JsValue::from_str("invalid targets"))
+    }
+
+    /// Challenge expiry in Unix seconds.
+    #[wasm_bindgen(getter, js_name=expiresAt)]
+    pub fn expires_at(&self) -> f64 {
+        self.inner.expires_at() as f64
+    }
+
+    #[wasm_bindgen(js_name=enrollWithPoseGuard)]
+    pub async fn enroll_with_poseguard(
+        self,
+        central_png: Vec<u8>,
+        captures: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let mut central_png = zeroize::Zeroizing::new(central_png);
+        let operation = async {
+            let captures = captures
+                .dyn_into::<js_sys::Array>()
+                .map_err(|_| Error::Protocol)?;
+            if captures.length() as usize != selfie_enrollment_api_types::POSEGUARD_CHALLENGE_COUNT
+            {
+                return Err(Error::Protocol);
+            }
+            let captures =
+                serde_wasm_bindgen::from_value(captures.into()).map_err(|_| Error::Protocol)?;
+            let result = self
+                .inner
+                .enroll_with_poseguard(std::mem::take(&mut *central_png), captures)
+                .await?;
+            serde_wasm_bindgen::to_value(&result).map_err(|_| Error::Protocol)
+        }
+        .await;
+        operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Releases the retained WebSocket and abort listener without submitting images.
+    pub fn cancel(self) {
+        drop(self);
+    }
 }
