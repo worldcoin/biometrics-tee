@@ -47,7 +47,7 @@ pub struct Config {
     pub s3_force_path_style: bool,
     #[arg(long, env = "PROOF_VERIFICATION_HOST")]
     pub proof_verification_host: String,
-    #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..))]
     pub proof_verify_timeout_secs: u64,
     #[arg(long, env = "PROOF_MAX_CONNS", default_value_t = 4)]
     pub proof_max_conns: usize,
