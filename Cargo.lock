@@ -243,6 +243,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "api-types"
+version = "0.1.0"
+source = "git+https://github.com/worldcoin/world-id-proof-verification?rev=174ac8ff87715b673eadf3911919a811300eb6a7#174ac8ff87715b673eadf3911919a811300eb6a7"
+dependencies = [
+ "axum",
+ "chrono",
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -657,7 +668,7 @@ dependencies = [
  "getrandom 0.3.4",
  "http",
  "jsonwebtoken",
- "p256",
+ "p256 0.13.2",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -4027,7 +4038,6 @@ dependencies = [
  "di-migration-telemetry",
  "fastrand",
  "http-body-util",
- "proof",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4036,6 +4046,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "world-id-proof-verification-client",
 ]
 
 [[package]]
@@ -4411,6 +4422,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "p256"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2c9239b2dbc807adbbe147e8cf72ea7450c3a0aabe62cb8e75ff4ec22e1f72a"
+dependencies = [
+ "ecdsa 0.17.0",
+ "elliptic-curve 0.14.1",
+ "primefield",
+ "primeorder 0.14.0",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "p384"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4746,26 +4770,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "proof"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "aws-sdk-kms",
- "axum",
- "base64 0.22.1",
- "http-body-util",
- "p256",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tower",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -6979,6 +6983,7 @@ checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 
@@ -7404,6 +7409,24 @@ dependencies = [
  "taceo-poseidon2",
  "thiserror 2.0.20",
  "url",
+]
+
+[[package]]
+name = "world-id-proof-verification-client"
+version = "0.1.0"
+source = "git+https://github.com/worldcoin/world-id-proof-verification?rev=174ac8ff87715b673eadf3911919a811300eb6a7#174ac8ff87715b673eadf3911919a811300eb6a7"
+dependencies = [
+ "api-types",
+ "async-trait",
+ "attested-request",
+ "aws-sdk-kms",
+ "base64 0.22.1",
+ "p256 0.14.0",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

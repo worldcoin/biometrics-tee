@@ -2,6 +2,14 @@
 
 WIP
 
+The API uses the [shared proof verification client](https://github.com/worldcoin/world-id-proof-verification/tree/main/client),
+pinned by commit in `Cargo.toml`, for verification and cached KMS-signed service JWTs.
+The verification service must support its request body: UUID `challenge_id`,
+`credential_sub`, and `proof`. Challenge type is recovered from the stored challenge;
+`PROOF_CHALLENGE_TYPE` is no longer configured on the migration API.
+`PROOF_VERIFY_TIMEOUT_SECS` must be positive and bounds verification HTTP requests.
+The shared JWT provider bounds KMS signing to ten seconds, including SDK retries.
+
 After saving the migrated PCP, call the signed `POST /v1/migrations/{sub}/ack`
 endpoint with JSON `{"job_id": "<job ID>"}` from the status response
 (Rust client: `MigrationApiClient::acknowledge`). It requires the device

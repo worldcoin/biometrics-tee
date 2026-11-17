@@ -95,15 +95,9 @@ async fn init_migration(
         attested_key_thumbprint(&headers).ok_or_else(ApiError::invalid_device_key)?;
     let sub = valid_sub(&request.sub)?;
 
-    let verification = proof::VerificationRequest {
-        challenge_id: request.challenge_id,
-        challenge_type: state.verifier.config.challenge_type.clone(),
-        credential_sub: sub.to_owned(),
-        proof: request.proof,
-    };
     state
         .verifier
-        .verify(verification)
+        .verify(request.challenge_id, sub.to_owned(), request.proof)
         .await
         .map_err(|error| ApiError::proof(&error))?;
 

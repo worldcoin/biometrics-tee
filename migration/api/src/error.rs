@@ -8,6 +8,8 @@ use axum::{
 use di_migration_primitives::{Reason, app_api::codes};
 use serde::Serialize;
 
+use crate::proof;
+
 /// An API failure, with the status and body to return for it.
 #[derive(Debug)]
 pub struct ApiError {
@@ -278,6 +280,7 @@ mod tests {
     use axum::http::StatusCode;
 
     use super::ApiError;
+    use crate::proof;
 
     /// Pins the proof matrix; the app retries only what can succeed on retry.
     #[test]

@@ -25,7 +25,6 @@ members = [
     "migration/api",
     "migration/client",
     "migration/cli",
-    "migration/proof",
     "migration/pcp",
     "worker-protocol",
 ]
@@ -77,10 +76,9 @@ metrics-exporter-statsd = "0.9"
 orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
 orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
 orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
-p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 di-migration-client = { path = "migration/client" }
 pontifex = { version = "3.1.0", default-features = false }
-proof = { path = "migration/proof" }
+world-id-proof-verification-client = { git = "https://github.com/worldcoin/world-id-proof-verification", rev = "174ac8ff87715b673eadf3911919a811300eb6a7" }
 fastrand = "2"
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",

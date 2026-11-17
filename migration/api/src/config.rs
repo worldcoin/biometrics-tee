@@ -47,14 +47,12 @@ pub struct Config {
     pub s3_force_path_style: bool,
     #[arg(long, env = "PROOF_VERIFICATION_HOST")]
     pub proof_verification_host: String,
-    #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 2)]
+    #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
     pub proof_verify_timeout_secs: u64,
     #[arg(long, env = "PROOF_MAX_CONNS", default_value_t = 4)]
     pub proof_max_conns: usize,
     #[arg(long, env = "PROOF_MAX_PROOF_BODY_BYTES", default_value_t = 1 << 20)]
     pub proof_max_proof_body_bytes: u64,
-    #[arg(long, env = "PROOF_CHALLENGE_TYPE", default_value = "teedi_migration")]
-    pub proof_challenge_type: String,
     #[arg(long, env = "PROOF_JWT_KMS_KEY_ID")]
     pub proof_jwt_kms_key_id: String,
     #[arg(long, env = "PROOF_JWT_SUBJECT", default_value = "tee-migration")]
@@ -197,6 +195,18 @@ mod tests {
         "--host-service",
         "hosts",
     ];
+
+    #[test]
+    fn proof_verification_requires_a_positive_timeout() {
+        assert!(
+            Config::try_parse_from(
+                REQUIRED
+                    .into_iter()
+                    .chain(["--proof-verify-timeout-secs", "0"])
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn job_retention_defaults_to_twenty_eight_days() {
