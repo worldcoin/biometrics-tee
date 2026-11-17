@@ -85,7 +85,8 @@ impl State {
                     reason: Failure::InvalidRequest,
                 }
                 .encode(),
-                Ok(Request::Embedding(input)) => match state.engine.extract(&input.image)? {
+                // The v1 result has no report field; the dropped report erases itself.
+                Ok(Request::Embedding(v1)) => match state.engine.extract(&v1.image)?.outcome {
                     Ok(embedding) => EmbeddingResult::Success { embedding },
                     Err(reason) => EmbeddingResult::Failed { reason },
                 }
@@ -106,6 +107,7 @@ mod tests {
     use super::*;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use crypto_box::SecretKey;
+    use engine::Extraction;
     use pontifex::ChannelConsumer;
     use rand::rngs::OsRng;
     use selfie_enrollment_api_types::ENROLLMENT_PROTOCOL_VERSION;
@@ -113,7 +115,8 @@ mod tests {
         AttestationFailed, CaptureAttestor, NONCE_BYTES, USER_DATA_BYTES,
     };
     use selfie_enrollment_sealed_types::{
-        ENROLLMENT_FIELDS, EmbeddingRequest, EnrollmentRequest, EnrollmentResult, FaceEmbedding,
+        DebugReport, ENROLLMENT_FIELDS, EmbeddingRequest, EnrollmentRequest, EnrollmentResult,
+        FaceEmbedding,
     };
     struct TestAttestor;
     impl Attestor for TestAttestor {
@@ -123,13 +126,16 @@ mod tests {
     }
     struct FakeEngine;
     impl Engine for FakeEngine {
-        fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
-            Ok(Ok(FaceEmbedding {
-                embedding: "AA==".into(),
-                embedding_type: "test".into(),
-                embedding_version: "1".into(),
-                embedding_inference_backend: "test".into(),
-            }))
+        fn extract(&self, _: &[u8]) -> Result<Extraction, Error> {
+            Ok(Extraction {
+                outcome: Ok(FaceEmbedding {
+                    embedding: "AA==".into(),
+                    embedding_type: "test".into(),
+                    embedding_version: "1".into(),
+                    embedding_inference_backend: "test".into(),
+                }),
+                debug_report: report(),
+            })
         }
         fn check_health(&self) -> Result<(), Error> {
             Ok(())
@@ -138,24 +144,30 @@ mod tests {
     fn state() -> Arc<State> {
         Arc::new(State::new(Arc::new(TestAttestor), Box::new(FakeEngine)).unwrap())
     }
+    fn report() -> DebugReport {
+        Some(r#"{"engine":"test"}"#.to_owned()).into()
+    }
     /// A 512-dimension embedding the share generator accepts, or a panic if `forbid`.
     struct EnrollEngine {
         forbid: bool,
     }
     impl Engine for EnrollEngine {
-        fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
+        fn extract(&self, _: &[u8]) -> Result<Extraction, Error> {
             assert!(
                 !self.forbid,
                 "invalid enrollment requests must not reach extraction"
             );
             let mut vector = (512_u64).to_le_bytes().to_vec();
             vector.resize(8 + 512 * 4, 0);
-            Ok(Ok(FaceEmbedding {
-                embedding: STANDARD.encode(vector),
-                embedding_type: "ghostfacenet_flipped_mean".into(),
-                embedding_version: "2.0.0".into(),
-                embedding_inference_backend: "face-engine".into(),
-            }))
+            Ok(Extraction {
+                outcome: Ok(FaceEmbedding {
+                    embedding: STANDARD.encode(vector),
+                    embedding_type: "ghostfacenet_flipped_mean".into(),
+                    embedding_version: "2.0.0".into(),
+                    embedding_inference_backend: "face-engine".into(),
+                }),
+                debug_report: report(),
+            })
         }
         fn check_health(&self) -> Result<(), Error> {
             Ok(())
@@ -171,14 +183,14 @@ mod tests {
             Ok(b"capture-document".to_vec())
         }
     }
-    fn enrolling_state(forbid: bool) -> Arc<State> {
+    fn enrolling_state(engine: impl Engine + 'static) -> Arc<State> {
         let context = enrollment::TrustedContext::new(
             std::array::from_fn(|_| SecretKey::generate(&mut OsRng).public_key()),
             [0x5a; 48],
         )
         .unwrap();
         Arc::new(
-            State::new(Arc::new(TestAttestor), Box::new(EnrollEngine { forbid }))
+            State::new(Arc::new(TestAttestor), Box::new(engine))
                 .unwrap()
                 .with_enrollment(enrollment::Producer::new(
                     context,
@@ -213,12 +225,17 @@ mod tests {
     }
     #[tokio::test]
     async fn sealed_enrollment_returns_the_bundle_and_a_user_owned_pcp() {
-        let state = enrolling_state(false);
+        let state = enrolling_state(EnrollEngine { forbid: false });
         let custody = SecretKey::generate(&mut OsRng);
         let result = sealed_enrollment(&state, "0x1f", &custody).await.unwrap();
-        let EnrollmentResult::Success { enrollment } = &result else {
+        let EnrollmentResult::Success {
+            enrollment,
+            debug_report,
+        } = &result
+        else {
             panic!("expected an enrollment")
         };
+        assert_eq!(debug_report, &report());
         let names: Vec<_> = enrollment.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ENROLLMENT_FIELDS);
         let value = |name: &str| {
@@ -258,7 +275,7 @@ mod tests {
     }
     #[tokio::test]
     async fn sealed_enrollment_rejects_non_canonical_subjects_before_extraction() {
-        let state = enrolling_state(true);
+        let state = enrolling_state(EnrollEngine { forbid: true });
         let custody = SecretKey::generate(&mut OsRng);
         for sub in [
             "0x01f",
@@ -269,10 +286,38 @@ mod tests {
             assert!(matches!(
                 sealed_enrollment(&state, sub, &custody).await.unwrap(),
                 EnrollmentResult::Failed {
-                    reason: Failure::InvalidRequest
+                    reason: Failure::InvalidRequest,
+                    debug_report: DebugReport::NotProduced,
                 }
             ));
         }
+    }
+    #[tokio::test]
+    async fn sealed_enrollment_returns_the_report_of_a_rejected_capture() {
+        struct Reject;
+        impl Engine for Reject {
+            fn extract(&self, _: &[u8]) -> Result<Extraction, Error> {
+                Ok(Extraction {
+                    outcome: Err(Failure::QualityRejected),
+                    debug_report: report(),
+                })
+            }
+            fn check_health(&self) -> Result<(), Error> {
+                Ok(())
+            }
+        }
+        let custody = SecretKey::generate(&mut OsRng);
+        let result = sealed_enrollment(&enrolling_state(Reject), "0x1f", &custody)
+            .await
+            .unwrap();
+        let EnrollmentResult::Failed {
+            reason: Failure::QualityRejected,
+            debug_report,
+        } = &result
+        else {
+            panic!("expected a rejected capture")
+        };
+        assert_eq!(debug_report, &report());
     }
     #[tokio::test]
     async fn sealed_round_trip_allows_resubmission_and_uses_request_response_key() {

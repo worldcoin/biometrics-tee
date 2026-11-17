@@ -14,6 +14,8 @@ Successful results use `FaceEmbedding` with the existing PCP field names: `embed
 
 The sealed CBOR request contains its protocol version and an image of at most 8 MiB. The enclave permits one worker operation at a time. Assignments reserve no state and have no per-request expiry; replaying valid ciphertext during the same enclave boot can repeat inference. A restart changes the channel key, so old ciphertext returns `reassign_required`. A response carries either a typed image/quality failure or the original worker vector encoding, type, version and inference backend. Responses are padded to 64 KiB before sealing. Response encryption is not an independently attested or signed extraction statement; credential-issuance verification is outside this protocol. No image, embedding or worker debug report is logged or persisted by the host. Biometric plaintext types erase their owned buffers on drop.
 
+Version 2 results return the worker's debug report on success and on rejected captures, as Flamingo does. It is forwarded verbatim, capped at 64 KiB (a larger report is omitted), and never parsed or logged. Worker releases must keep image bytes, embedding vectors and templates out of it. Release the host, enclave and client together.
+
 ## Layout and dependencies
 
 - `api-types`: public session messages and limits.
@@ -45,7 +47,7 @@ Comparison baseline: [Flamingo `48205c5`](https://github.com/worldcoin/flamingo/
 
 | Difference | Enrollment behavior | Review here |
 | --- | --- | --- |
-| Operation and result | One `VanillaSelfie` image becomes an embedding and metadata. No comparison threshold, PCP validation, match-token signing, or signing-key attestation. Worker debug reports are erased instead of returned. | [sealed payloads](sealed-types/src/lib.rs), [worker adapter](enclave/src/engine.rs) |
+| Operation and result | One `VanillaSelfie` image becomes an embedding and metadata. No comparison threshold, PCP validation, match-token signing, or signing-key attestation. Enrollment results return worker debug reports, as Flamingo does. | [sealed payloads](sealed-types/src/lib.rs), [worker adapter](enclave/src/engine.rs) |
 | Browser client | Native and WASM transports share verification and session sequencing. `EnrollmentClient.connect` returns a session that owns its socket and verified assignment; `session.extract(image)` consumes it, following Flamingo. The browser adapter adds bounded queues and AbortSignal support. | [shared client](client/src/lib.rs), [browser transport](client/src/browser.rs), [native transport](client/src/native.rs) |
 | Limits and scheduling | One inference per enclave with immediate `busy` while occupied; Flamingo waits up to five seconds for its worker lock. Enrollment has an 8 MiB image limit, fixed 64 KiB padded results, eight default host sockets and a 90-second host session deadline. | [enclave state](enclave/src/lib.rs), [limits](api-types/src/lib.rs), [host lifecycle](host/src/lib.rs) |
 | Attestation refresh | Refreshes every ten minutes. After an NSM failure, retries after 30 seconds and restores the normal interval on success; the one-hour expiry is unchanged. Flamingo uses the normal interval for retries as well. | [attestation cache](enclave/src/attestation.rs) |
