@@ -7,20 +7,14 @@ targets = ["x86_64-unknown-linux-gnu"]
 ignore = [
     # serde_cbor, required by Pontifex's AWS NSM dependencies; no maintained compatible release exists.
     "RUSTSEC-2021-0127",
-    # zip is only a libsodium-sys-stable build dependency for its Windows fallback installer.
-    # Our use-pkg-config feature requires system libsodium and bypasses archive extraction.
-    # Remove these exceptions when libsodium-sys-stable supports zip >=9:
-    # https://github.com/jedisct1/libsodium-sys-stable/pull/26
-    { id = "RUSTSEC-2026-0367", reason = "zip SUID/SGID extraction is unreachable with libsodium-sys-stable/use-pkg-config" },
-    { id = "RUSTSEC-2026-0368", reason = "zip symlink extraction is unreachable with libsodium-sys-stable/use-pkg-config" },
-    { id = "RUSTSEC-2026-0369", reason = "zip permission changes through symlinks are unreachable with libsodium-sys-stable/use-pkg-config" },
-    { id = "RUSTSEC-2026-0429", reason = "zip symlink-target allocation during extraction is unreachable with libsodium-sys-stable/use-pkg-config" },
     # The PCP builder pins the legacy Hyrax implementation for commitment compatibility.
     # These transitive crates have maintenance notices, with no compatible upgrade.
     # Keep vulnerability advisories enforced; remove these exceptions when Hyrax updates.
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is required by the worker embedding wire format and pinned Hyrax serialization; changing it requires upstream compatibility validation" },
     { id = "RUSTSEC-2024-0388", reason = "derivative 2.2.0 is a transitive macro dependency of Hyrax/arkworks 0.4; no compatible upstream replacement" },
     { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 is a transitive macro dependency of Hyrax/arkworks 0.4; no compatible upstream replacement" },
+    # All chrono versions have this maintenance notice. Remove when these upstreams migrate.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is required by telemetry-batteries 0.4.1 and the shared proof client's api-types; no patched chrono release exists" },
     # The patched crypto-bigint line starts at 0.7.6. The remaining 0.5.5 is required by
     # elliptic-curve 0.13 through attested-request and world-id-primitives, and has no
     # compatible patched release. Remove this when both upstreams use RustCrypto 0.14.
@@ -35,7 +29,7 @@ deny = [
     { name = "openssl-src" },
     # Unmaintained pinning helpers (RUSTSEC-2026-0441).
     { name = "pin-utils" },
-    # The zip advisory exceptions apply only to libsodium's unused build dependency.
+    # Keep zip limited to libsodium's build dependency.
     { name = "zip", wrappers = ["libsodium-sys-stable"] },
 ]
 
