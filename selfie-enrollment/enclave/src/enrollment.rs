@@ -19,11 +19,11 @@ use selfie_enrollment_identity::{
     Capture, CaptureAttestor, Form, Inputs, assemble, custody, validate_sub,
 };
 use selfie_enrollment_sealed_types::{
-    EnrollmentBundle, EnrollmentField, EnrollmentRequest, EnrollmentResult, Failure,
+    DebugReport, EnrollmentBundle, EnrollmentField, EnrollmentRequest, EnrollmentResult, Failure,
 };
 use uuid::Uuid;
 
-use crate::State;
+use crate::{State, engine::Extraction};
 
 /// Construct only from the measured enclave's release configuration and verified
 /// bootstrap worker measurement. Never deserialize this from a client or host request.
@@ -71,13 +71,14 @@ pub struct CaptureRequest<'a> {
     pub custody_key: &'a PublicKey,
 }
 
-/// Contains submission metadata and encrypted custody data, never the image,
-/// raw embedding, plaintext shares or identity secrets. No Debug implementation.
+/// Contains submission metadata, encrypted custody data and the worker's report, never
+/// the image, raw embedding, plaintext shares or identity secrets. No Debug implementation.
 /// The browser submits `form`, plus its challenge and proof, with `attestation_header`.
 pub struct PreparedEnrollment {
     pub form: Form,
     pub attestation_header: String,
     pub encrypted_custody: Vec<u8>,
+    pub debug_report: DebugReport,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -87,7 +88,10 @@ pub enum Error {
     #[error("enrollment worker busy")]
     Busy,
     #[error("capture rejected")]
-    Capture(Failure),
+    Capture {
+        reason: Failure,
+        debug_report: DebugReport,
+    },
     #[error("enrollment producer unavailable")]
     Unavailable,
 }
@@ -147,9 +151,18 @@ impl State {
             Err(Error::InvalidRequest) => {
                 return Ok(EnrollmentResult::Failed {
                     reason: Failure::InvalidRequest,
+                    debug_report: DebugReport::NotProduced,
                 });
             }
-            Err(Error::Capture(reason)) => return Ok(EnrollmentResult::Failed { reason }),
+            Err(Error::Capture {
+                reason,
+                debug_report,
+            }) => {
+                return Ok(EnrollmentResult::Failed {
+                    reason,
+                    debug_report,
+                });
+            }
             Err(Error::Busy | Error::Unavailable) => return Err(EnclaveError::Unavailable),
         };
         let fields = prepared
@@ -170,6 +183,7 @@ impl State {
                 attestation_header: prepared.attestation_header,
                 encrypted_custody: prepared.encrypted_custody,
             },
+            debug_report: prepared.debug_report,
         })
     }
 
@@ -180,11 +194,22 @@ impl State {
         context: &TrustedContext,
         attestor: &dyn CaptureAttestor,
     ) -> Result<PreparedEnrollment, Error> {
-        let embedding = self
+        let Extraction {
+            outcome,
+            debug_report,
+        } = self
             .engine
             .extract(request.image_png)
-            .map_err(|_| Error::Unavailable)?
-            .map_err(Error::Capture)?;
+            .map_err(|_| Error::Unavailable)?;
+        let embedding = match outcome {
+            Ok(embedding) => embedding,
+            Err(reason) => {
+                return Err(Error::Capture {
+                    reason,
+                    debug_report,
+                });
+            }
+        };
         let captured_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| Error::Unavailable)?
@@ -210,6 +235,7 @@ impl State {
             form: enrollment.form,
             attestation_header,
             encrypted_custody,
+            debug_report,
         })
         // enrollment.associated_data and the worker embedding erase owned buffers on drop.
     }
@@ -239,20 +265,28 @@ mod tests {
     struct Engine {
         reject: bool,
     }
+    fn report() -> DebugReport {
+        Some(r#"{"engine":"test"}"#.to_owned()).into()
+    }
     impl crate::engine::Engine for Engine {
-        fn extract(&self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
+        fn extract(&self, image: &[u8]) -> Result<Extraction, EnclaveError> {
             assert_eq!(image, b"\x89PNG\r\n\x1a\nfixture");
-            if self.reject {
-                return Ok(Err(Failure::QualityRejected));
-            }
             let mut vector = (512_u64).to_le_bytes().to_vec();
             vector.resize(8 + 512 * 4, 0);
-            Ok(Ok(FaceEmbedding {
-                embedding: STANDARD.encode(vector),
-                embedding_type: "ghostfacenet_flipped_mean".into(),
-                embedding_version: "2.0.0".into(),
-                embedding_inference_backend: "face-engine".into(),
-            }))
+            let outcome = if self.reject {
+                Err(Failure::QualityRejected)
+            } else {
+                Ok(FaceEmbedding {
+                    embedding: STANDARD.encode(vector),
+                    embedding_type: "ghostfacenet_flipped_mean".into(),
+                    embedding_version: "2.0.0".into(),
+                    embedding_inference_backend: "face-engine".into(),
+                })
+            };
+            Ok(Extraction {
+                outcome,
+                debug_report: report(),
+            })
         }
         fn check_health(&self) -> Result<(), EnclaveError> {
             Ok(())
@@ -330,13 +364,14 @@ mod tests {
                 .is_err()
         );
         assert_eq!(attestor.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(prepared.debug_report, report());
     }
 
     #[test]
     fn malformed_subjects_fail_before_acquiring_a_slot_or_running_extraction() {
         struct NeverExtract;
         impl crate::engine::Engine for NeverExtract {
-            fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, EnclaveError> {
+            fn extract(&self, _: &[u8]) -> Result<Extraction, EnclaveError> {
                 panic!("malformed subjects must not reach extraction");
             }
             fn check_health(&self) -> Result<(), EnclaveError> {
@@ -382,7 +417,10 @@ mod tests {
         let attestor = Attestor::default();
         assert!(matches!(
             state.prepare_enrollment(request(&key), &context(), &attestor),
-            Err(Error::Capture(Failure::QualityRejected))
+            Err(Error::Capture {
+                reason: Failure::QualityRejected,
+                debug_report,
+            }) if debug_report == report()
         ));
         assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
         let permit = state.processing.try_acquire().unwrap();

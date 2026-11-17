@@ -8,8 +8,13 @@ pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_REQUEST_BYTES: usize = MAX_IMAGE_BYTES + 8192;
 /// A sealed Face PCP: the image plus bounded metadata, archive overhead and a 48-byte sealed box.
 pub const MAX_ENCRYPTED_PCP_BYTES: usize = MAX_IMAGE_BYTES + 256 * 1024 + 48;
+/// Flamingo's `MAX_DEBUG_REPORT_BYTES`: maximum UTF-8 bytes of worker JSON returned to clients.
+pub const MAX_DEBUG_REPORT_BYTES: usize = 64 * 1024;
+/// A maximal `debug_report` result entry in CBOR: the report plus 35 bytes of keys and headers.
+pub const MAX_ENCODED_DEBUG_REPORT_BYTES: usize = MAX_DEBUG_REPORT_BYTES + 35;
 /// Every enrollment result is padded to this size, so its length reveals nothing to the host.
-pub const PADDED_ENROLLMENT_RESULT_BYTES: usize = MAX_ENCRYPTED_PCP_BYTES + 64 * 1024;
+pub const PADDED_ENROLLMENT_RESULT_BYTES: usize =
+    MAX_ENCRYPTED_PCP_BYTES + 64 * 1024 + MAX_ENCODED_DEBUG_REPORT_BYTES;
 /// Largest sealed response: an enrollment result plus channel encryption overhead.
 pub const MAX_RESPONSE_BYTES: usize = PADDED_ENROLLMENT_RESULT_BYTES + 8192;
 pub const MAX_CONTROL_BYTES: usize = 32 * 1024;

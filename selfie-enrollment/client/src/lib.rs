@@ -329,4 +329,27 @@ mod tests {
         c.endpoint = "ws://example.com/v1/embeddings".into();
         assert!(c.validate().is_err());
     }
+    #[test]
+    fn enrollment_results_carry_the_debug_report_shape_the_browser_receives() {
+        use selfie_enrollment_sealed_types::{DebugReport, Failure};
+        // serde-wasm-bindgen maps struct variants to plain objects and unit variants to strings.
+        let shape = |debug_report| {
+            let result = EnrollmentResult::Failed {
+                reason: Failure::QualityRejected,
+                debug_report,
+            };
+            serde_json::to_value(&result).unwrap()["debug_report"].take()
+        };
+        assert_eq!(
+            shape(Some(r#"{"engine":1}"#.to_owned()).into()),
+            serde_json::json!({"available": {"json": r#"{"engine":1}"#}})
+        );
+        assert_eq!(shape(DebugReport::NotProduced), "not_produced");
+        assert_eq!(
+            shape(DebugReport::OmittedTooLarge {
+                original_size_bytes: 65_537
+            }),
+            serde_json::json!({"omitted_too_large": {"original_size_bytes": 65_537}})
+        );
+    }
 }

@@ -1,4 +1,5 @@
 //! Plaintext types used only by the client and enclave. Sensitive buffers are redacted and erased.
+pub use selfie_enrollment_api_types::MAX_DEBUG_REPORT_BYTES;
 use selfie_enrollment_api_types::{
     ENROLLMENT_PROTOCOL_VERSION, MAX_ENCRYPTED_PCP_BYTES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES,
     PADDED_ENROLLMENT_RESULT_BYTES, PROTOCOL_VERSION,
@@ -201,15 +202,79 @@ pub struct EnrollmentBundle {
     pub encrypted_custody: Vec<u8>,
 }
 
+/// Delivery status of the original worker JSON, as in Flamingo. Report content is never
+/// included in Debug.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum DebugReport {
+    /// Original JSON without parsing or reserialization.
+    Available { json: String },
+    /// The worker did not produce a report, or inference did not run.
+    NotProduced,
+    /// The entire report was omitted because it exceeds [`MAX_DEBUG_REPORT_BYTES`].
+    OmittedTooLarge { original_size_bytes: u64 },
+}
+impl std::fmt::Debug for DebugReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Available { json } => f
+                .debug_struct("Available")
+                .field("bytes", &json.len())
+                .finish(),
+            Self::NotProduced => f.write_str("NotProduced"),
+            Self::OmittedTooLarge {
+                original_size_bytes,
+            } => f
+                .debug_struct("OmittedTooLarge")
+                .field("original_size_bytes", original_size_bytes)
+                .finish(),
+        }
+    }
+}
+impl From<Option<String>> for DebugReport {
+    fn from(report: Option<String>) -> Self {
+        match report {
+            Some(mut json) if json.len() > MAX_DEBUG_REPORT_BYTES => {
+                let original_size_bytes = json.len() as u64;
+                json.zeroize();
+                Self::OmittedTooLarge {
+                    original_size_bytes,
+                }
+            }
+            Some(json) => Self::Available { json },
+            None => Self::NotProduced,
+        }
+    }
+}
+impl DebugReport {
+    fn validate(&self) -> Result<(), Error> {
+        match self {
+            Self::Available { json } if json.len() > MAX_DEBUG_REPORT_BYTES => Err(Error),
+            Self::OmittedTooLarge {
+                original_size_bytes,
+            } if *original_size_bytes <= MAX_DEBUG_REPORT_BYTES as u64 => Err(Error),
+            _ => Ok(()),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnrollmentResult {
-    Success { enrollment: EnrollmentBundle },
-    Failed { reason: Failure },
+    Success {
+        enrollment: EnrollmentBundle,
+        debug_report: DebugReport,
+    },
+    Failed {
+        reason: Failure,
+        debug_report: DebugReport,
+    },
 }
 impl EnrollmentResult {
     fn validate(&self) -> Result<(), Error> {
-        let Self::Success { enrollment } = self else {
+        let (Self::Success { debug_report, .. } | Self::Failed { debug_report, .. }) = self;
+        debug_report.validate()?;
+        let Self::Success { enrollment, .. } = self else {
             return Ok(());
         };
         let fields_valid = enrollment.fields.len() == ENROLLMENT_FIELDS.len()
@@ -286,6 +351,7 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use selfie_enrollment_api_types::MAX_ENCODED_DEBUG_REPORT_BYTES;
     #[test]
     fn request_rejects_empty_oversized_and_trailing_bytes() {
         let mut request = EmbeddingRequest {
@@ -390,17 +456,19 @@ mod tests {
     fn enrollment_results_are_padded_and_validated() {
         let result = EnrollmentResult::Success {
             enrollment: bundle(),
+            debug_report: DebugReport::NotProduced,
         };
         let mut encoded = result.encode().unwrap();
         assert_eq!(encoded.len(), PADDED_ENROLLMENT_RESULT_BYTES);
         let decoded = EnrollmentResult::decode(&encoded).unwrap();
-        let EnrollmentResult::Success { enrollment } = &decoded else {
+        let EnrollmentResult::Success { enrollment, .. } = &decoded else {
             panic!("expected an enrollment")
         };
         assert_eq!(enrollment.fields.len(), 12);
         assert_eq!(enrollment.encrypted_custody, vec![9; 64]);
         let failed = EnrollmentResult::Failed {
             reason: Failure::QualityRejected,
+            debug_report: DebugReport::NotProduced,
         };
         assert_eq!(
             failed.encode().unwrap().len(),
@@ -420,8 +488,152 @@ mod tests {
         let mut pcp = bundle();
         pcp.encrypted_custody = vec![0; MAX_ENCRYPTED_PCP_BYTES + 1];
         for enrollment in [reordered, missing, empty, header, pcp] {
-            assert!(EnrollmentResult::Success { enrollment }.encode().is_err());
+            let result = EnrollmentResult::Success {
+                enrollment,
+                debug_report: DebugReport::NotProduced,
+            };
+            assert!(result.encode().is_err());
         }
+    }
+    fn report(bytes: usize) -> DebugReport {
+        DebugReport::from(Some(format!("\"{}\"", "x".repeat(bytes - 2))))
+    }
+    #[test]
+    fn debug_reports_roundtrip_on_success_and_failure() {
+        let parts = |result: &EnrollmentResult| match result {
+            EnrollmentResult::Success { debug_report, .. } => (None, debug_report.clone()),
+            EnrollmentResult::Failed {
+                reason,
+                debug_report,
+            } => (Some(*reason), debug_report.clone()),
+        };
+        for debug_report in [
+            report(64),
+            DebugReport::NotProduced,
+            DebugReport::OmittedTooLarge {
+                original_size_bytes: 200_000,
+            },
+        ] {
+            let success = EnrollmentResult::Success {
+                enrollment: bundle(),
+                debug_report: debug_report.clone(),
+            };
+            let failures = [
+                Failure::InvalidImage,
+                Failure::QualityRejected,
+                Failure::ExtractionFailed,
+            ]
+            .map(|reason| EnrollmentResult::Failed {
+                reason,
+                debug_report: debug_report.clone(),
+            });
+            for result in std::iter::once(success).chain(failures) {
+                let decoded = EnrollmentResult::decode(&result.encode().unwrap()).unwrap();
+                assert_eq!(parts(&decoded), parts(&result));
+            }
+        }
+    }
+    #[test]
+    fn enrollment_failure_has_frozen_bytes() {
+        let encoded = EnrollmentResult::Failed {
+            reason: Failure::QualityRejected,
+            debug_report: DebugReport::NotProduced,
+        }
+        .encode()
+        .unwrap();
+        let body = b"\xa3fstatusffailedfreasonpquality_rejectedldebug_reportlnot_produced";
+        assert_eq!(&encoded[..4], &(body.len() as u32).to_be_bytes());
+        assert_eq!(&encoded[4..4 + body.len()], body);
+    }
+    #[test]
+    fn debug_reports_over_the_utf8_byte_cap_are_omitted() {
+        assert!(matches!(
+            &report(MAX_DEBUG_REPORT_BYTES),
+            DebugReport::Available { json } if json.len() == MAX_DEBUG_REPORT_BYTES
+        ));
+        assert_eq!(
+            report(MAX_DEBUG_REPORT_BYTES + 1),
+            DebugReport::OmittedTooLarge {
+                original_size_bytes: MAX_DEBUG_REPORT_BYTES as u64 + 1
+            }
+        );
+        assert!(matches!(
+            DebugReport::from(Some("é".repeat(MAX_DEBUG_REPORT_BYTES / 2))),
+            DebugReport::Available { .. }
+        ));
+        assert_eq!(
+            DebugReport::from(Some("é".repeat(MAX_DEBUG_REPORT_BYTES / 2 + 1))),
+            DebugReport::OmittedTooLarge {
+                original_size_bytes: MAX_DEBUG_REPORT_BYTES as u64 + 2
+            }
+        );
+        assert_eq!(DebugReport::from(None), DebugReport::NotProduced);
+        // Decoding enforces the same cap, and an omission must exceed it.
+        for debug_report in [
+            DebugReport::Available {
+                json: "x".repeat(MAX_DEBUG_REPORT_BYTES + 1),
+            },
+            DebugReport::OmittedTooLarge {
+                original_size_bytes: MAX_DEBUG_REPORT_BYTES as u64,
+            },
+        ] {
+            let result = EnrollmentResult::Failed {
+                reason: Failure::InvalidImage,
+                debug_report,
+            };
+            assert!(result.encode().is_err());
+            let body = encode(&result).unwrap();
+            let mut frame = vec![0; PADDED_ENROLLMENT_RESULT_BYTES];
+            frame[..4].copy_from_slice(&(body.len() as u32).to_be_bytes());
+            frame[4..4 + body.len()].copy_from_slice(&body);
+            assert!(EnrollmentResult::decode(&frame).is_err());
+        }
+    }
+    #[test]
+    fn padding_fits_a_maximal_pcp_and_a_maximal_report() {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            debug_report: &'a DebugReport,
+        }
+        let debug_report = report(MAX_DEBUG_REPORT_BYTES);
+        // A one-entry map header plus exactly the budgeted report entry.
+        assert_eq!(
+            encode(&Entry {
+                debug_report: &debug_report
+            })
+            .unwrap()
+            .len(),
+            1 + MAX_ENCODED_DEBUG_REPORT_BYTES
+        );
+        let mut enrollment = bundle();
+        enrollment.attestation_header = "A".repeat(MAX_ATTESTATION_HEADER_BYTES);
+        enrollment.encrypted_custody = vec![9; MAX_ENCRYPTED_PCP_BYTES];
+        let encoded = EnrollmentResult::Success {
+            enrollment,
+            debug_report: debug_report.clone(),
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(encoded.len(), PADDED_ENROLLMENT_RESULT_BYTES);
+        let decoded = EnrollmentResult::decode(&encoded).unwrap();
+        let EnrollmentResult::Success {
+            enrollment,
+            debug_report: decoded,
+        } = &decoded
+        else {
+            panic!("expected an enrollment")
+        };
+        assert_eq!(enrollment.encrypted_custody.len(), MAX_ENCRYPTED_PCP_BYTES);
+        assert_eq!(decoded, &debug_report);
+    }
+    #[test]
+    fn debug_formatting_never_prints_report_contents() {
+        let available = DebugReport::from(Some("{\"diagnostic\":\"sensitive\"}".to_owned()));
+        assert_eq!(format!("{available:?}"), "Available { bytes: 26 }");
+        assert_eq!(
+            format!("{:?}", report(MAX_DEBUG_REPORT_BYTES + 1)),
+            "OmittedTooLarge { original_size_bytes: 65537 }"
+        );
     }
     #[test]
     fn responses_are_padded_and_reject_corruption() {
