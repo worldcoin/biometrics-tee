@@ -10,7 +10,7 @@ set -euo pipefail
 #
 # Usage: STAGING_PCP_KMS_KEY_ARN=<arn> STAGING_PCP_KMS_SIGNING_KEY_ARN=<arn> \\
 #        scripts/build-enclaves.sh [--workload <name>] [--pcp-kms-key-arn <arn>]
-#        [--pcp-kms-signing-key-arn <arn>] [output-dir]
+#        [--pcp-kms-signing-key-arn <arn>] [--face-ampc-public-keys-file <file>] [output-dir]
 #        (workload defaults to dev, output-dir to target/eif)
 #
 # Outputs in <output-dir>:
@@ -24,7 +24,8 @@ WORKLOADS=("migration" "dev" "selfie-enrollment")
 usage() {
   printf '%s\n' \
     "Usage: scripts/build-enclaves.sh [--workload <name>] [--pcp-kms-key-arn <arn>]" \
-    "                                 [--pcp-kms-signing-key-arn <arn>] [output-dir]" \
+    "                                 [--pcp-kms-signing-key-arn <arn>]" \
+    "                                 [--face-ampc-public-keys-file <file>] [output-dir]" \
     "" \
     "Build a workload's enclave EIF and emit its PCR measurements." \
     "" \
@@ -32,6 +33,7 @@ usage() {
     "  --workload <name>  Which enclave to build: ${WORKLOADS[*]} (default dev)." \
     "  --pcp-kms-key-arn <arn>  Bake a full wrapping key/alias ARN into the migration EIF (overrides STAGING_PCP_KMS_KEY_ARN)." \
     "  --pcp-kms-signing-key-arn <arn>  Bake a full manifest-signing key/alias ARN into the migration EIF (overrides STAGING_PCP_KMS_SIGNING_KEY_ARN)." \
+    "  --face-ampc-public-keys-file <file>  Bake a JSON array of three base64 public keys in party order into the selfie-enrollment EIF." \
     "  -h, --help         Show this help."
 }
 
@@ -44,6 +46,7 @@ output_dir_provided=false
 # flags as explicit overrides for local builds, but never require ARNs in repository config.
 pcp_kms_key_arn="${STAGING_PCP_KMS_KEY_ARN:-}"
 pcp_kms_signing_key_arn="${STAGING_PCP_KMS_SIGNING_KEY_ARN:-}"
+face_ampc_public_keys_file=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -61,6 +64,14 @@ while (( $# > 0 )); do
         exit 2
       fi
       pcp_kms_signing_key_arn="$2"
+      shift
+      ;;
+    --face-ampc-public-keys-file)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "[ERROR] --face-ampc-public-keys-file needs a JSON file." >&2
+        exit 2
+      fi
+      face_ampc_public_keys_file="$2"
       shift
       ;;
     --workload)
@@ -101,6 +112,19 @@ if [[ ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) && "$workload" 
   exit 2
 fi
 
+if [[ -n "$face_ampc_public_keys_file" ]]; then
+  if [[ "$workload" != "selfie-enrollment" ]]; then
+    echo "[ERROR] --face-ampc-public-keys-file requires --workload selfie-enrollment." >&2
+    exit 2
+  fi
+  if [[ ! -f "$face_ampc_public_keys_file" || ! -r "$face_ampc_public_keys_file" ]]; then
+    echo "[ERROR] Face-AMPC public key file must be a readable regular file." >&2
+    exit 2
+  fi
+  # Snapshot the input once so the OCI image and EIF use identical key bytes.
+  face_ampc_public_keys="$(cat "$face_ampc_public_keys_file")"
+fi
+
 command -v nix >/dev/null || {
   echo "[ERROR] nix not found. The OCI image and EIF are built by flake.nix." >&2
   exit 1
@@ -128,6 +152,16 @@ build_output() {
             pcpKmsSigningKeyArn = optionalArn "PCP_BUILD_SIGNING_KEY_ARN";
           };
         in builtins.getAttr ("di-migration-" + builtins.getEnv "PCP_BUILD_FORMAT") images
+      '
+  elif [[ "$workload" == "selfie-enrollment" && -n "$face_ampc_public_keys_file" ]]; then
+    FACE_AMPC_BUILD_ROOT="$repo_root" FACE_AMPC_BUILD_PUBLIC_KEYS="$face_ampc_public_keys" FACE_AMPC_BUILD_FORMAT="$format" \
+      nix build --impure --no-update-lock-file --no-link --print-out-paths --expr '
+        let
+          flake = builtins.getFlake ("git+file://" + builtins.getEnv "FACE_AMPC_BUILD_ROOT" + "?shallow=1");
+          images = flake.lib.selfieEnrollmentImages {
+            faceAmpcPublicKeys = builtins.fromJSON (builtins.getEnv "FACE_AMPC_BUILD_PUBLIC_KEYS");
+          };
+        in builtins.getAttr ("selfie-enrollment-" + builtins.getEnv "FACE_AMPC_BUILD_FORMAT") images
       '
   else
     nix build ".#$output_prefix-$format" --no-update-lock-file --no-link --print-out-paths

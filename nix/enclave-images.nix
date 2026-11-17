@@ -5,6 +5,7 @@
   enclaveBins,
   pcpKmsKeyArn ? null,
   pcpKmsSigningKeyArn ? null,
+  faceAmpcPublicKeys ? null,
 }:
 let
   nitroLib = nitro-util.lib.${system};
@@ -98,6 +99,22 @@ let
   enrollment = buildEnclaveImage {
     pname = "selfie-enrollment-enclave";
     sandboxed = true;
+    environment =
+      if faceAmpcPublicKeys == null then
+        [ ]
+      else if
+        builtins.isList faceAmpcPublicKeys
+        && builtins.length faceAmpcPublicKeys == 3
+        && builtins.all (
+          key:
+          builtins.isString key
+          # A 32-byte value has 42 full base64 digits, four remaining bits, then padding.
+          && builtins.match "[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=" key != null
+        ) faceAmpcPublicKeys
+      then
+        pkgs.lib.imap0 (party: key: "FACE_AMPC_PUBLIC_KEY_${toString party}=${key}") faceAmpcPublicKeys
+      else
+        throw "faceAmpcPublicKeys must be an array of three canonical standard-base64 32-byte public keys in party order";
   };
   migration = buildEnclaveImage {
     pname = "di-migration-enclave";

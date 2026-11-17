@@ -19,6 +19,7 @@ selfie-enrollment-sealed-types.workspace = true
 pontifex = { workspace = true, features = ["channel", "nsm"] }
 biometric-engines-protocol.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 hex.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -30,6 +31,5 @@ pontifex = { workspace = true, features = ["server"] }
 tabernaculum.workspace = true
 
 [dev-dependencies]
-base64.workspace = true
 pontifex = { workspace = true, features = ["attestation"] }
 tokio = { workspace = true, features = ["test-util"] }

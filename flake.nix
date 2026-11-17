@@ -48,6 +48,13 @@
           inherit system pkgs nitro-util enclaveBins pcpKmsKeyArn pcpKmsSigningKeyArn;
         };
 
+      lib.selfieEnrollmentImages =
+        { faceAmpcPublicKeys }:
+        assert faceAmpcPublicKeys != null || throw "faceAmpcPublicKeys must contain three public keys";
+        import ./nix/enclave-images.nix {
+          inherit system pkgs nitro-util enclaveBins faceAmpcPublicKeys;
+        };
+
       devShells = import ./nix/dev-shells.nix {
         inherit root nixpkgs rust-overlay;
       };
