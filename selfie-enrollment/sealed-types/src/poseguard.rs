@@ -74,13 +74,20 @@ impl PoseGuardEnrollmentRequest {
             return Err(Error);
         }
         for capture in &self.captures {
-            if capture.image.is_empty()
-                || capture.image.len() > MAX_IMAGE_BYTES
-                || !(-20.0..=20.0).contains(&capture.target_pitch)
-                || !(-35.0..=35.0).contains(&capture.target_yaw)
-            {
-                return Err(Error);
-            }
+            capture.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl PoseGuardCapture {
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.image.is_empty()
+            || self.image.len() > MAX_IMAGE_BYTES
+            || !(-20.0..=20.0).contains(&self.target_pitch)
+            || !(-35.0..=35.0).contains(&self.target_yaw)
+        {
+            return Err(Error);
         }
         Ok(())
     }
