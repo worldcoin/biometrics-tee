@@ -305,9 +305,7 @@ impl<T: Transport> EnrollmentSession<T> {
         capture: impl AsyncFnOnce(PoseGuardPrompt) -> Result<PoseGuardImages, Error>,
     ) -> Result<EnrollmentResult, Error> {
         let deadline = Instant::now() + Duration::from_secs(POSEGUARD_CHALLENGE_TTL_SECS);
-        let (challenge, sub) = self
-            .request_poseguard_challenge(sub, custody_public_key, deadline)
-            .await?;
+        let challenge = self.request_poseguard_challenge(deadline).await?;
         let prompt = PoseGuardPrompt {
             targets: challenge.targets,
             expires_at: challenge.expires_at,
@@ -317,7 +315,7 @@ impl<T: Transport> EnrollmentSession<T> {
         if Instant::now() >= deadline {
             return Err(Error::Timeout);
         }
-        let (central_png, captures) = images.into_captures(&challenge.targets);
+        let (central_png, captures) = images.into_request_parts();
         let input = PoseGuardEnrollmentRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
             operation: EnrollmentOperation::EnrollWithPoseGuard,
@@ -335,22 +333,18 @@ impl<T: Transport> EnrollmentSession<T> {
         pending.open_enrollment(&response)
     }
 
-    /// Requests a challenge bound to this identity, custody key and the assigned enclave boot.
+    /// Requests a challenge bound to this request and the assigned enclave boot.
     async fn request_poseguard_challenge(
         &mut self,
-        sub: String,
-        custody_public_key: [u8; 32],
         deadline: Instant,
-    ) -> Result<(PoseGuardChallenge, String), Error> {
+    ) -> Result<PoseGuardChallenge, Error> {
         let mut nonce = [0; 32];
         rand::rngs::OsRng
             .try_fill_bytes(&mut nonce)
             .map_err(|_| Error::Authentication)?;
-        let mut input = GeneratePoseGuardTargetsRequest {
+        let input = GeneratePoseGuardTargetsRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
             operation: EnrollmentOperation::GeneratePoseGuardTargets,
-            sub,
-            custody_public_key: custody_public_key.to_vec(),
             nonce,
         };
         let (request, pending) = self
@@ -381,7 +375,7 @@ impl<T: Transport> EnrollmentSession<T> {
         if Instant::now() >= deadline {
             return Err(Error::Timeout);
         }
-        Ok((result.challenge.clone(), std::mem::take(&mut input.sub)))
+        Ok(result.challenge.clone())
     }
 
     async fn round_trip(mut self, request: Vec<u8>) -> Result<Vec<u8>, Error> {
@@ -421,15 +415,10 @@ pub struct PoseGuardImages {
 }
 
 impl PoseGuardImages {
-    /// Pairs each capture with the target it was taken for.
-    fn into_captures(
-        mut self,
-        targets: &[PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT],
-    ) -> (Vec<u8>, [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT]) {
+    /// Moves the images into the request; the enclave pairs each capture with its stored target.
+    fn into_request_parts(mut self) -> (Vec<u8>, [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT]) {
         let captures = std::array::from_fn(|index| PoseGuardCapture {
             image: std::mem::take(&mut self.captures[index]),
-            target_pitch: targets[index].target_pitch,
-            target_yaw: targets[index].target_yaw,
         });
         (std::mem::take(&mut self.central_png), captures)
     }
@@ -555,25 +544,6 @@ mod tests {
                 .err()
                 .expect("capture is interrupted");
             assert_eq!(format!("{error:?}"), expected);
-        }
-    }
-
-    #[test]
-    fn captures_carry_their_issued_targets_in_order() {
-        let targets = [(0.0, 30.0), (0.0, -30.0), (17.5, 0.0)].map(|(target_pitch, target_yaw)| {
-            PoseGuardTarget {
-                target_pitch,
-                target_yaw,
-            }
-        });
-        let (central_png, captures) = images().into_captures(&targets);
-        assert_eq!(central_png, [0]);
-        for ((capture, target), image) in captures.iter().zip(&targets).zip([1, 2, 3]) {
-            assert_eq!(capture.image, [image]);
-            assert_eq!(
-                (capture.target_pitch, capture.target_yaw),
-                (target.target_pitch, target.target_yaw)
-            );
         }
     }
 }

@@ -190,12 +190,7 @@ impl State {
         context: &TrustedContext,
         attestor: &dyn CaptureAttestor,
     ) -> Result<PreparedEnrollment, Error> {
-        let targets = self.challenges.consume(
-            &request.challenge_token,
-            request.sub,
-            request.custody_key.as_bytes(),
-            request.captures,
-        )?;
+        let targets = self.challenges.consume(&request.challenge_token)?;
         let mut image = FaceImage {
             source: Some(Source::PoseGuard(PoseGuard {
                 central_image: request.image_png.to_vec(),
@@ -269,7 +264,7 @@ mod tests {
     use selfie_enrollment_identity::{
         AttestationFailed, NONCE_BYTES, USER_DATA_BYTES, binding_digest, user_data,
     };
-    use selfie_enrollment_sealed_types::FaceEmbedding;
+    use selfie_enrollment_sealed_types::{FaceEmbedding, PoseGuardTarget};
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -354,12 +349,17 @@ mod tests {
             captures,
             sub: "0x1f",
             custody_key: key,
-            challenge_token: state.challenges.fixture("0x1f", key.as_bytes(), captures),
+            challenge_token: state.challenges.fixture(targets()),
         }
     }
     fn captures() -> [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT] {
         std::array::from_fn(|i| PoseGuardCapture {
             image: vec![i as u8 + 1],
+        })
+    }
+    /// Stored on the challenge; the engine asserts the worker receives exactly these.
+    fn targets() -> [PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT] {
+        std::array::from_fn(|i| PoseGuardTarget {
             target_pitch: 10.0 + i as f32,
             target_yaw: -20.0 - i as f32,
         })
@@ -379,17 +379,12 @@ mod tests {
                     .with_enrollment(Producer::new(context(), attestor.clone())),
             );
             let custody = SecretKey::generate(&mut OsRng);
-            let captures = captures();
-            let challenge_token =
-                state
-                    .challenges
-                    .fixture("0x1f", custody.public_key().as_bytes(), &captures);
             let request = PoseGuardEnrollmentRequest {
                 version: ENROLLMENT_PROTOCOL_VERSION,
                 operation: EnrollmentOperation::EnrollWithPoseGuard,
                 central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
-                captures,
-                challenge_token,
+                captures: captures(),
+                challenge_token: state.challenges.fixture(targets()),
                 sub: "0x1f".into(),
                 custody_public_key: custody.public_key().as_bytes().to_vec(),
             };
@@ -580,13 +575,9 @@ mod tests {
         let key = SecretKey::generate(&mut OsRng).public_key();
         let attestor = Attestor::default();
         let context = context();
-        let mutations: [fn(&mut PoseGuardCapture); 6] = [
+        let mutations: [fn(&mut PoseGuardCapture); 2] = [
             |capture| capture.image.clear(),
             |capture| capture.image.resize(MAX_IMAGE_BYTES + 1, 0),
-            |capture| capture.target_pitch = 20.1,
-            |capture| capture.target_yaw = -35.1,
-            |capture| capture.target_pitch = f32::NAN,
-            |capture| capture.target_yaw = f32::INFINITY,
         ];
         for busy in [false, true] {
             let _permit = busy.then(|| state.processing.try_acquire().unwrap());

@@ -1,12 +1,9 @@
 use crate::{State, enrollment};
-use crypto_box::PublicKey;
 use rand::{Rng, RngCore, rngs::OsRng, seq::SliceRandom};
 use selfie_enrollment_api_types::{POSEGUARD_CHALLENGE_COUNT, POSEGUARD_CHALLENGE_TTL_SECS};
 use selfie_enrollment_enclave_types::Error;
-use selfie_enrollment_identity::validate_sub;
 use selfie_enrollment_sealed_types::{
-    GeneratePoseGuardTargetsRequest, PoseGuardCapture, PoseGuardChallenge, PoseGuardTarget,
-    PoseGuardTargetsResult,
+    GeneratePoseGuardTargetsRequest, PoseGuardChallenge, PoseGuardTarget, PoseGuardTargetsResult,
 };
 use std::{
     collections::HashMap,
@@ -21,16 +18,8 @@ impl State {
         request: &GeneratePoseGuardTargetsRequest,
     ) -> Result<PoseGuardTargetsResult, Error> {
         request.validate().map_err(|_| Error::InvalidMessage)?;
-        validate_sub(&request.sub).map_err(|_| Error::InvalidMessage)?;
-        let key: [u8; 32] = request
-            .custody_public_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| Error::InvalidMessage)?;
-        embedding_shares::validate_recipients(&[PublicKey::from(key)])
-            .map_err(|_| Error::InvalidMessage)?;
         let producer = self.enrollment.as_ref().ok_or(Error::Unavailable)?;
-        let challenge = self.challenges.issue(request)?;
+        let challenge = self.challenges.issue()?;
         let attestation = challenge
             .attestation_nonce(request, &self.channel.public_key_commitment())
             .map_err(|_| Error::Unavailable)
@@ -58,17 +47,12 @@ const MAX_PENDING_CHALLENGES: usize = 32;
 pub(crate) struct Challenges(Mutex<HashMap<[u8; 32], PendingChallenge>>);
 
 struct PendingChallenge {
-    challenge: PoseGuardChallenge,
-    sub: String,
-    custody_key: [u8; 32],
+    targets: [PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT],
     deadline: Instant,
 }
 
 impl Challenges {
-    fn issue(
-        &self,
-        request: &GeneratePoseGuardTargetsRequest,
-    ) -> Result<PoseGuardChallenge, Error> {
+    fn issue(&self) -> Result<PoseGuardChallenge, Error> {
         let mut pending = self.0.lock().map_err(|_| Error::Unavailable)?;
         let now = Instant::now();
         pending.retain(|_, entry| entry.deadline > now);
@@ -94,71 +78,35 @@ impl Challenges {
         pending.insert(
             challenge_token,
             PendingChallenge {
-                challenge: challenge.clone(),
-                sub: request.sub.clone(),
-                custody_key: request
-                    .custody_public_key
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| Error::InvalidMessage)?,
+                targets: challenge.targets,
                 deadline: now + Duration::from_secs(POSEGUARD_CHALLENGE_TTL_SECS),
             },
         );
         Ok(challenge)
     }
 
+    /// Removes a live challenge and returns its targets; each token redeems at most once.
     pub(crate) fn consume(
         &self,
         token: &[u8; 32],
-        sub: &str,
-        custody_key: &[u8; 32],
-        captures: &[PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT],
     ) -> Result<[PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT], enrollment::Error> {
         let mut pending = self.0.lock().map_err(|_| enrollment::Error::Unavailable)?;
-        let entry = pending
-            .get(token)
-            .ok_or(enrollment::Error::InvalidRequest)?;
-        if entry.deadline <= Instant::now()
-            || entry.sub != sub
-            || &entry.custody_key != custody_key
-            || entry
-                .challenge
-                .targets
-                .iter()
-                .zip(captures)
-                .any(|(target, capture)| {
-                    target.target_pitch != capture.target_pitch
-                        || target.target_yaw != capture.target_yaw
-                })
-        {
-            return Err(enrollment::Error::InvalidRequest);
+        match pending.remove(token) {
+            Some(entry) if entry.deadline > Instant::now() => Ok(entry.targets),
+            _ => Err(enrollment::Error::InvalidRequest),
         }
-        let targets = entry.challenge.targets;
-        pending.remove(token);
-        Ok(targets)
     }
 
     #[cfg(test)]
     pub(crate) fn fixture(
         &self,
-        sub: &str,
-        key: &[u8; 32],
-        captures: &[PoseGuardCapture; 3],
+        targets: [PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT],
     ) -> [u8; 32] {
         let token = rand::random();
         self.0.lock().unwrap().insert(
             token,
             PendingChallenge {
-                challenge: PoseGuardChallenge {
-                    challenge_token: token,
-                    expires_at: 1,
-                    targets: std::array::from_fn(|i| PoseGuardTarget {
-                        target_pitch: captures[i].target_pitch,
-                        target_yaw: captures[i].target_yaw,
-                    }),
-                },
-                sub: sub.into(),
-                custody_key: *key,
+                targets,
                 deadline: Instant::now() + Duration::from_secs(POSEGUARD_CHALLENGE_TTL_SECS),
             },
         );

@@ -8,14 +8,12 @@ use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-/// An image paired with its issued target angles in degrees.
+/// The image captured for the issued target at the same position; the enclave supplies the angles.
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub struct PoseGuardCapture {
     #[serde(with = "serde_bytes")]
     pub image: Vec<u8>,
-    pub target_pitch: f32,
-    pub target_yaw: f32,
 }
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -52,9 +50,6 @@ pub struct PoseGuardTarget {
 pub struct GeneratePoseGuardTargetsRequest {
     pub version: u32,
     pub operation: EnrollmentOperation,
-    pub sub: String,
-    #[serde(with = "serde_bytes")]
-    pub custody_public_key: Vec<u8>,
     pub nonce: [u8; 32],
 }
 
@@ -76,9 +71,6 @@ impl GeneratePoseGuardTargetsRequest {
     pub fn validate(&self) -> Result<(), Error> {
         if self.version != ENROLLMENT_PROTOCOL_VERSION
             || self.operation != EnrollmentOperation::GeneratePoseGuardTargets
-            || self.sub.is_empty()
-            || self.sub.len() > MAX_SUB_BYTES
-            || self.custody_public_key.len() != 32
             || self.nonce == [0; 32]
         {
             return Err(Error);
@@ -97,7 +89,7 @@ pub struct PoseGuardChallenge {
 }
 
 impl PoseGuardChallenge {
-    /// Binds the response to this request, identity and the assigned enclave boot.
+    /// Binds the response to this request and the assigned enclave boot.
     pub fn attestation_nonce(
         &self,
         request: &GeneratePoseGuardTargetsRequest,
@@ -198,11 +190,7 @@ impl PoseGuardEnrollmentRequest {
 
 impl PoseGuardCapture {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.image.is_empty()
-            || self.image.len() > MAX_IMAGE_BYTES
-            || !(-20.0..=20.0).contains(&self.target_pitch)
-            || !(-35.0..=35.0).contains(&self.target_yaw)
-        {
+        if self.image.is_empty() || self.image.len() > MAX_IMAGE_BYTES {
             return Err(Error);
         }
         Ok(())
@@ -235,12 +223,10 @@ mod tests {
     };
 
     #[test]
-    fn challenge_attestation_binds_targets_identity_freshness_and_enclave_boot() {
+    fn challenge_attestation_binds_targets_freshness_and_enclave_boot() {
         let mut input = GeneratePoseGuardTargetsRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
             operation: EnrollmentOperation::GeneratePoseGuardTargets,
-            sub: "0x1f".into(),
-            custody_public_key: vec![7; 32],
             nonce: [8; 32],
         };
         let mut challenge = PoseGuardChallenge {
@@ -256,18 +242,6 @@ mod tests {
             digest,
             challenge.attestation_nonce(&input, &[2; 32]).unwrap()
         );
-        input.sub = "0x20".into();
-        assert_ne!(
-            digest,
-            challenge.attestation_nonce(&input, &[1; 32]).unwrap()
-        );
-        input.sub = "0x1f".into();
-        input.custody_public_key[0] ^= 1;
-        assert_ne!(
-            digest,
-            challenge.attestation_nonce(&input, &[1; 32]).unwrap()
-        );
-        input.custody_public_key[0] ^= 1;
         input.nonce[0] ^= 1;
         assert_ne!(
             digest,
@@ -298,8 +272,6 @@ mod tests {
         let mut input = GeneratePoseGuardTargetsRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
             operation: EnrollmentOperation::GeneratePoseGuardTargets,
-            sub: "0x1f".into(),
-            custody_public_key: vec![7; 32],
             nonce: [8; 32],
         };
         assert!(matches!(
@@ -344,8 +316,6 @@ mod tests {
         assert_eq!(decoded.central_png, request.central_png);
         for (actual, expected) in decoded.captures.iter().zip(&request.captures) {
             assert_eq!(actual.image, expected.image);
-            assert_eq!(actual.target_pitch, expected.target_pitch);
-            assert_eq!(actual.target_yaw, expected.target_yaw);
         }
         let legacy = EnrollmentRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
@@ -407,17 +377,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_images_targets_counts_and_metadata() {
+    fn rejects_bad_images_counts_and_metadata() {
         for change in [
             (|r: &mut PoseGuardEnrollmentRequest| r.central_png.clear())
                 as fn(&mut PoseGuardEnrollmentRequest),
             |r| r.central_png.resize(MAX_IMAGE_BYTES + 1, 0),
             |r| r.captures[0].image.clear(),
             |r| r.captures[0].image.resize(MAX_IMAGE_BYTES + 1, 0),
-            |r| r.captures[0].target_pitch = f32::NAN,
-            |r| r.captures[0].target_yaw = f32::INFINITY,
-            |r| r.captures[0].target_pitch = 20.1,
-            |r| r.captures[0].target_yaw = -35.1,
             |r| r.sub.clear(),
             |r| r.custody_public_key.clear(),
             |r| r.version = PROTOCOL_VERSION,
@@ -451,8 +417,6 @@ mod tests {
             central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
             captures: std::array::from_fn(|i| PoseGuardCapture {
                 image: vec![i as u8 + 1],
-                target_pitch: 10.0 + i as f32,
-                target_yaw: -20.0 - i as f32,
             }),
             sub: "0x1f".into(),
             custody_public_key: vec![7; 32],

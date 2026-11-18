@@ -9,15 +9,17 @@ use selfie_enrollment_identity::{
     AttestationFailed, CaptureAttestor, NONCE_BYTES, USER_DATA_BYTES,
 };
 use selfie_enrollment_sealed_types::{
-    EnrollmentOperation, EnrollmentResult, FaceEmbedding, Failure, PoseGuardEnrollmentRequest,
+    EnrollmentOperation, EnrollmentResult, FaceEmbedding, Failure, PoseGuardCapture,
+    PoseGuardEnrollmentRequest,
 };
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-#[tokio::test]
-async fn issued_challenge_is_bound_and_consumed_before_inference_on_the_same_channel() {
+/// Paused time keeps the real challenge lifetime from expiring during slow debug-build crypto.
+#[tokio::test(start_paused = true)]
+async fn issued_challenge_is_attested_and_redeemed_once_before_inference() {
     let calls = Arc::new(AtomicUsize::new(0));
     let state = configured_state(calls.clone());
     let generation = generation();
@@ -47,99 +49,58 @@ async fn issued_challenge_is_bound_and_consumed_before_inference_on_the_same_cha
         version: ENROLLMENT_PROTOCOL_VERSION,
         operation: EnrollmentOperation::EnrollWithPoseGuard,
         central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
-        captures: captures(&result.challenge),
-        sub: generation.sub.clone(),
-        custody_public_key: generation.custody_public_key.clone(),
-        challenge_token: result.challenge.challenge_token,
+        captures: captures(),
+        sub: "0x1f".into(),
+        custody_public_key: SecretKey::generate(&mut OsRng)
+            .public_key()
+            .as_bytes()
+            .to_vec(),
+        challenge_token: [9; 32],
     };
-    for mutation in 0..5 {
-        match mutation {
-            0 => enrollment.sub = "0x20".into(),
-            1 => {
-                enrollment.custody_public_key = SecretKey::generate(&mut OsRng)
-                    .public_key()
-                    .as_bytes()
-                    .to_vec()
-            }
-            2 => enrollment.captures.swap(0, 1),
-            3 => enrollment.challenge_token = [9; 32],
-            _ => {
-                enrollment.captures[0].target_pitch *= -1.0;
-                enrollment.captures[0].target_yaw *= -1.0;
-            }
-        }
+    for (token, reason, worker_calls) in [
+        ([9; 32], Failure::InvalidRequest, 0),
+        (
+            result.challenge.challenge_token,
+            Failure::QualityRejected,
+            1,
+        ),
+        (result.challenge.challenge_token, Failure::InvalidRequest, 1),
+    ] {
+        enrollment.challenge_token = token;
         assert!(matches!(
             submit(&state, &channel, &enrollment).await,
-            EnrollmentResult::Failed {
-                reason: Failure::InvalidRequest
-            }
+            EnrollmentResult::Failed { reason: actual } if actual == reason
         ));
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        enrollment.sub.clone_from(&generation.sub);
-        enrollment
-            .custody_public_key
-            .clone_from(&generation.custody_public_key);
-        enrollment.captures = captures(&result.challenge);
-        enrollment.challenge_token = result.challenge.challenge_token;
+        assert_eq!(calls.load(Ordering::SeqCst), worker_calls);
     }
-    assert!(matches!(
-        submit(&state, &channel, &enrollment).await,
-        EnrollmentResult::Failed {
-            reason: Failure::QualityRejected
-        }
-    ));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(matches!(
-        submit(&state, &channel, &enrollment).await,
-        EnrollmentResult::Failed {
-            reason: Failure::InvalidRequest
-        }
-    ));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(start_paused = true)]
 async fn expiry_reclaims_bounded_capacity_and_expired_tokens_never_run() {
     let challenges = Challenges::default();
-    let request = generation();
-    let first = challenges.issue(&request).unwrap();
+    let first = challenges.issue().unwrap();
     for _ in 1..MAX_PENDING_CHALLENGES {
-        challenges.issue(&request).unwrap();
+        challenges.issue().unwrap();
     }
-    assert!(matches!(challenges.issue(&request), Err(Error::Busy)));
+    assert!(matches!(challenges.issue(), Err(Error::Busy)));
     tokio::time::advance(Duration::from_secs(POSEGUARD_CHALLENGE_TTL_SECS)).await;
-    let key: [u8; 32] = request.custody_public_key.as_slice().try_into().unwrap();
-    assert!(
-        challenges
-            .consume(
-                &first.challenge_token,
-                &request.sub,
-                &key,
-                &captures(&first)
-            )
-            .is_err()
-    );
-    challenges.issue(&request).unwrap();
+    assert!(challenges.consume(&first.challenge_token).is_err());
+    challenges.issue().unwrap();
     assert_eq!(challenges.0.lock().unwrap().len(), 1);
 }
 
 #[test]
 fn simultaneous_replay_consumes_exactly_once() {
     let challenges = Arc::new(Challenges::default());
-    let request = generation();
-    let issued = challenges.issue(&request).unwrap();
-    let key: [u8; 32] = request.custody_public_key.as_slice().try_into().unwrap();
+    let token = challenges.issue().unwrap().challenge_token;
     let barrier = Arc::new(std::sync::Barrier::new(2));
     let threads: Vec<_> = (0..2)
         .map(|_| {
             let challenges = challenges.clone();
-            let issued = issued.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                challenges
-                    .consume(&issued.challenge_token, "0x1f", &key, &captures(&issued))
-                    .is_ok()
+                challenges.consume(&token).is_ok()
             })
         })
         .collect();
@@ -174,8 +135,7 @@ fn target_policy_stays_in_worker_bounds_with_separate_acceptance_regions() {
 async fn expired_challenge_cannot_bypass_the_direct_enrollment_entry_point() {
     let calls = Arc::new(AtomicUsize::new(0));
     let state = configured_state(calls.clone());
-    let request = generation();
-    let result = state.generate_poseguard_targets(&request).unwrap();
+    let result = state.generate_poseguard_targets(&generation()).unwrap();
     state
         .challenges
         .0
@@ -184,15 +144,15 @@ async fn expired_challenge_cannot_bypass_the_direct_enrollment_entry_point() {
         .get_mut(&result.challenge.challenge_token)
         .unwrap()
         .deadline = Instant::now();
-    let key = PublicKey::from(<[u8; 32]>::try_from(request.custody_public_key.as_slice()).unwrap());
+    let key = SecretKey::generate(&mut OsRng).public_key();
     // prepare_enrollment accepts explicit trusted context; it must still require a live challenge.
     let context = context();
     assert!(matches!(
         state.prepare_enrollment(
             enrollment::CaptureRequest {
                 image_png: b"\x89PNG\r\n\x1a\nfixture",
-                captures: &captures(&result.challenge),
-                sub: &request.sub,
+                captures: &captures(),
+                sub: "0x1f",
                 custody_key: &key,
                 challenge_token: result.challenge.challenge_token,
             },
@@ -215,11 +175,9 @@ async fn submit(
     EnrollmentResult::decode(&opener.open_from_enclave(&response.ciphertext).unwrap()).unwrap()
 }
 
-fn captures(challenge: &PoseGuardChallenge) -> [PoseGuardCapture; 3] {
+fn captures() -> [PoseGuardCapture; 3] {
     std::array::from_fn(|i| PoseGuardCapture {
         image: vec![i as u8 + 1],
-        target_pitch: challenge.targets[i].target_pitch,
-        target_yaw: challenge.targets[i].target_yaw,
     })
 }
 
@@ -227,11 +185,6 @@ fn generation() -> GeneratePoseGuardTargetsRequest {
     GeneratePoseGuardTargetsRequest {
         version: ENROLLMENT_PROTOCOL_VERSION,
         operation: EnrollmentOperation::GeneratePoseGuardTargets,
-        sub: "0x1f".into(),
-        custody_public_key: SecretKey::generate(&mut OsRng)
-            .public_key()
-            .as_bytes()
-            .to_vec(),
         nonce: [7; 32],
     }
 }

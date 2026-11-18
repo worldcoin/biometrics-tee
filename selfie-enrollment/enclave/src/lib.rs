@@ -142,7 +142,7 @@ mod tests {
     };
     use selfie_enrollment_sealed_types::{
         ENROLLMENT_FIELDS, EmbeddingRequest, EnrollmentOperation, EnrollmentRequest, FaceEmbedding,
-        PoseGuardCapture, PoseGuardEnrollmentRequest,
+        PoseGuardCapture, PoseGuardEnrollmentRequest, PoseGuardTarget,
     };
     struct TestAttestor;
     impl Attestor for TestAttestor {
@@ -279,21 +279,18 @@ mod tests {
         sub: &str,
         custody: &SecretKey,
     ) -> Result<EnrollmentResult, Error> {
-        let captures = std::array::from_fn(|i| PoseGuardCapture {
-            image: vec![i as u8 + 1],
+        let target = PoseGuardTarget {
             target_pitch: 10.0,
             target_yaw: -20.0,
-        });
-        let challenge_token =
-            state
-                .challenges
-                .fixture(sub, custody.public_key().as_bytes(), &captures);
+        };
         let request = PoseGuardEnrollmentRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
             operation: EnrollmentOperation::EnrollWithPoseGuard,
             central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
-            captures,
-            challenge_token,
+            captures: std::array::from_fn(|i| PoseGuardCapture {
+                image: vec![i as u8 + 1],
+            }),
+            challenge_token: state.challenges.fixture([target; 3]),
             sub: sub.into(),
             custody_public_key: custody.public_key().as_bytes().to_vec(),
         };
