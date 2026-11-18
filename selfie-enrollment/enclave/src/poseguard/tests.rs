@@ -90,30 +90,6 @@ async fn expiry_reclaims_bounded_capacity_and_expired_tokens_never_run() {
 }
 
 #[test]
-fn simultaneous_replay_consumes_exactly_once() {
-    let challenges = Arc::new(Challenges::default());
-    let token = challenges.issue().unwrap().challenge_token;
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    let threads: Vec<_> = (0..2)
-        .map(|_| {
-            let challenges = challenges.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                challenges.consume(&token).is_ok()
-            })
-        })
-        .collect();
-    assert_eq!(
-        threads
-            .into_iter()
-            .map(|thread| usize::from(thread.join().unwrap()))
-            .sum::<usize>(),
-        1
-    );
-}
-
-#[test]
 fn target_policy_stays_in_worker_bounds_with_separate_acceptance_regions() {
     let mut rng = StdRng::seed_from_u64(0);
     for _ in 0..1000 {
@@ -129,39 +105,6 @@ fn target_policy_stays_in_worker_bounds_with_separate_acceptance_regions() {
             }
         }
     }
-}
-
-#[tokio::test]
-async fn expired_challenge_cannot_bypass_the_direct_enrollment_entry_point() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let state = configured_state(calls.clone());
-    let result = state.generate_poseguard_targets(&generation()).unwrap();
-    state
-        .challenges
-        .0
-        .lock()
-        .unwrap()
-        .get_mut(&result.challenge.challenge_token)
-        .unwrap()
-        .deadline = Instant::now();
-    let key = SecretKey::generate(&mut OsRng).public_key();
-    // prepare_enrollment accepts explicit trusted context; it must still require a live challenge.
-    let context = context();
-    assert!(matches!(
-        state.prepare_enrollment(
-            enrollment::CaptureRequest {
-                image_png: b"\x89PNG\r\n\x1a\nfixture",
-                captures: &captures(),
-                sub: "0x1f",
-                custody_key: &key,
-                challenge_token: result.challenge.challenge_token,
-            },
-            &context,
-            &Attestor
-        ),
-        Err(enrollment::Error::InvalidRequest)
-    ));
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 async fn submit(

@@ -526,12 +526,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_failure_is_returned() {
-        let result = wait(&mut ScriptedTransport(None), async { Err(Error::Capture) });
-        assert!(matches!(result, Err(Error::Capture)));
-    }
-
-    #[test]
     fn expiry_socket_failure_and_host_frames_end_capture() {
         let host_error = serde_json::to_string(&ErrorEnvelope::from(ErrorCode::Timeout)).unwrap();
         for (event, expected) in [

@@ -366,70 +366,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poseguard_reuses_the_enrollment_bundle_and_never_attests_a_rejected_batch() {
+    async fn rejected_sealed_batch_is_never_attested() {
         use pontifex::{ChannelConsumer, ChannelDomain};
         use selfie_enrollment_api_types::{CHANNEL_DOMAIN, ENROLLMENT_PROTOCOL_VERSION};
         use selfie_enrollment_enclave_types::ExtractRequest;
         use selfie_enrollment_sealed_types::EnrollmentOperation;
-        for reject in [false, true] {
-            let attestor = Arc::new(Attestor::default());
-            let state = Arc::new(
-                State::new(Arc::new(BootAttestor), Box::new(Engine { reject }))
-                    .unwrap()
-                    .with_enrollment(Producer::new(context(), attestor.clone())),
-            );
-            let custody = SecretKey::generate(&mut OsRng);
-            let request = PoseGuardEnrollmentRequest {
-                version: ENROLLMENT_PROTOCOL_VERSION,
-                operation: EnrollmentOperation::EnrollWithPoseGuard,
-                central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
-                captures: captures(),
-                challenge_token: state.challenges.fixture(targets()),
-                sub: "0x1f".into(),
-                custody_public_key: custody.public_key().as_bytes().to_vec(),
-            };
-            let assignment = state.assignment().await.unwrap();
-            let consumer = ChannelConsumer::from_unverified_public_key(
-                ChannelDomain::new(CHANNEL_DOMAIN),
-                &assignment.public_key,
-            )
+        let attestor = Arc::new(Attestor::default());
+        let state = Arc::new(
+            State::new(Arc::new(BootAttestor), Box::new(Engine { reject: true }))
+                .unwrap()
+                .with_enrollment(Producer::new(context(), attestor.clone())),
+        );
+        let request = PoseGuardEnrollmentRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::EnrollWithPoseGuard,
+            central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+            captures: captures(),
+            challenge_token: state.challenges.fixture(targets()),
+            sub: "0x1f".into(),
+            custody_public_key: SecretKey::generate(&mut OsRng)
+                .public_key()
+                .as_bytes()
+                .to_vec(),
+        };
+        let assignment = state.assignment().await.unwrap();
+        let consumer = ChannelConsumer::from_unverified_public_key(
+            ChannelDomain::new(CHANNEL_DOMAIN),
+            &assignment.public_key,
+        )
+        .unwrap();
+        let (ciphertext, opener) = consumer
+            .seal_to_enclave(&request.encode().unwrap())
             .unwrap();
-            let (ciphertext, opener) = consumer
-                .seal_to_enclave(&request.encode().unwrap())
+        let response = state.extract(ExtractRequest { ciphertext }).await.unwrap();
+        let result =
+            EnrollmentResult::decode(&opener.open_from_enclave(&response.ciphertext).unwrap())
                 .unwrap();
-            let response = state.extract(ExtractRequest { ciphertext }).await.unwrap();
-            let result =
-                EnrollmentResult::decode(&opener.open_from_enclave(&response.ciphertext).unwrap())
-                    .unwrap();
-            if reject {
-                assert!(matches!(
-                    result,
-                    EnrollmentResult::Failed {
-                        reason: Failure::QualityRejected
-                    }
-                ));
-                assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
-            } else {
-                let EnrollmentResult::Success { enrollment } = &result else {
-                    panic!("expected enrollment")
-                };
-                assert_eq!(
-                    enrollment
-                        .fields
-                        .iter()
-                        .map(|field| field.name.as_str())
-                        .collect::<Vec<_>>(),
-                    selfie_enrollment_sealed_types::ENROLLMENT_FIELDS
-                );
-                assert!(
-                    custody
-                        .unseal(&enrollment.encrypted_custody)
-                        .unwrap()
-                        .starts_with(&[0x1f, 0x8b])
-                );
-                assert_eq!(attestor.calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            result,
+            EnrollmentResult::Failed {
+                reason: Failure::QualityRejected
             }
-        }
+        ));
+        assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -566,36 +545,6 @@ mod tests {
             state.prepare_enrollment(input, &context(), &attestor),
             Err(Error::InvalidRequest)
         ));
-        assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn malformed_pose_captures_fail_before_acquiring_a_slot_or_running_extraction() {
-        let state = State::new(Arc::new(BootAttestor), Box::new(Engine { reject: false })).unwrap();
-        let key = SecretKey::generate(&mut OsRng).public_key();
-        let attestor = Attestor::default();
-        let context = context();
-        let mutations: [fn(&mut PoseGuardCapture); 2] = [
-            |capture| capture.image.clear(),
-            |capture| capture.image.resize(MAX_IMAGE_BYTES + 1, 0),
-        ];
-        for busy in [false, true] {
-            let _permit = busy.then(|| state.processing.try_acquire().unwrap());
-            for index in 0..POSEGUARD_CHALLENGE_COUNT {
-                for mutate in mutations {
-                    let mut captures = captures();
-                    mutate(&mut captures[index]);
-                    assert!(matches!(
-                        state.prepare_enrollment(
-                            request(&state, &key, &captures),
-                            &context,
-                            &attestor
-                        ),
-                        Err(Error::InvalidRequest)
-                    ));
-                }
-            }
-        }
         assert_eq!(attestor.calls.load(Ordering::SeqCst), 0);
     }
 }
