@@ -17,7 +17,7 @@ async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 fastrand.workspace = true
-proof.workspace = true
+world-id-proof-verification-client.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 telemetry-batteries = { workspace = true, features = ["axum", "metrics-statsd"] }

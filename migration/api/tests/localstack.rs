@@ -126,7 +126,11 @@ async fn host(jobs: Arc<Mutex<Vec<JobRequest>>>) -> SocketAddr {
 
 /// The proof-verification service, accepting every proof.
 async fn proof_verification() -> SocketAddr {
-    serve(Router::new().route(proof::VERIFY_PATH, post(|| async { StatusCode::OK }))).await
+    serve(Router::new().route(
+        world_id_proof_verification_client::VERIFY_PATH,
+        post(|| async { StatusCode::OK }),
+    ))
+    .await
 }
 
 /// Kills the API when the test ends, pass or fail.

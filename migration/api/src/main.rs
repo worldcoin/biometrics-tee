@@ -2,6 +2,7 @@ mod config;
 mod error;
 mod fleet;
 mod host_client;
+mod proof;
 mod routes;
 
 use std::time::Duration;
@@ -23,25 +24,23 @@ fn verifier(
     config: &config::Config,
     aws_config: &aws_config::SdkConfig,
 ) -> anyhow::Result<proof::Verifier> {
-    let auth_provider = proof::JwtAuthProvider::new(
+    let auth_provider = world_id_proof_verification_client::JwtAuthProvider::new(
         aws_sdk_kms::Client::new(aws_config),
         config.proof_jwt_kms_key_id.clone(),
         config.proof_jwt_subject.clone(),
     )?;
 
-    let client = proof::Client::new(
-        proof::Config {
+    let client = world_id_proof_verification_client::Client::new(
+        world_id_proof_verification_client::Config {
             host: config.proof_verification_host.clone(),
             timeout: Duration::from_secs(config.proof_verify_timeout_secs),
-            max_conns: config.proof_max_conns,
+            pool_max_idle_per_host: config.proof_max_conns,
         },
-        std::sync::Arc::new(auth_provider) as std::sync::Arc<dyn proof::AuthProvider>,
+        std::sync::Arc::new(auth_provider)
+            as std::sync::Arc<dyn world_id_proof_verification_client::AuthProvider>,
     )?;
     Ok(proof::Verifier::new(
-        proof::VerifierConfig {
-            max_proof_body_bytes: config.proof_max_proof_body_bytes,
-            challenge_type: config.proof_challenge_type.clone(),
-        },
+        config.proof_max_proof_body_bytes,
         std::sync::Arc::new(client),
     ))
 }
@@ -210,7 +209,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::{AppState, fleet::Fleet, host_client::HostClient, routes};
+    use crate::{AppState, fleet::Fleet, host_client::HostClient, proof, routes};
 
     const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
     const AMZ_JSON: &str = "application/x-amz-json-1.0";
@@ -345,11 +344,11 @@ mod tests {
         )
     }
 
-    fn verifier(verdict: proof::Verdict) -> Arc<proof::Verifier> {
+    fn verifier(accepted: bool) -> Arc<proof::Verifier> {
         Arc::new(proof::Verifier::new(
-            proof::VerifierConfig::default(),
+            1 << 20,
             Arc::new(MockVerifier {
-                result: verdict,
+                accepted,
                 seen: Mutex::new(Vec::new()),
             }),
         ))
@@ -383,7 +382,7 @@ mod tests {
             job_deadline: Duration::from_secs(600),
             job_retention: Duration::from_secs(14 * 24 * 60 * 60),
             host_port: 9,
-            verifier: verifier(proof::Verdict::Accepted),
+            verifier: verifier(true),
             fleet: fleet(Vec::new()),
             hosts: HostClient::new().unwrap(),
         }
@@ -613,10 +612,7 @@ mod tests {
     #[tokio::test]
     async fn init_reports_a_verification_service_failure() {
         let state = AppState {
-            verifier: Arc::new(proof::Verifier::new(
-                proof::VerifierConfig::default(),
-                Arc::new(FailingVerifier),
-            )),
+            verifier: Arc::new(proof::Verifier::new(1 << 20, Arc::new(FailingVerifier))),
             ..unavailable_state()
         };
         let response = routes::router(state).oneshot(valid_init()).await.unwrap();
@@ -628,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn a_rejected_proof_is_forbidden() {
         let state = AppState {
-            verifier: verifier(proof::Verdict::Rejected),
+            verifier: verifier(false),
             ..unavailable_state()
         };
         let response = routes::router(state).oneshot(valid_init()).await.unwrap();
@@ -641,13 +637,14 @@ mod tests {
     #[tokio::test]
     async fn the_client_round_trips_init() {
         let mock = Arc::new(MockVerifier {
-            result: proof::Verdict::Accepted,
+            accepted: true,
             seen: Mutex::new(Vec::new()),
         });
         let state = AppState {
             verifier: Arc::new(proof::Verifier::new(
-                proof::VerifierConfig::default(),
-                Arc::clone(&mock) as Arc<dyn proof::ProofVerificationClient>,
+                1 << 20,
+                Arc::clone(&mock)
+                    as Arc<dyn world_id_proof_verification_client::ProofVerificationClient>,
             )),
             ..state(vec![host(0, 4).await], dynamodb(Arc::default()).await).await
         };
@@ -674,10 +671,9 @@ mod tests {
         assert_eq!(response.enclave_id, enclave_id());
         let seen = mock.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].0.challenge_id, CHALLENGE_ID);
-        assert_eq!(seen[0].0.challenge_type, proof::DEFAULT_CHALLENGE_TYPE);
-        assert_eq!(seen[0].0.credential_sub, "test-sub");
-        assert_eq!(seen[0].0.proof, "0xa100ff00deadbeef");
+        assert_eq!(seen[0].challenge_id.to_string(), CHALLENGE_ID);
+        assert_eq!(seen[0].credential_sub, "test-sub");
+        assert_eq!(seen[0].proof, "0xa100ff00deadbeef");
     }
 
     /// Internal routes must not be reachable through the public listener.
@@ -781,22 +777,32 @@ mod tests {
     struct FailingVerifier;
 
     #[async_trait]
-    impl proof::ProofVerificationClient for FailingVerifier {
-        async fn verify(&self, _request: proof::VerificationRequest) -> proof::Verdict {
-            proof::Verdict::Error(proof::FailureClass::Timeout)
+    impl world_id_proof_verification_client::ProofVerificationClient for FailingVerifier {
+        async fn verify(
+            &self,
+            _request: world_id_proof_verification_client::VerificationRequest,
+        ) -> Result<(), world_id_proof_verification_client::VerificationError> {
+            Err(world_id_proof_verification_client::VerificationError::Unauthorized)
         }
     }
 
     struct MockVerifier {
-        result: proof::Verdict,
-        seen: Mutex<Vec<(proof::VerificationRequest, proof::Verdict)>>,
+        accepted: bool,
+        seen: Mutex<Vec<world_id_proof_verification_client::VerificationRequest>>,
     }
 
     #[async_trait]
-    impl proof::ProofVerificationClient for MockVerifier {
-        async fn verify(&self, request: proof::VerificationRequest) -> proof::Verdict {
-            self.seen.lock().unwrap().push((request, self.result));
-            self.result
+    impl world_id_proof_verification_client::ProofVerificationClient for MockVerifier {
+        async fn verify(
+            &self,
+            request: world_id_proof_verification_client::VerificationRequest,
+        ) -> Result<(), world_id_proof_verification_client::VerificationError> {
+            self.seen.lock().unwrap().push(request);
+            if self.accepted {
+                Ok(())
+            } else {
+                Err(world_id_proof_verification_client::VerificationError::Rejected)
+            }
         }
     }
 
