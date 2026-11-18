@@ -24,7 +24,7 @@ serde_json.workspace = true
 base64.workspace = true
 hex.workspace = true
 thiserror.workspace = true
-zeroize.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
 url = "2"
 futures-util = { version = "0.3", features = ["sink"] }
 web-time = "1"

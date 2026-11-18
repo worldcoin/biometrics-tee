@@ -20,7 +20,7 @@ async function main() {
     for(const [name,engine] of [['chromium',chromium],['webkit',webkit]]) {
       const browser=await engine.launch({headless:true, ...(name==='chromium'?{channel:'chromium'}:{})});
       try {
-        for(const operation of ['extractEmbedding','enroll','generatePoseGuardTargets'])
+        for(const operation of ['extractEmbedding','enroll','enrollWithPoseGuard'])
         for(const mode of ['untrusted','abort-assignment','already-aborted','oversized','flood','invalid-policy']) {
           const page=await browser.newPage();
           try {
@@ -50,19 +50,21 @@ async function main() {
               if(mode==='already-aborted')controller.abort();
               if(mode==='invalid-policy')config.releases[0].pcr0='0'.repeat(96);
               const started=performance.now();
-              let error;
+              let error,captureCalls=0;
               if(mode==='abort-assignment')setTimeout(()=>controller.abort(),30);
               const image=new Uint8Array([137,80,78,71,13,10,26,10,1]);
               const key=new Uint8Array(32).fill(7);
+              const capture=()=>{captureCalls++;return {centralPng:image,captures:[image,image,image]}};
               try{
                 if(operation==='extractEmbedding')await module.extractEmbedding(JSON.stringify(config),image,controller.signal);
                 else if(operation==='enroll')await module.enroll(JSON.stringify(config),image,'0x1f',key,controller.signal);
-                else await module.generatePoseGuardTargets(JSON.stringify(config),'0x1f',key,controller.signal);
+                else await module.enrollWithPoseGuard(JSON.stringify(config),'0x1f',key,capture,controller.signal);
               }catch(e){error=String(e)}
-              return {...window.transport,error,elapsed:performance.now()-started};
+              return {...window.transport,error,captureCalls,elapsed:performance.now()-started};
             },{config,mode,operation});
             assert.ok(result.error,`${name}/${operation}/${mode} must fail`);
             assert.equal(result.sent.includes('image'),false,`${name}/${operation}/${mode} must withhold image`);
+            assert.equal(result.captureCalls,0,`${name}/${operation}/${mode} must not request capture before verifying the enclave`);
             if(['already-aborted','invalid-policy'].includes(mode))assert.equal(result.created,0);
             else assert.ok(result.closed>0,`${name}/${mode} socket cleanup`);
             if(mode==='untrusted')assert.match(result.error,/attestation rejected/);

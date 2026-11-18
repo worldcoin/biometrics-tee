@@ -1,21 +1,22 @@
 //! Fail-closed enrollment client. Measurement allowlists always come from the caller.
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures_util::future::{Either, select};
 use pontifex::{
     ChannelConsumer, ChannelDomain, ResponseOpener,
     attestation::{PcrConfig, VerifiedAttestation, Verifier},
 };
 use rand::RngCore;
 use selfie_enrollment_api_types::*;
+pub use selfie_enrollment_sealed_types::PoseGuardTarget;
 use selfie_enrollment_sealed_types::{
     EmbeddingRequest, EmbeddingResult, EnrollmentOperation, EnrollmentRequest, EnrollmentResult,
-    GeneratePoseGuardTargetsRequest, PoseGuardChallenge, PoseGuardEnrollmentRequest,
-    PoseGuardTargetsResult,
+    GeneratePoseGuardTargetsRequest, PoseGuardCapture, PoseGuardChallenge,
+    PoseGuardEnrollmentRequest, PoseGuardTargetsResult,
 };
-pub use selfie_enrollment_sealed_types::{PoseGuardCapture, PoseGuardTarget};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{pin::pin, time::Duration};
 use web_time::Instant;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
@@ -100,6 +101,8 @@ pub enum Error {
     Timeout,
     #[error("enrollment response authentication failed")]
     Authentication,
+    #[error("PoseGuard capture failed")]
+    Capture,
     #[error("enrollment host: {0}")]
     Host(ErrorCode),
 }
@@ -200,7 +203,8 @@ pub enum Frame {
     Text(String),
     Binary(Vec<u8>),
 }
-/// A bounded transport. Dropping it must close the socket and release its resources.
+/// A bounded transport. Dropping it must close the socket and release its resources, and
+/// dropping a pending `receive` must not consume a frame.
 #[allow(async_fn_in_trait)]
 pub trait Transport {
     async fn send(&mut self, frame: Frame, timeout: Duration) -> Result<(), Error>;
@@ -276,69 +280,108 @@ impl<T: Transport> EnrollmentSession<T> {
         pending.open_enrollment(&response)
     }
 
-    /// Generates an authenticated challenge and retains this socket and assignment for capture.
-    pub async fn generate_poseguard_targets(
+    /// Consumes the session for one PoseGuard attempt. Once the enclave issues authenticated
+    /// targets, `capture` receives them and returns the central image and one capture per
+    /// target; the client pairs each capture with its target and submits them on this socket.
+    /// Capture ends early when the challenge expires, the socket fails or the host sends a
+    /// frame. The socket closes on every result.
+    pub async fn enroll_with_poseguard(
         mut self,
         sub: String,
         custody_public_key: [u8; 32],
-    ) -> Result<PendingPoseGuardEnrollment<T>, Error> {
+        capture: impl AsyncFnOnce(PoseGuardPrompt) -> Result<PoseGuardImages, Error>,
+    ) -> Result<EnrollmentResult, Error> {
+        let result = self
+            .poseguard_attempt(sub, custody_public_key, capture)
+            .await;
+        self.socket.close().await;
+        result
+    }
+
+    async fn poseguard_attempt(
+        &mut self,
+        sub: String,
+        custody_public_key: [u8; 32],
+        capture: impl AsyncFnOnce(PoseGuardPrompt) -> Result<PoseGuardImages, Error>,
+    ) -> Result<EnrollmentResult, Error> {
         let deadline = Instant::now() + Duration::from_secs(POSEGUARD_CHALLENGE_TTL_SECS);
-        let result = async {
-            let mut nonce = [0; 32];
-            rand::rngs::OsRng
-                .try_fill_bytes(&mut nonce)
-                .map_err(|_| Error::Authentication)?;
-            let mut input = GeneratePoseGuardTargetsRequest {
-                version: ENROLLMENT_PROTOCOL_VERSION,
-                operation: EnrollmentOperation::GeneratePoseGuardTargets,
-                sub,
-                custody_public_key: custody_public_key.to_vec(),
-                nonce,
-            };
-            let (request, pending) = self
-                .assignment
-                .seal_plaintext(&input.encode().map_err(|_| Error::Protocol)?)?;
-            let response = self.exchange(request).await?;
-            let result = PoseGuardTargetsResult::decode(&pending.open_plaintext(&response)?)
-                .map_err(|_| Error::Protocol)?;
-            let expected = result
-                .challenge
-                .attestation_nonce(&input, &self.assignment.commitment)
-                .map_err(|_| Error::Protocol)?;
-            // Channel response encryption alone does not authenticate its sender.
-            let proof = self
-                .assignment
-                .verifier
-                .verify_attestation_document(&result.attestation)
-                .map_err(|_| Error::Attestation)?;
-            if proof
-                .document()
-                .nonce
-                .as_ref()
-                .map(|nonce| nonce.as_slice())
-                != Some(expected.as_slice())
-            {
-                return Err(Error::Authentication);
-            }
-            if Instant::now() >= deadline {
-                return Err(Error::Timeout);
-            }
-            Ok((result.challenge.clone(), std::mem::take(&mut input.sub)))
+        let (challenge, sub) = self
+            .request_poseguard_challenge(sub, custody_public_key, deadline)
+            .await?;
+        let prompt = PoseGuardPrompt {
+            targets: challenge.targets,
+            expires_at: challenge.expires_at,
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let images = await_capture(&mut self.socket, capture(prompt), remaining).await?;
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout);
         }
-        .await;
-        match result {
-            Ok((challenge, sub)) => Ok(PendingPoseGuardEnrollment {
-                session: self,
-                challenge,
-                sub,
-                custody_public_key,
-                deadline,
-            }),
-            Err(error) => {
-                self.socket.close().await;
-                Err(error)
-            }
+        let (central_png, captures) = images.into_captures(&challenge.targets);
+        let input = PoseGuardEnrollmentRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::EnrollWithPoseGuard,
+            central_png,
+            captures,
+            sub,
+            custody_public_key: custody_public_key.to_vec(),
+            challenge_token: challenge.challenge_token,
+        };
+        let (request, pending) = self
+            .assignment
+            .seal_plaintext(&input.encode().map_err(|_| Error::Protocol)?)?;
+        drop(input);
+        let response = self.exchange(request).await?;
+        pending.open_enrollment(&response)
+    }
+
+    /// Requests a challenge bound to this identity, custody key and the assigned enclave boot.
+    async fn request_poseguard_challenge(
+        &mut self,
+        sub: String,
+        custody_public_key: [u8; 32],
+        deadline: Instant,
+    ) -> Result<(PoseGuardChallenge, String), Error> {
+        let mut nonce = [0; 32];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|_| Error::Authentication)?;
+        let mut input = GeneratePoseGuardTargetsRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::GeneratePoseGuardTargets,
+            sub,
+            custody_public_key: custody_public_key.to_vec(),
+            nonce,
+        };
+        let (request, pending) = self
+            .assignment
+            .seal_plaintext(&input.encode().map_err(|_| Error::Protocol)?)?;
+        let response = self.exchange(request).await?;
+        let result = PoseGuardTargetsResult::decode(&pending.open_plaintext(&response)?)
+            .map_err(|_| Error::Protocol)?;
+        let expected = result
+            .challenge
+            .attestation_nonce(&input, &self.assignment.commitment)
+            .map_err(|_| Error::Protocol)?;
+        // Channel response encryption alone does not authenticate its sender.
+        let proof = self
+            .assignment
+            .verifier
+            .verify_attestation_document(&result.attestation)
+            .map_err(|_| Error::Attestation)?;
+        if proof
+            .document()
+            .nonce
+            .as_ref()
+            .map(|nonce| nonce.as_slice())
+            != Some(expected.as_slice())
+        {
+            return Err(Error::Authentication);
         }
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout);
+        }
+        Ok((result.challenge.clone(), std::mem::take(&mut input.sub)))
     }
 
     async fn round_trip(mut self, request: Vec<u8>) -> Result<Vec<u8>, Error> {
@@ -361,59 +404,54 @@ impl<T: Transport> EnrollmentSession<T> {
     }
 }
 
-/// An issued challenge and the already-verified connection that owns its enrollment attempt.
-/// Consuming this handle prevents another submission through the same client session.
-pub struct PendingPoseGuardEnrollment<T: Transport> {
-    session: EnrollmentSession<T>,
-    challenge: PoseGuardChallenge,
-    sub: String,
-    custody_public_key: [u8; 32],
-    deadline: Instant,
+/// Authenticated targets for one PoseGuard attempt, in capture order. `expires_at` is in Unix
+/// seconds for display; the client and enclave enforce monotonic deadlines.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoseGuardPrompt {
+    pub targets: [PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT],
+    pub expires_at: u64,
 }
 
-impl<T: Transport> PendingPoseGuardEnrollment<T> {
-    pub fn targets(&self) -> &[PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT] {
-        &self.challenge.targets
-    }
-    pub fn expires_at(&self) -> u64 {
-        self.challenge.expires_at
-    }
+/// The central image and one capture per target, in target order.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct PoseGuardImages {
+    pub central_png: Vec<u8>,
+    pub captures: [Vec<u8>; POSEGUARD_CHALLENGE_COUNT],
+}
 
-    pub async fn enroll_with_poseguard(
+impl PoseGuardImages {
+    /// Pairs each capture with the target it was taken for.
+    fn into_captures(
         mut self,
-        central_png: Vec<u8>,
-        captures: [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT],
-    ) -> Result<EnrollmentResult, Error> {
-        let input = PoseGuardEnrollmentRequest {
-            version: ENROLLMENT_PROTOCOL_VERSION,
-            operation: EnrollmentOperation::EnrollWithPoseGuard,
-            central_png,
-            captures,
-            sub: std::mem::take(&mut self.sub),
-            custody_public_key: self.custody_public_key.to_vec(),
-            challenge_token: self.challenge.challenge_token,
-        };
-        let result = async {
-            if Instant::now() >= self.deadline {
-                return Err(Error::Timeout);
-            }
-            let (request, pending) = self
-                .session
-                .assignment
-                .seal_plaintext(&input.encode().map_err(|_| Error::Protocol)?)?;
-            drop(input);
-            let response = self.session.exchange(request).await?;
-            pending.open_enrollment(&response)
-        }
-        .await;
-        self.session.socket.close().await;
-        result
-    }
-
-    pub async fn cancel(mut self) {
-        self.session.socket.close().await;
+        targets: &[PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT],
+    ) -> (Vec<u8>, [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT]) {
+        let captures = std::array::from_fn(|index| PoseGuardCapture {
+            image: std::mem::take(&mut self.captures[index]),
+            target_pitch: targets[index].target_pitch,
+            target_yaw: targets[index].target_yaw,
+        });
+        (std::mem::take(&mut self.central_png), captures)
     }
 }
+
+/// Runs `capture` while the session idles; a host frame, socket failure or expiry ends it first.
+async fn await_capture<T: Transport>(
+    socket: &mut T,
+    capture: impl Future<Output = Result<PoseGuardImages, Error>>,
+    remaining: Duration,
+) -> Result<PoseGuardImages, Error> {
+    let capture = pin!(capture);
+    let interruption = pin!(socket.receive(remaining));
+    match select(capture, interruption).await {
+        Either::Left((images, _)) => images,
+        Either::Right((frame, _)) => {
+            host_message(frame?)?;
+            Err(Error::Protocol)
+        }
+    }
+}
+
 fn host_message(frame: Frame) -> Result<HostMessage, Error> {
     let Frame::Text(text) = frame else {
         return Err(Error::Protocol);
@@ -458,5 +496,84 @@ mod tests {
         let mut c = config();
         c.endpoint = "ws://example.com/v1/embeddings".into();
         assert!(c.validate().is_err());
+    }
+
+    /// Yields one scripted `receive` result, then never resolves again.
+    struct ScriptedTransport(Option<Result<Frame, Error>>);
+    impl Transport for ScriptedTransport {
+        async fn send(&mut self, _: Frame, _: Duration) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn receive(&mut self, _: Duration) -> Result<Frame, Error> {
+            match self.0.take() {
+                Some(result) => result,
+                None => std::future::pending().await,
+            }
+        }
+        async fn close(&mut self) {}
+    }
+
+    fn images() -> PoseGuardImages {
+        PoseGuardImages {
+            central_png: vec![0],
+            captures: [vec![1], vec![2], vec![3]],
+        }
+    }
+
+    fn wait(
+        socket: &mut ScriptedTransport,
+        capture: impl Future<Output = Result<PoseGuardImages, Error>>,
+    ) -> Result<PoseGuardImages, Error> {
+        use futures_util::FutureExt;
+        await_capture(socket, capture, Duration::from_secs(1))
+            .now_or_never()
+            .expect("the capture or the socket is ready")
+    }
+
+    #[test]
+    fn capture_completes_while_the_socket_idles() {
+        let captured = wait(&mut ScriptedTransport(None), async { Ok(images()) }).unwrap();
+        assert_eq!(captured.captures, [vec![1], vec![2], vec![3]]);
+    }
+
+    #[test]
+    fn capture_failure_is_returned() {
+        let result = wait(&mut ScriptedTransport(None), async { Err(Error::Capture) });
+        assert!(matches!(result, Err(Error::Capture)));
+    }
+
+    #[test]
+    fn expiry_socket_failure_and_host_frames_end_capture() {
+        let host_error = serde_json::to_string(&ErrorEnvelope::from(ErrorCode::Timeout)).unwrap();
+        for (event, expected) in [
+            (Err(Error::Timeout), "Timeout"),
+            (Err(Error::Transport), "Transport"),
+            (Ok(Frame::Text(host_error)), "Host(Timeout)"),
+            (Ok(Frame::Binary(vec![1])), "Protocol"),
+        ] {
+            let error = wait(&mut ScriptedTransport(Some(event)), std::future::pending())
+                .err()
+                .expect("capture is interrupted");
+            assert_eq!(format!("{error:?}"), expected);
+        }
+    }
+
+    #[test]
+    fn captures_carry_their_issued_targets_in_order() {
+        let targets = [(0.0, 30.0), (0.0, -30.0), (17.5, 0.0)].map(|(target_pitch, target_yaw)| {
+            PoseGuardTarget {
+                target_pitch,
+                target_yaw,
+            }
+        });
+        let (central_png, captures) = images().into_captures(&targets);
+        assert_eq!(central_png, [0]);
+        for ((capture, target), image) in captures.iter().zip(&targets).zip([1, 2, 3]) {
+            assert_eq!(capture.image, [image]);
+            assert_eq!(
+                (capture.target_pitch, capture.target_yaw),
+                (target.target_pitch, target.target_yaw)
+            );
+        }
     }
 }
