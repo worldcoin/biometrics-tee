@@ -103,7 +103,9 @@ mod tests {
 
     use flate2::{read::GzDecoder, write::GzEncoder};
 
-    use super::{MAX_ARCHIVE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, files_from_reader, files_from_tar_gz};
+    use super::{
+        MAX_ARCHIVE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, files_from_reader, files_from_tar_gz,
+    };
     use crate::Error;
 
     #[test]
@@ -202,7 +204,10 @@ mod tests {
     fn accepts_the_file_count_boundary_and_rejects_an_extra_member() {
         let names: Vec<_> = (0..MAX_FILES).map(|index| format!("file{index}")).collect();
         let mut entries: Vec<_> = names.iter().map(|name| (name.as_str(), &b""[..])).collect();
-        assert_eq!(files_from_tar_gz(&archive(&entries)).unwrap().len(), MAX_FILES);
+        assert_eq!(
+            files_from_tar_gz(&archive(&entries)).unwrap().len(),
+            MAX_FILES
+        );
 
         entries.push(("hashes.json", b"{}"));
         assert_eq!(files_from_tar_gz(&archive(&entries)), Err(Error::SizeLimit));

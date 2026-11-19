@@ -784,8 +784,14 @@ mod tests {
                 pcp_with_hashes_json(b"{ }"),
                 enclave_primitives::Error::CredentialClaimsMismatch,
             ),
-            (pcp_with_entries(&[]), enclave_primitives::Error::InvalidInput),
-            (pcp_with_hashes_json(b""), enclave_primitives::Error::InvalidInput),
+            (
+                pcp_with_entries(&[]),
+                enclave_primitives::Error::InvalidInput,
+            ),
+            (
+                pcp_with_hashes_json(b""),
+                enclave_primitives::Error::InvalidInput,
+            ),
             (
                 pcp_with_hashes_json(&vec![b' '; super::MAX_HASHES_JSON_BYTES + 1]),
                 enclave_primitives::Error::InvalidInput,
@@ -831,7 +837,12 @@ mod tests {
         let sub = FieldElement::from(42u64);
         let credential = signed_credential_for_pcp(&issuer, b"{}", sub);
         assert_eq!(
-            verify_credential(&issuer.public(), "another subject", &credential, b"invalid tar"),
+            verify_credential(
+                &issuer.public(),
+                "another subject",
+                &credential,
+                b"invalid tar"
+            ),
             Err(enclave_primitives::Error::CredentialSubMismatch)
         );
 
