@@ -4066,12 +4066,16 @@ dependencies = [
  "clap",
  "di-migration-client",
  "di-migration-primitives",
+ "fastrand",
  "hex",
  "pontifex",
  "reqwest 0.12.28",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
