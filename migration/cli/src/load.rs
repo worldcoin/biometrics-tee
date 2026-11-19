@@ -7,6 +7,7 @@ use std::{
     collections::BTreeMap,
     fmt::Write as _,
     future::Future,
+    io::{self, Write as _},
     num::NonZeroUsize,
     sync::{
         Arc,
@@ -16,6 +17,7 @@ use std::{
 };
 
 use clap::Args;
+use di_migration_client::ClientError;
 use di_migration_primitives::app_api::{InitMigrationResponse, codes};
 use reqwest::Url;
 use tokio::task::JoinSet;
@@ -47,9 +49,14 @@ pub struct LoadArgs {
     #[arg(long, default_value = "loadtest-")]
     sub_prefix: String,
 
-    /// Base back-off after an `at_capacity` rejection; up to as much again is added as jitter.
-    #[arg(long, default_value_t = 30)]
+    /// Fallback base back-off after an admission rejection when the API omits `Retry-After`;
+    /// up to as much again is added as jitter. Must be at least 1s.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
     at_capacity_backoff_secs: u64,
+
+    /// Give up admitting a job after this many seconds of waiting and back-off (0 = no limit).
+    #[arg(long, default_value_t = 600)]
+    max_admission_wait_secs: u64,
 }
 
 /// What every worker shares.
@@ -58,6 +65,7 @@ struct Context {
     sealing: Sealing,
     sub_prefix: String,
     at_capacity_backoff_secs: u64,
+    max_admission_wait: Option<Duration>,
 }
 
 /// Runs the load and prints the summary; fails when any migration failed.
@@ -67,6 +75,8 @@ pub async fn run(api_url: &Url, args: LoadArgs) -> Result<(), String> {
         sealing: Sealing::load(&args.seal)?,
         sub_prefix: args.sub_prefix,
         at_capacity_backoff_secs: args.at_capacity_backoff_secs,
+        max_admission_wait: (args.max_admission_wait_secs > 0)
+            .then(|| Duration::from_secs(args.max_admission_wait_secs)),
     });
     let jobs = args.jobs.get();
     let concurrency = args.concurrency.get().min(jobs);
@@ -85,7 +95,7 @@ pub async fn run(api_url: &Url, args: LoadArgs) -> Result<(), String> {
             let mut reports = Vec::new();
             while claimed.fetch_add(1, Ordering::Relaxed) < jobs {
                 let report = run_job(&context).await;
-                println!("{}", report.to_json());
+                emit_json_line(&report);
                 reports.push(report);
             }
             reports
@@ -93,19 +103,41 @@ pub async fn run(api_url: &Url, args: LoadArgs) -> Result<(), String> {
     }
 
     let mut reports = Vec::with_capacity(jobs);
+    let mut worker_failures = 0usize;
     while let Some(worker) = workers.join_next().await {
-        reports.extend(worker.map_err(|error| format!("a load worker failed: {error}"))?);
+        match worker {
+            Ok(batch) => reports.extend(batch),
+            Err(error) => {
+                worker_failures += 1;
+                eprintln!("a load worker failed: {error}");
+            }
+        }
     }
-    eprint!("{}", summary(&reports, started.elapsed()));
+    eprint!("{}", summary(&reports, started.elapsed(), args.ramp_up_secs));
 
     let failed = reports
         .iter()
         .filter(|report| report.outcome.is_err())
         .count();
+    if worker_failures > 0 {
+        return Err(format!(
+            "{worker_failures} workers panicked; {failed} of {} migrations failed",
+            reports.len()
+        ));
+    }
     if failed > 0 {
-        return Err(format!("{failed} of {jobs} migrations failed"));
+        return Err(format!("{failed} of {} migrations failed", reports.len()));
     }
     Ok(())
+}
+
+fn emit_json_line(report: &JobReport) {
+    let mut out = io::stdout().lock();
+    if let Err(error) = writeln!(out, "{}", report.to_json())
+        && error.kind() != io::ErrorKind::BrokenPipe
+    {
+        eprintln!("failed to write a load result: {error}");
+    }
 }
 
 async fn run_job(context: &Context) -> JobReport {
@@ -113,6 +145,7 @@ async fn run_job(context: &Context) -> JobReport {
         sub: format!("{}{}", context.sub_prefix, Uuid::new_v4()),
         outcome: Ok(()),
         at_capacity: 0,
+        capacity_unknown: 0,
         phases: Vec::new(),
         total: Duration::ZERO,
     };
@@ -132,19 +165,22 @@ async fn migrate(context: &Context, report: &mut JobReport) -> Result<(), Migrat
     let response = admit(context, report).await?;
     let opener = report
         .time(Phase::SealUpload, async {
-            let (blob, opener) = sealing.seal(&response)?;
+            let (blob, opener) = sealing.seal(&response).await?;
             device.upload(&response.upload_url, blob).await?;
             Ok(opener)
         })
         .await?;
     report.time(Phase::Migrate, device.migrate(&sub)).await?;
     let migrated = report.time(Phase::Wait, device.wait(&sub)).await?;
-    report
+    let pcp = report
         .time(
             Phase::Download,
             device.download(&migrated.download_url, opener),
         )
         .await?;
+    if pcp.is_empty() {
+        return Err(MigrationError::Incomplete("a non-empty PCP"));
+    }
     report
         .time(
             Phase::Acknowledge,
@@ -153,13 +189,22 @@ async fn migrate(context: &Context, report: &mut JobReport) -> Result<(), Migrat
         .await
 }
 
-/// Inits the migration, backing off while the fleet is at capacity.
+/// Inits the migration, backing off while the fleet is at capacity or capacity is unknown.
 async fn admit(
     context: &Context,
     report: &mut JobReport,
 ) -> Result<InitMigrationResponse, MigrationError> {
     let started = Instant::now();
     loop {
+        if let Some(limit) = context.max_admission_wait
+            && started.elapsed() >= limit
+        {
+            report
+                .phases
+                .push((Phase::AdmissionWait, started.elapsed()));
+            return Err(MigrationError::AdmissionTimeout);
+        }
+
         let attempt = Instant::now();
         match context.device.init_migration(&report.sub).await {
             Ok(response) => {
@@ -169,23 +214,72 @@ async fn admit(
                 report.phases.push((Phase::Init, attempt.elapsed()));
                 return Ok(response);
             }
-            Err(error) if is_at_capacity(&error) => {
-                report.at_capacity += 1;
-                let backoff = context.at_capacity_backoff_secs;
-                tokio::time::sleep(Duration::from_secs(backoff + fastrand::u64(..=backoff))).await;
+            Err(error) if is_admission_backoff(&error) => {
+                record_admission_rejection(report, &error);
+                let backoff = admission_backoff_secs(context, &error);
+                if let Some(limit) = context.max_admission_wait {
+                    let remaining = limit.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        report
+                            .phases
+                            .push((Phase::AdmissionWait, started.elapsed()));
+                        return Err(MigrationError::AdmissionTimeout);
+                    }
+                    tokio::time::sleep(backoff.min(remaining)).await;
+                } else {
+                    tokio::time::sleep(backoff).await;
+                }
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                report
+                    .phases
+                    .push((Phase::AdmissionWait, attempt.duration_since(started)));
+                report.phases.push((Phase::Init, attempt.elapsed()));
+                return Err(error);
+            }
         }
     }
 }
 
-fn is_at_capacity(error: &MigrationError) -> bool {
-    matches!(error, MigrationError::Client { source, .. } if source.reason() == codes::AT_CAPACITY)
+fn record_admission_rejection(report: &mut JobReport, error: &MigrationError) {
+    match client_reason(error) {
+        Some(codes::AT_CAPACITY) => report.at_capacity += 1,
+        Some(codes::CAPACITY_UNKNOWN) => report.capacity_unknown += 1,
+        _ => {}
+    }
+}
+
+fn admission_backoff_secs(context: &Context, error: &MigrationError) -> Duration {
+    let secs = client_error(error)
+        .and_then(ClientError::retry_after)
+        .unwrap_or_else(|| {
+            let base = context.at_capacity_backoff_secs;
+            base + fastrand::u64(..=base)
+        });
+    Duration::from_secs(secs.max(1))
+}
+
+fn is_admission_backoff(error: &MigrationError) -> bool {
+    matches!(
+        client_reason(error),
+        Some(codes::AT_CAPACITY | codes::CAPACITY_UNKNOWN)
+    )
+}
+
+fn client_error(error: &MigrationError) -> Option<&ClientError> {
+    match error {
+        MigrationError::Client { source, .. } => Some(source),
+        _ => None,
+    }
+}
+
+fn client_reason(error: &MigrationError) -> Option<&str> {
+    client_error(error).map(ClientError::reason)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// From the first init attempt to the admitted one; zero unless `at_capacity`.
+    /// From the first init attempt to the admitted one; zero unless admission backed off.
     AdmissionWait,
     Init,
     /// Enclave verification, sealing and the S3 upload.
@@ -226,6 +320,7 @@ struct JobReport {
     sub: String,
     outcome: Result<(), MigrationError>,
     at_capacity: u32,
+    capacity_unknown: u32,
     phases: Vec<(Phase, Duration)>,
     total: Duration,
 }
@@ -255,6 +350,12 @@ impl JobReport {
             .find_map(|&(recorded, duration)| (recorded == phase).then_some(duration))
     }
 
+    /// End-to-end time without admission back-off, when `admission_wait` was recorded.
+    fn migration_time(&self) -> Duration {
+        self.total
+            .saturating_sub(self.duration(Phase::AdmissionWait).unwrap_or(Duration::ZERO))
+    }
+
     fn to_json(&self) -> serde_json::Value {
         let mut record = serde_json::Map::new();
         record.insert("sub".into(), self.sub.clone().into());
@@ -263,45 +364,72 @@ impl JobReport {
             record.insert("error".into(), error.to_string().into());
         }
         record.insert("at_capacity".into(), self.at_capacity.into());
+        record.insert("capacity_unknown".into(), self.capacity_unknown.into());
         for &(phase, duration) in &self.phases {
             record.insert(format!("{}_ms", phase.as_str()), millis(duration).into());
         }
         record.insert("total_ms".into(), millis(self.total).into());
+        record.insert(
+            "migration_ms".into(),
+            millis(self.migration_time()).into(),
+        );
         record.into()
     }
 }
 
 /// Outcome counts, throughput and per-phase percentiles of the migrated jobs.
-fn summary(reports: &[JobReport], elapsed: Duration) -> String {
+fn summary(reports: &[JobReport], elapsed: Duration, ramp_up_secs: u64) -> String {
     let migrated: Vec<&JobReport> = reports
         .iter()
         .filter(|report| report.outcome.is_ok())
+        .collect();
+    let failed: Vec<&JobReport> = reports
+        .iter()
+        .filter(|report| report.outcome.is_err())
         .collect();
     let mut outcomes = BTreeMap::<String, usize>::new();
     for report in reports {
         *outcomes.entry(report.outcome()).or_default() += 1;
     }
-    let rejections: u32 = reports.iter().map(|report| report.at_capacity).sum();
+    let at_capacity: u32 = reports.iter().map(|report| report.at_capacity).sum();
+    let capacity_unknown: u32 = reports.iter().map(|report| report.capacity_unknown).sum();
 
     let mut out = String::new();
     #[allow(clippy::cast_precision_loss)]
-    let per_minute = migrated.len() as f64 / elapsed.as_secs_f64() * 60.0;
+    let per_minute = migrated.len() as f64 / elapsed.as_secs_f64().max(f64::EPSILON) * 60.0;
     let _ = writeln!(
         out,
-        "\n{} of {} migrated in {}, {per_minute:.1} per minute",
+        "\n{} of {} migrated in {} wall time (includes ramp-up and admission back-off), {per_minute:.1} per minute",
         migrated.len(),
         reports.len(),
         seconds(elapsed),
     );
-    let _ = writeln!(out, "at_capacity rejections: {rejections}");
+    if ramp_up_secs > 0 {
+        let _ = writeln!(out, "ramp-up: {ramp_up_secs}s");
+    }
+    let _ = writeln!(out, "at_capacity rejections: {at_capacity}");
+    let _ = writeln!(out, "capacity_unknown rejections: {capacity_unknown}");
     for (outcome, count) in &outcomes {
         let _ = writeln!(out, "  {outcome}: {count}");
     }
 
+    if !failed.is_empty() {
+        let mut times: Vec<Duration> = failed.iter().map(|report| report.total).collect();
+        times.sort_unstable();
+        let _ = writeln!(
+            out,
+            "\nfailed jobs time-to-failure: p50 {} p90 {} p99 {} max {}",
+            seconds(percentile(&times, 50)),
+            seconds(percentile(&times, 90)),
+            seconds(percentile(&times, 99)),
+            seconds(times[times.len() - 1]),
+        );
+    }
+
     let _ = writeln!(
         out,
-        "\n{:<16}{:>10}{:>10}{:>10}{:>10}",
-        "migrated jobs", "p50", "p90", "p99", "max"
+        "\n{:<18}{:>10}{:>10}{:>10}{:>10}",
+        "successful jobs", "p50", "p90", "p99", "max"
     );
     let phases = Phase::ALL.iter().map(|&phase| {
         (
@@ -309,15 +437,24 @@ fn summary(reports: &[JobReport], elapsed: Duration) -> String {
             samples(&migrated, |report| report.duration(phase)),
         )
     });
-    let total = ("total", samples(&migrated, |report| Some(report.total)));
-    for (name, mut samples) in phases.chain([total]) {
+    let totals = [
+        (
+            "total",
+            samples(&migrated, |report| Some(report.total)),
+        ),
+        (
+            "migration",
+            samples(&migrated, |report| Some(report.migration_time())),
+        ),
+    ];
+    for (name, mut samples) in phases.chain(totals) {
         if samples.is_empty() {
             continue;
         }
         samples.sort_unstable();
         let _ = writeln!(
             out,
-            "{name:<16}{:>10}{:>10}{:>10}{:>10}",
+            "{name:<18}{:>10}{:>10}{:>10}{:>10}",
             seconds(percentile(&samples, 50)),
             seconds(percentile(&samples, 90)),
             seconds(percentile(&samples, 99)),
@@ -395,5 +532,35 @@ mod tests {
         ])
         .expect("load runs under random subs");
         assert!(matches!(cli.command, Command::Load(_)));
+    }
+
+    #[test]
+    fn zero_admission_backoff_is_rejected() {
+        let error = match Cli::try_parse_from([
+            "migration-cli",
+            "load",
+            "--integrity-token",
+            "token",
+            "--proof",
+            "proof",
+            "--challenge-id",
+            "challenge",
+            "--pcp",
+            "pcp.bin",
+            "--insecure-skip-measurements",
+            "--credential",
+            "credential",
+            "--device-public-key",
+            "key",
+            "--at-capacity-backoff-secs",
+            "0",
+        ]) {
+            Ok(_) => panic!("zero back-off would busy-loop the API"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("at-capacity-backoff-secs"),
+            "{error}"
+        );
     }
 }

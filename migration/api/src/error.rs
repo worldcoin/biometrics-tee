@@ -223,7 +223,7 @@ impl ApiError {
     pub const fn capacity_unknown() -> Self {
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "capacity_unknown",
+            codes::CAPACITY_UNKNOWN,
             "The fleet's capacity is unknown",
             true,
         )

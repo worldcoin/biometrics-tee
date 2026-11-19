@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use attested_request::{
@@ -32,6 +32,9 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Polling continues this long past the job's deadline, for the API to report the timeout.
 const DEADLINE_GRACE: Duration = Duration::from_secs(30);
+
+/// Wall-clock cap when status never returns a deadline (e.g. only retryable poll failures).
+const WAIT_WITHOUT_DEADLINE: Duration = Duration::from_secs(630);
 
 #[derive(Parser)]
 #[command(name = "migration-cli", version, about)]
@@ -170,6 +173,10 @@ enum MigrationError {
     Overdue,
     #[error("the API reported the job migrated without {0}")]
     Incomplete(&'static str),
+    #[error("admission timed out while the fleet was unavailable")]
+    AdmissionTimeout,
+    #[error("sealing was cancelled")]
+    SealCancelled,
 }
 
 impl MigrationError {
@@ -184,6 +191,8 @@ impl MigrationError {
             Self::Failed(reason) => format!("failed:{reason}"),
             Self::Overdue => "overdue".into(),
             Self::Incomplete(what) => format!("incomplete:{what}"),
+            Self::AdmissionTimeout => "admission:timeout".into(),
+            Self::SealCancelled => "seal:cancelled".into(),
         }
     }
 }
@@ -243,13 +252,17 @@ async fn migrate_once(
 ) -> Result<Zeroizing<Vec<u8>>, MigrationError> {
     let response = device.init_migration(sub).await?;
     let enclave_id = response.enclave_id.as_str().to_owned();
-    let (blob, opener) = sealing.seal(&response)?;
+    let (blob, opener) = sealing.seal(&response).await?;
     eprintln!("enclave {enclave_id} verified");
     device.upload(&response.upload_url, blob).await?;
     device.migrate(sub).await?;
     eprintln!("migration started on enclave {enclave_id}");
     let migrated = device.wait(sub).await?;
-    device.download(&migrated.download_url, opener).await
+    let pcp = device.download(&migrated.download_url, opener).await?;
+    if pcp.is_empty() {
+        return Err(MigrationError::Incomplete("a non-empty PCP"));
+    }
+    Ok(pcp)
 }
 
 impl Device {
@@ -304,22 +317,35 @@ impl Device {
             .map_err(MigrationError::client("migrate"))
     }
 
-    /// Polls until the job ends.
+    /// Polls until the job ends. Transient status failures are retried until the job's
+    /// deadline (plus grace), or [`WAIT_WITHOUT_DEADLINE`] when no deadline is known yet.
     async fn wait(&self, sub: &str) -> Result<Migrated, MigrationError> {
+        let started = Instant::now();
+        let mut deadline_secs = None;
         loop {
-            let status = self.status(sub).await?;
-            match status.status {
-                Status::Migrated => return migrated(status),
-                Status::Failed => {
-                    return Err(MigrationError::Failed(
-                        status.reason.map_or("unknown", |reason| reason.as_str()),
-                    ));
+            match self.status(sub).await {
+                Ok(status) => {
+                    if let Some(deadline) = status.deadline {
+                        deadline_secs = Some(deadline);
+                    }
+                    match status.status {
+                        Status::Migrated => return migrated(status),
+                        Status::Failed => {
+                            return Err(MigrationError::Failed(
+                                status.reason.map_or("unknown", |reason| reason.as_str()),
+                            ));
+                        }
+                        Status::Created | Status::Migrating => {}
+                    }
                 }
-                Status::Created | Status::Migrating => {}
+                Err(error) if is_retryable(&error) => {}
+                Err(error) => return Err(error),
             }
-            if let Some(deadline) = status.deadline
-                && unix_now() > deadline + DEADLINE_GRACE.as_secs()
-            {
+            if let Some(deadline) = deadline_secs {
+                if unix_now() > deadline + DEADLINE_GRACE.as_secs() {
+                    return Err(MigrationError::Overdue);
+                }
+            } else if started.elapsed() > WAIT_WITHOUT_DEADLINE {
                 return Err(MigrationError::Overdue);
             }
             tokio::time::sleep(POLL_INTERVAL).await;
@@ -382,16 +408,29 @@ impl Sealing {
         })
     }
 
-    /// Verifies the enclave in `response` and seals the PCP to it.
-    fn seal(
+    /// Verifies the enclave in `response` and seals the PCP to it on the blocking pool.
+    async fn seal(
         &self,
         response: &InitMigrationResponse,
     ) -> Result<(Vec<u8>, MigrationResponseOpener), MigrationError> {
-        self.verifier
-            .attested_channel(response)
-            .and_then(|channel| channel.seal(&self.pcp, &self.credential, &self.device_public_key))
-            .map_err(|error| MigrationError::client("seal")(error.into()))
+        let verifier = self.verifier.clone();
+        let pcp = self.pcp.clone();
+        let credential = self.credential.clone();
+        let device_public_key = self.device_public_key.clone();
+        let response = response.clone();
+        tokio::task::spawn_blocking(move || {
+            verifier
+                .attested_channel(&response)
+                .and_then(|channel| channel.seal(&pcp, &credential, &device_public_key))
+                .map_err(|error| MigrationError::client("seal")(error.into()))
+        })
+        .await
+        .unwrap_or(Err(MigrationError::SealCancelled))
     }
+}
+
+fn is_retryable(error: &MigrationError) -> bool {
+    matches!(error, MigrationError::Client { source, .. } if source.allow_retry())
 }
 
 /// PCR0-2 from the JSON `scripts/build-enclaves.sh` writes, as lower-case hex.

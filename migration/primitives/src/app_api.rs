@@ -111,6 +111,8 @@ pub mod codes {
     pub const INVALID_DEVICE_PUBLIC_KEY: &str = "invalid_device_public_key";
     /// No host has room; retry after `Retry-After`.
     pub const AT_CAPACITY: &str = "at_capacity";
+    /// Fleet capacity could not be read; retry later.
+    pub const CAPACITY_UNKNOWN: &str = "capacity_unknown";
     /// The `sub` already has an active migration; poll it instead.
     pub const MIGRATION_IN_PROGRESS: &str = "migration_in_progress";
     /// The `sub` has no migration.

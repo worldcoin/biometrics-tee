@@ -17,7 +17,7 @@ use di_migration_primitives::app_api::{
 use orb_pcp_defs::prost::Message;
 use reqwest::{
     Request, RequestBuilder, Url,
-    header::{CONTENT_TYPE, HeaderName, HeaderValue},
+    header::{CONTENT_TYPE, HeaderName, HeaderValue, RETRY_AFTER},
 };
 use zeroize::Zeroizing;
 
@@ -279,7 +279,7 @@ impl MigrationApiClient {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ClientError::http(status));
+            return Err(ClientError::http(status, retry_after_header(&response)));
         }
         let blob = response.bytes().await.map_err(ClientError::Transport)?;
         unseal_response(blob, opener_key).await
@@ -310,7 +310,7 @@ impl MigrationApiClient {
             .map_err(ClientError::Transport)?;
         let status = response.status();
         if !status.is_success() {
-            return Err(ClientError::http(status));
+            return Err(ClientError::http(status, retry_after_header(&response)));
         }
         let limit = MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES;
         if response
@@ -343,7 +343,7 @@ impl MigrationApiClient {
         if status.is_success() {
             Ok(())
         } else {
-            Err(ClientError::http(status))
+            Err(ClientError::http(status, retry_after_header(&response)))
         }
     }
 
@@ -496,20 +496,31 @@ where
     Ok(request)
 }
 
+/// Seconds from a `Retry-After` header, when present and numeric.
+fn retry_after_header(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+}
+
 /// The success body, or the API's reason, message and retry guidance.
 async fn decode<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, ClientError> {
     let status = response.status();
     if !status.is_success() {
+        let retry_after = retry_after_header(&response);
         return Err(match response.json::<ErrorEnvelope>().await {
             Ok(envelope) => ClientError::HttpResponse {
                 status,
                 code: envelope.error.code,
                 message: envelope.error.message,
                 allow_retry: envelope.allow_retry,
+                retry_after,
             },
-            Err(_) => ClientError::http(status),
+            Err(_) => ClientError::http(status, retry_after),
         });
     }
     response
@@ -754,6 +765,10 @@ mod tests {
                 post(move || async move {
                     (
                         StatusCode::CONFLICT,
+                        [(
+                            axum::http::header::RETRY_AFTER,
+                            axum::http::HeaderValue::from_static("45"),
+                        )],
                         Json(serde_json::json!({
                             "allowRetry": allow_retry,
                             "error": {"code": "not_uploaded", "message": "Upload the PCP first"},
@@ -768,6 +783,7 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.reason(), "not_uploaded");
             assert_eq!(error.allow_retry(), allow_retry);
+            assert_eq!(error.retry_after(), Some(45));
             assert!(
                 matches!(error, ClientError::HttpResponse { status: StatusCode::CONFLICT, ref message, .. }
                 if message == "Upload the PCP first")

@@ -2,8 +2,9 @@ use reqwest::{StatusCode, Url};
 
 use crate::sealing::SealingError;
 
-/// A migration client failure. Inspect [`Self::reason`] and [`Self::allow_retry`]
-/// without parsing its display text; underlying failures remain in the source chain.
+/// A migration client failure. Inspect [`Self::reason`], [`Self::allow_retry`] and
+/// [`Self::retry_after`] without parsing its display text; underlying failures remain in the
+/// source chain.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("migration client failed ({reason}): {source}")]
@@ -22,6 +23,8 @@ pub enum ClientError {
         code: String,
         message: String,
         allow_retry: bool,
+        /// Seconds from the API's `Retry-After` header, when present.
+        retry_after: Option<u64>,
     },
     #[error("the sealed debug report exceeds the {limit} byte limit")]
     DebugReportTooLarge { limit: usize },
@@ -31,7 +34,7 @@ pub enum ClientError {
 
 impl ClientError {
     /// Fallback for HTTP failures without a structured API error envelope.
-    pub(crate) fn http(status: StatusCode) -> Self {
+    pub(crate) fn http(status: StatusCode, retry_after: Option<u64>) -> Self {
         Self::HttpResponse {
             status,
             code: "unexpected_status".into(),
@@ -48,6 +51,7 @@ impl ClientError {
                     | StatusCode::SERVICE_UNAVAILABLE
                     | StatusCode::GATEWAY_TIMEOUT
             ),
+            retry_after,
         }
     }
 
@@ -89,6 +93,15 @@ impl ClientError {
             _ => false,
         }
     }
+
+    /// Seconds from the API's `Retry-After` header, when the failure carried one.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<u64> {
+        match self {
+            Self::HttpResponse { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -108,9 +121,11 @@ mod tests {
                 code: "test_reason".into(),
                 message: "Test failure".into(),
                 allow_retry,
+                retry_after: Some(45),
             };
             assert_eq!(error.reason(), "test_reason");
             assert_eq!(error.allow_retry(), allow_retry);
+            assert_eq!(error.retry_after(), Some(45));
             assert!(error.to_string().contains("Test failure"));
         }
     }
@@ -130,9 +145,10 @@ mod tests {
             (StatusCode::CONFLICT, false),
             (StatusCode::NOT_IMPLEMENTED, false),
         ] {
-            let error = ClientError::http(status);
+            let error = ClientError::http(status, None);
             assert_eq!(error.allow_retry(), expected);
             assert_eq!(error.reason(), "unexpected_status");
+            assert_eq!(error.retry_after(), None);
             assert!(
                 matches!(error, ClientError::HttpResponse { status: actual, ref message, .. }
                 if actual == status && message == status.canonical_reason().unwrap())
@@ -148,6 +164,7 @@ mod tests {
         };
         assert_eq!(error.reason(), "invalid_response");
         assert!(!error.allow_retry());
+        assert_eq!(error.retry_after(), None);
         assert_eq!(error.source().unwrap().to_string(), "bad data");
         assert!(!ClientError::Sealing(SealingError::InvalidDevicePublicKey).allow_retry());
     }
