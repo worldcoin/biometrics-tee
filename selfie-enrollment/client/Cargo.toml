@@ -49,3 +49,7 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 selfie-enrollment-enclave-types.workspace = true
+ciborium.workspace = true
+coset = "0.4"
+p384 = { version = "0.14", default-features = false, features = ["ecdsa", "sha384"] }
+serde_bytes.workspace = true

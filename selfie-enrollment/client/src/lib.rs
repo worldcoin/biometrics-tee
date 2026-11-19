@@ -117,6 +117,11 @@ pub struct VerifiedAssignment {
 impl VerifiedAssignment {
     pub fn verify(config: &Config, assignment: &Assignment) -> Result<Self, Error> {
         config.validate()?;
+        Self::verify_with(config.verifier()?, assignment)
+    }
+
+    /// Verifies `assignment` under `verifier`; tests substitute a verifier rooted in a test CA.
+    fn verify_with(verifier: Verifier, assignment: &Assignment) -> Result<Self, Error> {
         if assignment.attestation.len() > MAX_CONTROL_BYTES || assignment.public_key.len() > 8192 {
             return Err(Error::Protocol);
         }
@@ -126,7 +131,6 @@ impl VerifiedAssignment {
         let public_key = STANDARD
             .decode(&assignment.public_key)
             .map_err(|_| Error::Protocol)?;
-        let verifier = config.verifier()?;
         let (consumer, verified) = ChannelConsumer::from_attestation(
             ChannelDomain::new(CHANNEL_DOMAIN),
             &verifier,
@@ -454,6 +458,8 @@ fn host_message(frame: Frame) -> Result<HostMessage, Error> {
     Err(serde_json::from_str::<ErrorEnvelope>(&text)
         .map_or(Error::Protocol, |envelope| Error::Host(envelope.error.code)))
 }
+#[cfg(test)]
+mod challenge_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

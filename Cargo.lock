@@ -5620,12 +5620,15 @@ name = "selfie-enrollment-client"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "ciborium",
+ "coset",
  "futures-channel",
  "futures-util",
  "getrandom 0.2.17",
  "gloo-timers",
  "hex",
  "js-sys",
+ "p384",
  "pontifex",
  "rand 0.8.8",
  "rustls",
@@ -5634,6 +5637,7 @@ dependencies = [
  "selfie-enrollment-sealed-types",
  "serde",
  "serde-wasm-bindgen",
+ "serde_bytes",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
