@@ -427,7 +427,7 @@ pub(crate) const IRIS_CODE_FILES: [&str; 4] = [
 
 /// Source outputs this run replaces with fresh ones, together with the
 /// normalized iris files.
-const REPLACED_OUTPUTS: [&str; 10] = [
+const REPLACED_OUTPUTS: [&str; 11] = [
     "face_embeddings.json",
     "di_iris_embeddings.pb",
     "di_iris_embeddings_shares_0.pb",
@@ -438,6 +438,7 @@ const REPLACED_OUTPUTS: [&str; 10] = [
     "di_iris_embeddings_5_party_shares_2.pb",
     "di_iris_embeddings_5_party_shares_3.pb",
     "di_iris_embeddings_5_party_shares_4.pb",
+    "migration.pb",
 ];
 
 const ARCHIVES: [(&str, &str); 5] = [
