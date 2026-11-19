@@ -31,6 +31,9 @@ use crate::{
 
 /// Ceiling for `hashes.json` inside a PCP; the file is a small JSON manifest.
 const MAX_HASHES_JSON_BYTES: usize = 1024 * 1024;
+/// Schema of the PCP-backed proof-of-human credential: `ISSUER_SCHEMA_ID` of signup-service's
+/// credential signer. Other schemas from the same issuer key (e.g. Face, 11) are not PCP-backed.
+const PCP_CREDENTIAL_SCHEMA_ID: u64 = 1;
 const TEE_SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Unseals the app's PCP with this boot's key and seals it back to the app's one-time response
@@ -534,6 +537,21 @@ fn verify_credential(
         tracing::warn!("credential signature is invalid");
         return Err(enclave_primitives::Error::CredentialSignatureInvalid);
     }
+    if credential.issuer_schema_id != PCP_CREDENTIAL_SCHEMA_ID {
+        tracing::warn!(
+            schema = credential.issuer_schema_id,
+            "credential is not a PCP-backed proof-of-human credential"
+        );
+        return Err(enclave_primitives::Error::CredentialSchemaMismatch);
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| enclave_primitives::Error::CredentialExpired)?
+        .as_secs();
+    if credential.expires_at <= now {
+        tracing::warn!("credential has expired");
+        return Err(enclave_primitives::Error::CredentialExpired);
+    }
 
     // claims[0] is Poseidon2(CLAIMS_HASH_V1, raw hashes.json) for a PCP-backed credential.
     let hashes_json = hashes_json_from_pcp(pcp)?;
@@ -820,10 +838,27 @@ mod tests {
         hashes_json: &[u8],
         sub: FieldElement,
     ) -> String {
+        credential_for_pcp(
+            issuer,
+            hashes_json,
+            sub,
+            super::PCP_CREDENTIAL_SCHEMA_ID,
+            u64::MAX,
+        )
+    }
+
+    fn credential_for_pcp(
+        issuer: &EdDSAPrivateKey,
+        hashes_json: &[u8],
+        sub: FieldElement,
+        schema: u64,
+        expires_at: u64,
+    ) -> String {
         let credential = Credential::new()
+            .issuer_schema_id(schema)
             .subject(sub)
             .genesis_issued_at(1_700_000_000)
-            .expires_at(2_000_000_000)
+            .expires_at(expires_at)
             .claim(0, hashes_json)
             .expect("claim from hashes.json")
             .sign(issuer)
@@ -869,6 +904,33 @@ mod tests {
         );
         assert!(report["face"].is_null());
         assert!(report["iris"].is_null());
+    }
+
+    #[tokio::test]
+    async fn an_expired_or_non_pcp_credential_is_rejected() {
+        let issuer = EdDSAPrivateKey::from_bytes([7u8; 32]);
+        let state = Arc::new(test_support::state_with_issuer_pubkey(issuer.public()));
+        let hashes_json = br#"{"thumbnail.png":"hash"}"#;
+        let pcp = pcp_with_hashes_json(hashes_json);
+        let sub = FieldElement::from(42u64);
+        for (schema, expires_at, error) in [
+            (
+                super::PCP_CREDENTIAL_SCHEMA_ID,
+                1,
+                enclave_primitives::Error::CredentialExpired,
+            ),
+            (
+                11,
+                u64::MAX,
+                enclave_primitives::Error::CredentialSchemaMismatch,
+            ),
+        ] {
+            let credential = credential_for_pcp(&issuer, hashes_json, sub, schema, expires_at);
+            let payload = pcp_payload::encode(&pcp, &credential, &[7; 32]).expect("encode");
+            let (request, _) = sealed(&state, &payload, sub.to_string());
+            let failure = handler(Arc::clone(&state), request).await.unwrap_err();
+            assert_eq!(failure.error, error);
+        }
     }
 
     #[tokio::test]

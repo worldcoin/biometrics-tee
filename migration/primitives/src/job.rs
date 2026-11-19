@@ -161,6 +161,10 @@ pub enum Reason {
     CredentialSignatureInvalid,
     /// The credential claims did not match the PCP `hashes.json`.
     CredentialClaimsMismatch,
+    /// The credential has expired.
+    CredentialExpired,
+    /// The credential is not a PCP-backed proof-of-human credential.
+    CredentialSchemaMismatch,
     /// The device public key was not valid standard Base64.
     InvalidDevicePublicKeyEncoding,
     /// Reading the PCP or writing the result failed.
@@ -211,12 +215,14 @@ impl Reason {
             | Self::CredentialSignatureVerificationFailed
             | Self::CredentialSignatureInvalid
             | Self::CredentialClaimsMismatch
+            | Self::CredentialExpired
+            | Self::CredentialSchemaMismatch
             | Self::InvalidDevicePublicKeyEncoding => false,
         }
     }
 
     /// Every reason, for parsing.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 36] = [
         Self::HostBusy,
         Self::EnclaveChanged,
         Self::EnclaveError,
@@ -248,6 +254,8 @@ impl Reason {
         Self::CredentialSignatureVerificationFailed,
         Self::CredentialSignatureInvalid,
         Self::CredentialClaimsMismatch,
+        Self::CredentialExpired,
+        Self::CredentialSchemaMismatch,
         Self::InvalidDevicePublicKeyEncoding,
         Self::S3Error,
         Self::Timeout,
@@ -290,6 +298,8 @@ impl Reason {
             }
             Self::CredentialSignatureInvalid => "credential_signature_invalid",
             Self::CredentialClaimsMismatch => "credential_claims_mismatch",
+            Self::CredentialExpired => "credential_expired",
+            Self::CredentialSchemaMismatch => "credential_schema_mismatch",
             Self::InvalidDevicePublicKeyEncoding => "invalid_device_public_key_encoding",
             Self::S3Error => "s3_error",
             Self::Timeout => "timeout",
@@ -395,6 +405,8 @@ mod tests {
             Reason::CredentialSubMismatch,
             Reason::CredentialSignatureInvalid,
             Reason::CredentialClaimsMismatch,
+            Reason::CredentialExpired,
+            Reason::CredentialSchemaMismatch,
             Reason::BiometricQualityRejected,
             Reason::BiometricSpoofDetected,
             Reason::ManifestSignerUnavailable,
@@ -490,6 +502,11 @@ mod tests {
             (
                 Reason::CredentialClaimsMismatch,
                 "credential_claims_mismatch",
+            ),
+            (Reason::CredentialExpired, "credential_expired"),
+            (
+                Reason::CredentialSchemaMismatch,
+                "credential_schema_mismatch",
             ),
             (
                 Reason::InvalidDevicePublicKeyEncoding,
