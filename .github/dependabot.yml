@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Base images are pinned by digest; bumps arrive as reviewed PRs.
+  - package-ecosystem: docker
+    directories:
+      - /migration/api
+      - /migration/host
+      - /dev/host
+    schedule:
+      interval: weekly
