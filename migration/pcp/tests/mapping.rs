@@ -335,13 +335,11 @@ fn malformed_fields_versions_and_duplicates_are_rejected_without_payloads() {
 }
 
 #[test]
-fn migrated_packages_cannot_be_migrated_again() {
+fn migrated_packages_can_be_reopened_as_sources() {
     let source = SourcePcp::parse(source_files("2.8")).unwrap();
     let new = build_and_open(&source, &pipeline(), &context());
-    assert_eq!(
-        SourcePcp::parse(new.files).err(),
-        Some(Error::UnsupportedArtifact)
-    );
+    let reopened = SourcePcp::parse(new.files).unwrap();
+    assert_eq!(reopened.info().signup_id.as_deref(), Some(NEW_SIGNUP_ID));
 }
 
 #[test]
