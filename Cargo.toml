@@ -29,6 +29,8 @@ members = [
     "worker-protocol",
 ]
 resolver = "3"
+# Stage tooling with its own lockfile: its orb-tools/walletkit graph must not reach the services.
+exclude = ["tools/stage-migration"]
 
 [workspace.package]
 edition = "2024"

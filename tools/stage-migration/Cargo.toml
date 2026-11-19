@@ -1,0 +1,44 @@
+[package]
+name = "di-migration-stage"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT"
+publish = false
+description = "Runs DI migrations against stage for real provisioned stage users, and load tests the migration service."
+
+# Not a member of the root workspace; see `exclude` there.
+[workspace]
+
+[[bin]]
+name = "di-migration-stage"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+attested-request = "=0.1.1"
+base64 = "0.22"
+clap = { version = "4.6", features = ["derive", "env"] }
+crypto_box = "0.9"
+di-migration-client = { path = "../../migration/client" }
+di-migration-primitives = { path = "../../migration/primitives" }
+fastrand = "2"
+hex = "0.4"
+# Pinned to the commit that exposes `orb_tools_pcp::reference`.
+# TODO: Move to a main commit once https://github.com/worldcoin/orb-tools/pull/300 is merged
+integrity-forge = { git = "https://github.com/worldcoin/orb-tools", rev = "c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff" }
+# Must match the rev signup-flow pins, so both see the same oxide types.
+oxide = { git = "https://github.com/worldcoin/oxide", rev = "55e6ae7dbb2115bc2e00c7a4be042017678567a1", features = ["testing"] }
+pontifex = { version = "3.1.0", default-features = false, features = ["attestation"] }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+signup-flow = { git = "https://github.com/worldcoin/orb-tools", rev = "c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff", features = ["walletkit"] }
+thiserror = "2"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time", "fs", "signal", "sync"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+
+# Same patch as orb-tools' workspace: one native libsodium for alkali and sodiumoxide.
+[patch.crates-io]
+libsodium-sys = { git = "https://github.com/worldcoin/orb-tools", rev = "c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff" }
