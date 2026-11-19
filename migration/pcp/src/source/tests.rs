@@ -57,9 +57,9 @@ fn encrypted_source() -> (Files, sealedbox::Keypair) {
         "info.json".into(),
         serde_json::to_vec(&json!({
             "signup_id": "signup",
-            "signup_id_salt": "signup-salt",
+            "signup_id_salt": "5195a175195a175195a175195a175195",
             "orb_id": "orb",
-            "orb_id_salt": "orb-salt"
+            "orb_id_salt": "0b5a170b5a170b5a170b5a170b5a170b"
         }))
         .unwrap(),
     );
@@ -83,8 +83,8 @@ fn encrypted_source() -> (Files, sealedbox::Keypair) {
     let digest = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
     let manifest = json!({
         "version": "2.8",
-        "signup_id": digest(b"signupsignup-salt"),
-        "orb_id": digest(b"orborb-salt"),
+        "signup_id": digest(b"signup5195a175195a175195a175195a175195"),
+        "orb_id": digest(b"orb0b5a170b5a170b5a170b5a170b5a170b"),
         "backend_keys.json": digest(&files["backend_keys.json"]),
         "left_ir.png": digest(b"left"),
         "right_ir.png": digest(b"right"),

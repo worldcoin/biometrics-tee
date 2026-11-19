@@ -68,7 +68,10 @@ fn round_trip(version: &str, optional: bool) {
     // The builder regenerates every salt; the final check verifies their hashes.
     assert_eq!(info.timestamp.as_deref(), Some("1700000000"));
     assert!(info.timestamp_salt.is_some());
-    assert_ne!(info.timestamp_salt.as_deref(), Some("capture-salt"));
+    assert_ne!(
+        info.timestamp_salt.as_deref(),
+        Some("c0ffee00c0ffee00c0ffee00c0ffee00")
+    );
     assert_eq!(info.signup_reason.as_deref(), Some("synthetic-reason"));
     assert_eq!(info.orb_id.as_deref(), Some("original-orb"));
     assert_eq!(info.operator_id.as_deref(), Some("original-operator"));
