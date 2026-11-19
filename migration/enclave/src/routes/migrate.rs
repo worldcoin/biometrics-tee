@@ -1,7 +1,5 @@
 use std::{
-    io::Read,
     panic::{AssertUnwindSafe, catch_unwind},
-    path::Path,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -13,11 +11,9 @@ use di_migration_enclave_primitives::{
 };
 use di_migration_pcp::{MigrationContext, PreparedBiometrics, SignupId, SourcePcp};
 use di_worker_protocol::migration::{FailureCode, MigrationResult};
-use flate2::read::GzDecoder;
 use orb_pcp_defs::v1;
 use pontifex::channel::ResponseSealer;
 use rand::{CryptoRng, Rng, rngs::OsRng};
-use tar::Archive;
 use world_id_primitives::{
     Credential, EdDSAPublicKey, poseidon::ds, sponge::hash_bytes_to_field_element,
 };
@@ -119,17 +115,16 @@ fn migrate_payload(
         tracing::warn!("migrate request carried an unknown payload");
     })?;
     report.stage = Stage::VerifyCredential;
-    verify_credential(
-        state.issuer_pubkey(),
-        sub,
-        &payload.credential,
-        &payload.pcp,
-    )?;
+    let credential = verify_credential(state.issuer_pubkey(), sub, &payload.credential)?;
     report.stage = Stage::OpenPcp;
+    // Parsed once, under the archive's stream and size bounds, before the claim is checked.
     let files = di_migration_pcp::files_from_tar_gz(&payload.pcp).map_err(|error| {
         tracing::warn!(%error, "migrate request PCP archive could not be opened");
         enclave_primitives::Error::InvalidPcp
     })?;
+    report.stage = Stage::VerifyCredential;
+    verify_pcp_claim(&credential, &files)?;
+    report.stage = Stage::OpenPcp;
     let source_pcp = parse_source_pcp(state, files)?;
     report.source(&source_pcp);
     source_pcp.validate_iris().map_err(|error| {
@@ -507,13 +502,12 @@ fn parse_source_pcp(
     })
 }
 
-/// Checks the credential's subject, issuer signature, and PCP `hashes.json` claim.
+/// Checks the credential's subject and issuer signature.
 fn verify_credential(
     issuer_pubkey: &EdDSAPublicKey,
     expected_sub: &str,
     credential_json: &str,
-    pcp: &[u8],
-) -> Result<(), enclave_primitives::Error> {
+) -> Result<Credential, enclave_primitives::Error> {
     let credential: Credential =
         serde_json::from_slice(credential_json.as_bytes()).map_err(|error| {
             tracing::warn!(%error, "failed to deserialize credential");
@@ -534,11 +528,24 @@ fn verify_credential(
         tracing::warn!("credential signature is invalid");
         return Err(enclave_primitives::Error::CredentialSignatureInvalid);
     }
+    Ok(credential)
+}
 
+/// Checks that the credential's first claim commits to the PCP's raw `hashes.json`.
+fn verify_pcp_claim(
+    credential: &Credential,
+    files: &di_migration_pcp::Files,
+) -> Result<(), enclave_primitives::Error> {
+    let Some(hashes_json) = files
+        .get("hashes.json")
+        .filter(|bytes| !bytes.is_empty() && bytes.len() <= MAX_HASHES_JSON_BYTES)
+    else {
+        tracing::warn!("hashes.json missing or too large");
+        return Err(enclave_primitives::Error::InvalidInput);
+    };
     // claims[0] is Poseidon2(CLAIMS_HASH_V1, raw hashes.json) for a PCP-backed credential.
-    let hashes_json = hashes_json_from_pcp(pcp)?;
     let expected_claim =
-        hash_bytes_to_field_element(ds::CLAIMS_HASH_V1, &hashes_json).map_err(|_| {
+        hash_bytes_to_field_element(ds::CLAIMS_HASH_V1, hashes_json).map_err(|_| {
             tracing::warn!("failed to hash hashes.json into a claim");
             enclave_primitives::Error::CredentialClaimsMismatch
         })?;
@@ -551,48 +558,6 @@ fn verify_credential(
         return Err(enclave_primitives::Error::CredentialClaimsMismatch);
     }
     Ok(())
-}
-
-/// Reads `hashes.json` from a gzip-compressed tar PCP without writing to disk.
-fn hashes_json_from_pcp(pcp: &[u8]) -> Result<Vec<u8>, enclave_primitives::Error> {
-    let mut archive = Archive::new(GzDecoder::new(pcp));
-    let entries = archive.entries().map_err(|error| {
-        tracing::warn!(%error, "PCP is not a gzip tar archive");
-        enclave_primitives::Error::InvalidInput
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            tracing::warn!(%error, "failed to read a PCP tar entry");
-            enclave_primitives::Error::InvalidInput
-        })?;
-        let is_hashes = entry
-            .path()
-            .map(|path| path.as_ref() == Path::new("hashes.json"))
-            .map_err(|error| {
-                tracing::warn!(%error, "PCP tar entry path is invalid");
-                enclave_primitives::Error::InvalidInput
-            })?;
-        if !is_hashes {
-            continue;
-        }
-
-        let mut hashes_json = Vec::new();
-        entry
-            .take(MAX_HASHES_JSON_BYTES as u64 + 1)
-            .read_to_end(&mut hashes_json)
-            .map_err(|error| {
-                tracing::warn!(%error, "failed to read hashes.json from PCP");
-                enclave_primitives::Error::InvalidInput
-            })?;
-        if hashes_json.is_empty() || hashes_json.len() > MAX_HASHES_JSON_BYTES {
-            tracing::warn!("hashes.json missing or too large");
-            return Err(enclave_primitives::Error::InvalidInput);
-        }
-        return Ok(hashes_json);
-    }
-
-    tracing::warn!("PCP did not contain hashes.json");
-    Err(enclave_primitives::Error::InvalidInput)
 }
 
 #[cfg(test)]

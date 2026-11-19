@@ -9,15 +9,57 @@ use crate::{Error, Files};
 
 const MAX_FILES: usize = 512;
 const MAX_TOTAL_BYTES: usize = 128 * 1024 * 1024;
+/// Member data plus up to four tar blocks per entry (header, padding, GNU long name), with slack.
+const MAX_STREAM_BYTES: u64 =
+    MAX_TOTAL_BYTES as u64 + (MAX_FILES as u64 + 1) * 4 * 512 + 1024 * 1024;
 
 /// Extracts regular files in a gzip-compressed source archive into logical paths.
 ///
 /// The archive must already have had its outer PCP tier encryption removed.
 /// Encrypted inner archives remain as members for [`crate::SourcePcp::parse`] to open.
 /// This function rejects duplicate or unsafe paths and enforces the same artifact-count and
-/// aggregate-size bounds as [`crate::SourcePcp::parse`].
+/// aggregate-size bounds as [`crate::SourcePcp::parse`]. The decompressed stream is capped too,
+/// because tar buffers GNU long-name and PAX extension headers outside the member-data bound.
 pub fn files_from_tar_gz(pcp: &[u8]) -> Result<Files, Error> {
-    files_from_reader(GzDecoder::new(pcp))
+    files_from_reader(CappedReader::new(GzDecoder::new(pcp), MAX_STREAM_BYTES))
+}
+
+/// Fails the read once more than `remaining` bytes come out, instead of silently truncating.
+struct CappedReader<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R> CappedReader<R> {
+    fn new(inner: R, limit: u64) -> Self {
+        Self {
+            inner,
+            remaining: limit,
+        }
+    }
+}
+
+impl<R: Read> Read for CappedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            let mut probe = [0u8; 1];
+            return match self.inner.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(std::io::Error::other(
+                    "decompressed PCP exceeds stream limit",
+                )),
+            };
+        }
+        let len = buf
+            .len()
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        let read = self.inner.read(&mut buf[..len])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
 }
 
 /// Extracts regular files from an uncompressed inner PCP archive.
@@ -87,7 +129,7 @@ mod tests {
 
     use flate2::write::GzEncoder;
 
-    use super::files_from_tar_gz;
+    use super::{MAX_STREAM_BYTES, files_from_tar_gz};
     use crate::Error;
 
     fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -127,5 +169,36 @@ mod tests {
             ])),
             Err(Error::InvalidArchive)
         );
+    }
+
+    /// A gzip stream whose first entry is an extension header bigger than the stream cap.
+    fn oversized_extension_header(entry_type: tar::EntryType) -> Vec<u8> {
+        let size = MAX_STREAM_BYTES + 1024 * 1024;
+        let mut header = tar::Header::new_ustar();
+        header.set_path("ext").unwrap();
+        header.set_entry_type(entry_type);
+        header.set_size(size);
+        header.set_mode(0o600);
+        header.set_cksum();
+        let mut gzip = GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gzip.write_all(header.as_bytes()).unwrap();
+        let chunk = vec![b'a'; 1024 * 1024];
+        let mut left = size;
+        while left > 0 {
+            let len = left.min(chunk.len() as u64) as usize;
+            gzip.write_all(&chunk[..len]).unwrap();
+            left -= len as u64;
+        }
+        gzip.finish().unwrap()
+    }
+
+    #[test]
+    fn rejects_extension_headers_beyond_the_stream_cap() {
+        for entry_type in [tar::EntryType::XHeader, tar::EntryType::GNULongName] {
+            assert_eq!(
+                files_from_tar_gz(&oversized_extension_header(entry_type)),
+                Err(Error::InvalidArchive)
+            );
+        }
     }
 }
