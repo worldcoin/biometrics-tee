@@ -34,6 +34,18 @@ pub struct InitMigrationResponse {
     pub upload_url: String,
     /// Unix seconds by which migrate must be called; later the app must init again.
     pub migrate_by: u64,
+    /// The current approved PCR registry and its matching Sigstore bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_pcr_registry: Option<ApprovedPcrRegistry>,
+}
+
+/// Signed PCR registry and Sigstore bundle from a single registry revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovedPcrRegistry {
+    /// Exact bytes of approved-pcrs.json, standard padded base64.
+    pub registry: String,
+    /// Exact bytes of approved-pcrs.sigstore.json, standard padded base64.
+    pub bundle: String,
 }
 
 /// `202` body of `POST /v1/migrations/{sub}`.

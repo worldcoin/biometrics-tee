@@ -188,6 +188,7 @@ mod tests {
             enclave_public_key: STANDARD.encode(enclave.public_key()),
             upload_url: "http://s3.test/pcp/1".to_owned(),
             migrate_by: 1,
+            approved_pcr_registry: None,
         }
     }
 

@@ -120,6 +120,15 @@ async fn init_migration(
         .attestation(host)
         .await
         .map_err(|error| ApiError::host(error.to_string()))?;
+    let approved_pcr_registry = match &state.pcr_registry {
+        Some(registry) => Some(
+            registry
+                .current()
+                .await
+                .map_err(|error| ApiError::storage("pcr-registry", format!("{error:#}")))?,
+        ),
+        None => None,
+    };
 
     let now = unix_now();
     let job = NewJob {
@@ -156,6 +165,7 @@ async fn init_migration(
         enclave_public_key: attestation.enclave_public_key,
         upload_url,
         migrate_by: job.active_until,
+        approved_pcr_registry,
     }))
 }
 
