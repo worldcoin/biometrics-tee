@@ -8,3 +8,21 @@ updates:
       - /dev/host
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      base-images:
+        patterns:
+          - "*"
+
+  # Actions are pinned by commit SHA; bumps update the SHA and its version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
