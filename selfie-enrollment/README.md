@@ -84,7 +84,7 @@ On WASM, `connect` additionally accepts an optional `AbortSignal`. The browser f
 
 ## Publishing the client crates
 
-`selfie-enrollment-api-types`, `selfie-enrollment-sealed-types` and `selfie-enrollment-client` are published to crates.io by [release-plz](https://release-plz.dev), configured in [`release-plz.toml`](../release-plz.toml). They share one version, set in their own manifests rather than inherited from the workspace, so a release does not change the version the deployed enclaves report.
+`selfie-enrollment-api-types`, `selfie-enrollment-sealed-types` and `selfie-enrollment-client` are published to crates.io by [release-plz](https://release-plz.dev), configured in [`release-plz.toml`](../release-plz.toml). They inherit the workspace version, so a release bumps it for every crate in the workspace.
 
 1. Every push to `main` runs [`release.yml`](../.github/workflows/release.yml), which opens or updates a release PR labeled `release`. The PR bumps the three crates from their Conventional Commits and `cargo-semver-checks`, and updates [`client/CHANGELOG.md`](client/CHANGELOG.md).
 2. Merging the release PR publishes the versions missing from crates.io and creates the `selfie-enrollment-vX.Y.Z` tag and GitHub release.

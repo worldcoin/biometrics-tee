@@ -8,13 +8,12 @@ git_tag_enable = false
 git_release_enable = false
 pr_labels = ["release"]
 
-# The client owns the changelog, tag and GitHub release for all three crates, which share one
-# version so consumers can pin them together.
+# The three crates inherit the workspace version. The client owns their shared changelog, tag and
+# GitHub release.
 [[package]]
 name = "selfie-enrollment-client"
 release = true
 publish = true
-version_group = "selfie-enrollment"
 changelog_update = true
 changelog_include = ["selfie-enrollment-api-types", "selfie-enrollment-sealed-types"]
 git_tag_enable = true
@@ -26,10 +25,8 @@ git_release_name = "selfie-enrollment v{{ version }}"
 name = "selfie-enrollment-api-types"
 release = true
 publish = true
-version_group = "selfie-enrollment"
 
 [[package]]
 name = "selfie-enrollment-sealed-types"
 release = true
 publish = true
-version_group = "selfie-enrollment"
