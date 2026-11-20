@@ -3,8 +3,6 @@
   pkgs,
   nitro-util,
   enclaveBins,
-  pcpKmsKeyArn ? null,
-  pcpKmsSigningKeyArn ? null,
   faceAmpcPublicKeys ? null,
 }:
 let
@@ -119,15 +117,6 @@ let
   migration = buildEnclaveImage {
     pname = "di-migration-enclave";
     sandboxed = true;
-    # Terraform owns ARN validation. Copy its key identity into the EIF.
-    environment = pkgs.lib.optionals (pcpKmsKeyArn != null) [
-      "PCP_KMS_KEY_ARN=${pcpKmsKeyArn}"
-    ] ++ pkgs.lib.optionals (pcpKmsSigningKeyArn != null) [
-      "PCP_KMS_SIGNING_KEY_ARN=${pcpKmsSigningKeyArn}"
-    ] ++ [
-      "ISSUER_PUBKEY_X=8764755626041608914298444081069238835505190105048545592330271001420004184714"
-      "ISSUER_PUBKEY_Y=21113891529244736453398517984414846376859272077465756596625387480138387442766"
-    ];
   };
   dev = buildEnclaveImage {
     pname = "di-dev-enclave";

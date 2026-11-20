@@ -2394,6 +2394,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "world-id-primitives",
  "zeroize",
 ]
@@ -6265,7 +6266,7 @@ dependencies = [
 [[package]]
 name = "tabernaculum"
 version = "0.3.0"
-source = "git+https://github.com/worldcoin/tabernaculum?tag=v0.3.0#bc034128a60e798ef8602d6aafe517aaae0f5173"
+source = "git+https://github.com/worldcoin/tabernaculum?rev=746703b2afc6cd0f28f3cb616fdfec30f3feed40#746703b2afc6cd0f28f3cb616fdfec30f3feed40"
 dependencies = [
  "libc",
  "minijail",
@@ -6277,7 +6278,7 @@ dependencies = [
 [[package]]
 name = "tabernaculum-bundle"
 version = "0.3.0"
-source = "git+https://github.com/worldcoin/tabernaculum?tag=v0.3.0#bc034128a60e798ef8602d6aafe517aaae0f5173"
+source = "git+https://github.com/worldcoin/tabernaculum?rev=746703b2afc6cd0f28f3cb616fdfec30f3feed40#746703b2afc6cd0f28f3cb616fdfec30f3feed40"
 dependencies = [
  "hex",
  "libc",
