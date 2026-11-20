@@ -237,6 +237,8 @@ const fn operation_reason(error: enclave_primitives::Error) -> Reason {
         }
         Error::CredentialSignatureInvalid => Reason::CredentialSignatureInvalid,
         Error::CredentialClaimsMismatch => Reason::CredentialClaimsMismatch,
+        Error::CredentialExpired => Reason::CredentialExpired,
+        Error::CredentialSchemaMismatch => Reason::CredentialSchemaMismatch,
         Error::InvalidPcp => Reason::InvalidPcp,
         Error::InvalidSourceIrisData => Reason::InvalidSourceIrisData,
         Error::FailedToBuildPcp => Reason::FailedToBuildPcp,
@@ -607,6 +609,8 @@ mod tests {
             CredentialSignatureVerificationFailed,
             CredentialSignatureInvalid,
             CredentialClaimsMismatch,
+            CredentialExpired,
+            CredentialSchemaMismatch,
             InvalidPcp,
             InvalidSourceIrisData,
             FailedToBuildPcp,

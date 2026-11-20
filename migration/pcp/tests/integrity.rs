@@ -42,24 +42,28 @@ fn parse_fails(files: Files, reason: &'static str) {
 fn fixed_hash_vectors_cover_bytes_salted_text_and_integer_precision() {
     // SHA-256("abc"), independent of the fixture manifest generator.
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const SALT: &str = "0123456789abcdef0123456789abcdef";
+    // SHA-256("a" || SALT) and SHA-256("ab" || SALT).
+    const SIGNUP: &str = "e09383e3ef8c2e3a70a582504bbbd2ec057a213a367c00c2de260cb7cd51af0f";
+    const ORB: &str = "52f7c1d663caaa81a8e7c1d4ac4df25af6553a694c885f4fe9c1317d466edf70";
     for (timestamp, hash) in [
         (
             9007199254740993u64,
-            "355f0dd233ece1a52d0889a41530c4b9c4354642b2e227a4ba6942d847309786",
+            "cd31cecd6ecd8d3d8a028de6f49665a2bfac59de25fd4a532cea9439ad9782d6",
         ),
         (
             u64::MAX,
-            "1c491553a2e2f2db4c30b975df85636ab9e048e3543cba0de47016a95b5b985c",
+            "2cedb73959e0634e5a121ec88ce5cae8cfbb4306ca88ead8f863792382d0d183",
         ),
     ] {
         for timestamp_value in [json!(timestamp), json!(timestamp.to_string())] {
             let info = json!({
-                "signup_id": "a", "signup_id_salt": "bc",
-                "orb_id": "ab", "orb_id_salt": "c",
-                "timestamp": timestamp_value, "timestamp_salt": "salt"
+                "signup_id": "a", "signup_id_salt": SALT,
+                "orb_id": "ab", "orb_id_salt": SALT,
+                "timestamp": timestamp_value, "timestamp_salt": SALT
             });
             let manifest = json!({
-                "version": 0.3, "signup_id": ABC, "orb_id": ABC, "timestamp": hash,
+                "version": 0.3, "signup_id": SIGNUP, "orb_id": ORB, "timestamp": hash,
                 "left_ir.png": ABC, "right_ir.png": ABC, "thumbnail.png": ABC
             });
             let files = [
@@ -167,9 +171,12 @@ fn all_protected_metadata_and_salts_are_checked() {
     {
         for name in [salt_name.as_str(), salt_name.strip_suffix("_salt").unwrap()] {
             let mut files = original.clone();
-            edit_json(&mut files, "info.json", |info| {
-                info[name] = json!("changed")
-            });
+            let changed = if name.ends_with("_salt") {
+                json!("ffffffffffffffffffffffffffffffff")
+            } else {
+                json!("changed")
+            };
+            edit_json(&mut files, "info.json", |info| info[name] = changed);
             parse_fails(files, "manifest_hash_mismatch");
         }
     }
@@ -180,6 +187,9 @@ fn metadata_requires_valid_value_and_salt_pairs() {
     for salt in [
         Value::Null,
         json!(""),
+        json!("0123456789abcdef0123456789abcde"),
+        json!("0123456789abcdef0123456789abcdef0"),
+        json!("0123456789abcdef0123456789abcdeg"),
         json!(1),
         json!([]),
         json!({}),
@@ -331,5 +341,37 @@ fn oversized_manifest_and_metadata_are_rejected() {
         let mut files = source_files("2.8");
         files.insert(artifact.into(), vec![b' '; 1024 * 1024 + 1]);
         assert_eq!(SourcePcp::parse(files).err(), Some(Error::SizeLimit));
+    }
+}
+
+#[test]
+fn characters_cannot_move_between_a_value_and_its_salt() {
+    let original = version_profile("2.8", true);
+    let info: Value = serde_json::from_slice(&original["info.json"]).unwrap();
+    for salt_name in info
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|name| name.ends_with("_salt"))
+    {
+        let name = salt_name.strip_suffix("_salt").unwrap();
+        let Some(value) = info[name].as_str() else {
+            continue;
+        };
+        let salt = info[salt_name].as_str().unwrap();
+        let (head, last) = value.split_at(value.len() - 1);
+        let (first, tail) = salt.split_at(1);
+        // Both shifts keep SHA-256(value || salt) unchanged.
+        for (shifted_value, shifted_salt) in [
+            (head.to_owned(), format!("{last}{salt}")),
+            (format!("{value}{first}"), tail.to_owned()),
+        ] {
+            let mut files = original.clone();
+            edit_json(&mut files, "info.json", |info| {
+                info[name] = json!(shifted_value);
+                info[salt_name.as_str()] = json!(shifted_salt);
+            });
+            parse_fails(files, "metadata_salt_invalid");
+        }
     }
 }
