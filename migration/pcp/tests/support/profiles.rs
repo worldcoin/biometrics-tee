@@ -89,7 +89,10 @@ pub fn version_profile(version: &str, optional: bool) -> Files {
     }
     if version == "2.8" {
         info.insert("device_public_key".into(), json!("old-device"));
-        info.insert("device_public_key_salt".into(), json!("old-device-salt"));
+        info.insert(
+            "device_public_key_salt".into(),
+            json!("de71ce00de71ce00de71ce00de71ce00"),
+        );
     }
     files.insert(
         "normalized_iris/left_normalized_image.bin".into(),

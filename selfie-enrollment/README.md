@@ -80,7 +80,7 @@ let session = client.connect().await?;
 let result = session.extract(image).await?;
 ```
 
-On WASM, `connect` additionally accepts an optional `AbortSignal`. The browser facade is `extractEmbedding(configJson, imageBytes, abortSignal)`. Configuration supplies a complete `wss://…` endpoint, including any proxy path, and `releases: [{ pcr0, pcr1, pcr2 }]`, with lowercase hex SHA-384 measurements. Loopback `ws://` is permitted for protocol tests, with the same mandatory attestation checks.
+On WASM, `connect` additionally accepts an optional `AbortSignal`. The browser facade is `extractEmbedding(configJson, imageBytes, abortSignal)`. PoseGuard enrollment is `enrollWithPoseGuard(configJson, sub, custodyPublicKey, capture, abortSignal)`: once the enclave is verified it calls `capture({ targets, expiresAt })`, which resolves to `{ centralPng, captures }` with one `Uint8Array` per target in target order, and both exchanges share one socket. Configuration supplies a complete `wss://…` endpoint, including any proxy path, and `releases: [{ pcr0, pcr1, pcr2 }]`, with lowercase hex SHA-384 measurements. Loopback `ws://` is permitted for protocol tests, with the same mandatory attestation checks.
 
 ## Deployment
 

@@ -147,9 +147,9 @@ pub fn source_files(version: &str) -> Files {
         json!("1700000000")
     };
     let info = json!({
-        "signup_id": "synthetic-orb-signup", "signup_id_salt": "old-salt",
+        "signup_id": "synthetic-orb-signup", "signup_id_salt": "0123456789abcdef0123456789abcdef",
         "signup_reason": "synthetic-reason",
-        "timestamp": timestamp, "timestamp_salt": "capture-salt",
+        "timestamp": timestamp, "timestamp_salt": "c0ffee00c0ffee00c0ffee00c0ffee00",
         "orb_id": "original-orb", "operator_id": "original-operator",
         "left_ir_image_id": "left-id", "right_ir_image_id": "right-id",
         "thumbnail_image_id": "face-id", "id_commitment": "original-commitment",
@@ -224,7 +224,7 @@ fn try_refresh_source_manifest(files: &mut Files) -> Result<(), ()> {
             continue;
         }
         if info[&salt_name].is_null() {
-            info[&salt_name] = json!("synthetic-salt");
+            info[&salt_name] = json!("5a175a175a175a175a175a175a175a17");
         }
         let value = match &info[name] {
             Value::String(value) => value.clone(),

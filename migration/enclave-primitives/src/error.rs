@@ -49,6 +49,10 @@ pub enum Error {
     CredentialSignatureInvalid,
     /// Credential claims mismatch.
     CredentialClaimsMismatch,
+    /// The credential's `expires_at` is not in the future.
+    CredentialExpired,
+    /// The credential is not of the PCP-backed proof-of-human schema.
+    CredentialSchemaMismatch,
     /// Failed to parse the PCP.
     InvalidPcp,
     /// A present source Iris record has missing payload fields or inconsistent versions.

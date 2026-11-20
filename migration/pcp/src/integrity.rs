@@ -96,7 +96,7 @@ impl Manifest {
             };
             let salt = salt
                 .and_then(Value::as_str)
-                .filter(|salt| !salt.is_empty())
+                .filter(|salt| is_metadata_salt(salt))
                 .ok_or(Error::SourceIntegrity("metadata_salt_invalid"))?;
             let mut hash = Sha256::new();
             hash.update(text.as_bytes());
@@ -153,3 +153,9 @@ const SALTED_FIELDS: &[&str] = &[
     "orb_country",
     "device_public_key",
 ];
+
+/// Orb metadata salts are 16 random bytes in hex. A fixed length makes `value || salt` unambiguous,
+/// so characters cannot be moved between a protected value and its salt.
+pub(crate) fn is_metadata_salt(salt: &str) -> bool {
+    salt.len() == 32 && salt.bytes().all(|byte| byte.is_ascii_hexdigit())
+}

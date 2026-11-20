@@ -1,0 +1,8 @@
+# Read by the organization's weekly zizmor scan, which audits this repository's default branch.
+rules:
+  unpinned-uses:
+    ignore:
+      # The organization's Terraform configuration owns this file and rewrites it from a template
+      # that references worldcoin/gh-actions-public/relyance@main, so a pin here would be reverted.
+      # TODO: pin the action in that Terraform template.
+      - relyance-sci.yml

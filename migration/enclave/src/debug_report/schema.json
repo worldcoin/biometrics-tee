@@ -363,6 +363,8 @@
                 "CredentialSignatureVerificationFailed",
                 "CredentialSignatureInvalid",
                 "CredentialClaimsMismatch",
+                "CredentialExpired",
+                "CredentialSchemaMismatch",
                 "InvalidPcp",
                 "InvalidSourceIrisData",
                 "FailedToBuildPcp",

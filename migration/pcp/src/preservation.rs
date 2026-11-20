@@ -178,8 +178,7 @@ fn verify_info(source: &SourcePcp, signup_id: &str, files: &Files) -> Result<v1:
     for (_, value, salt) in salted_values(&actual) {
         match (value, salt) {
             (None, None) => {}
-            (Some(_), Some(salt))
-                if salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit()) => {}
+            (Some(_), Some(salt)) if crate::integrity::is_metadata_salt(salt) => {}
             _ => return Err(Error::OutputMismatch("salt_invalid")),
         }
     }

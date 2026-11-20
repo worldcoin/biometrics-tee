@@ -116,7 +116,7 @@ selfie-enrollment-sealed-types = { version = "0.1.0", path = "selfie-enrollment/
 selfie-enrollment-enclave-types = { path = "selfie-enrollment/enclave-types" }
 
 selfie-enrollment-enclave = { path = "selfie-enrollment/enclave" }
-biometric-engines-protocol = "0.1.0"
+biometric-engines-protocol = "0.2.0"
 rand = "0.8"
 
 selfie-enrollment-client = { version = "0.1.0", path = "selfie-enrollment/client" }

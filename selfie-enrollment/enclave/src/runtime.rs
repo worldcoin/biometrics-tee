@@ -42,7 +42,7 @@ pub fn run() -> anyhow::Result<()> {
         },
         ConnectionConfig {
             request_timeout: Duration::from_secs(30),
-            max_request_bytes: selfie_enrollment_api_types::MAX_REQUEST_BYTES,
+            max_request_bytes: selfie_enrollment_api_types::MAX_POSEGUARD_REQUEST_BYTES,
             max_response_bytes: 256 * 1024,
             ..Default::default()
         },
