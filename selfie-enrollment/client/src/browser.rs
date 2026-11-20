@@ -227,3 +227,84 @@ pub async fn extract_embedding(
     .await;
     operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
 }
+
+/// One PoseGuard attempt. Once the enclave is verified, `capture` receives
+/// `{ targets, expiresAt }` and resolves to `{ centralPng, captures }`, with one `Uint8Array`
+/// capture per target in target order. If `capture` throws or rejects, the session closes and
+/// this rejects with the same value; a capture still pending at expiry or abort is ignored.
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_name=enrollWithPoseGuard)]
+pub async fn enroll_with_poseguard(
+    config_json: String,
+    sub: String,
+    custody_public_key: Vec<u8>,
+    capture: js_sys::Function,
+    signal: Option<AbortSignal>,
+) -> Result<JsValue, JsValue> {
+    let mut capture_error = None;
+    let operation = async {
+        let config: Config = serde_json::from_str(&config_json).map_err(|_| Error::Config)?;
+        let key = custody_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Config)?;
+        let client = EnrollmentClient::new(config)?;
+        let session = client.connect(signal).await?;
+        let result = session
+            .enroll_with_poseguard(sub, key, async |prompt| {
+                let images = call_capture(&capture, prompt).await.map_err(|error| {
+                    capture_error = Some(error);
+                    Error::Capture
+                })?;
+                captured_images(&images)
+            })
+            .await?;
+        serde_wasm_bindgen::to_value(&result).map_err(|_| Error::Protocol)
+    }
+    .await;
+    operation.map_err(|e: Error| {
+        capture_error
+            .take()
+            .unwrap_or_else(|| JsValue::from_str(&e.to_string()))
+    })
+}
+
+#[cfg(feature = "js-export")]
+async fn call_capture(
+    capture: &js_sys::Function,
+    prompt: crate::PoseGuardPrompt,
+) -> Result<JsValue, JsValue> {
+    let prompt = serde_wasm_bindgen::to_value(&prompt)?;
+    let pending = capture.call1(&JsValue::UNDEFINED, &prompt)?;
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&pending)).await
+}
+
+#[cfg(feature = "js-export")]
+fn captured_images(value: &JsValue) -> Result<crate::PoseGuardImages, Error> {
+    let field = |name: &str| {
+        js_sys::Reflect::get(value, &JsValue::from_str(name)).map_err(|_| Error::Protocol)
+    };
+    let captures = field("captures")?
+        .dyn_into::<js_sys::Array>()
+        .ok()
+        .filter(|captures| {
+            captures.length() as usize == selfie_enrollment_api_types::POSEGUARD_CHALLENGE_COUNT
+        })
+        .ok_or(Error::Protocol)?;
+    let mut images = crate::PoseGuardImages {
+        central_png: image_bytes(&field("centralPng")?)?,
+        captures: Default::default(),
+    };
+    for (slot, capture) in images.captures.iter_mut().zip(captures.iter()) {
+        *slot = image_bytes(&capture)?;
+    }
+    Ok(images)
+}
+
+#[cfg(feature = "js-export")]
+fn image_bytes(value: &JsValue) -> Result<Vec<u8>, Error> {
+    value
+        .dyn_ref::<js_sys::Uint8Array>()
+        .map(js_sys::Uint8Array::to_vec)
+        .ok_or(Error::Protocol)
+}

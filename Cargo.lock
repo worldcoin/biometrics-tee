@@ -1379,9 +1379,9 @@ dependencies = [
 
 [[package]]
 name = "biometric-engines-protocol"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b256c74f9c73679cb69f3a873ffd9d27122eef69872fdfba6e8b5c7f38a9db2"
+checksum = "7500924a5c029433f79ba1e9583a2d38f6744029008d1c493d86b5b4fd8a707f"
 dependencies = [
  "prost",
  "serde",
@@ -5620,18 +5620,24 @@ name = "selfie-enrollment-client"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "ciborium",
+ "coset",
  "futures-channel",
  "futures-util",
+ "getrandom 0.2.17",
  "gloo-timers",
  "hex",
  "js-sys",
+ "p384",
  "pontifex",
+ "rand 0.8.8",
  "rustls",
  "selfie-enrollment-api-types",
  "selfie-enrollment-enclave-types",
  "selfie-enrollment-sealed-types",
  "serde",
  "serde-wasm-bindgen",
+ "serde_bytes",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
@@ -5749,6 +5755,7 @@ dependencies = [
  "selfie-enrollment-api-types",
  "serde",
  "serde_bytes",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "zeroize",
 ]
