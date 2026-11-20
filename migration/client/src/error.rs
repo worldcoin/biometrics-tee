@@ -62,6 +62,8 @@ impl ClientError {
             Self::HttpResponse { code, .. } => code,
             Self::DebugReportTooLarge { .. } => "debug_report_too_large",
             Self::Sealing(error) => match error {
+                SealingError::MissingApprovedRegistry => "missing_approved_pcr_registry",
+                SealingError::Registry(_) => "invalid_approved_pcr_registry",
                 SealingError::InvalidBase64 { .. } => "invalid_base64",
                 SealingError::Attestation(_) => "attestation_failed",
                 SealingError::EnclaveIdMismatch { .. } => "enclave_id_mismatch",
