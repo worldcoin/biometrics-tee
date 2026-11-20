@@ -111,7 +111,7 @@ impl JobReport {
 }
 
 /// Outcome counts, throughput and per-phase percentiles of the migrated jobs.
-pub fn summary(reports: &[JobReport], elapsed: Duration) -> String {
+pub fn summary(reports: &[JobReport], users: usize, elapsed: Duration) -> String {
     let migrated: Vec<&JobReport> = reports
         .iter()
         .filter(|report| report.outcome.is_ok())
@@ -121,6 +121,19 @@ pub fn summary(reports: &[JobReport], elapsed: Duration) -> String {
         *outcomes.entry(report.outcome()).or_default() += 1;
     }
     let rejections: u32 = reports.iter().map(|report| report.at_capacity).sum();
+    let mut per_user = BTreeMap::<&str, usize>::new();
+    for report in reports {
+        *per_user.entry(report.sub.as_str()).or_default() += 1;
+    }
+    let lock_conflicts = reports
+        .iter()
+        .filter(|report| {
+            report
+                .outcome
+                .as_ref()
+                .is_err_and(MigrationError::is_migration_in_progress)
+        })
+        .count();
 
     let mut out = String::new();
     #[allow(clippy::cast_precision_loss)]
@@ -133,6 +146,12 @@ pub fn summary(reports: &[JobReport], elapsed: Duration) -> String {
         seconds(elapsed),
     );
     let _ = writeln!(out, "at_capacity rejections: {rejections}");
+    let _ = writeln!(
+        out,
+        "users: {users}, jobs per user: {}..{}, migration_in_progress: {lock_conflicts}",
+        per_user.values().min().unwrap_or(&0),
+        per_user.values().max().unwrap_or(&0),
+    );
     for (outcome, count) in &outcomes {
         let _ = writeln!(out, "  {outcome}: {count}");
     }
@@ -216,11 +235,13 @@ mod tests {
         failed.record(Phase::Wait, Duration::from_secs(600));
         failed.outcome = Err(MigrationError::Overdue);
 
-        let summary = summary(&[migrated, failed], Duration::from_secs(60));
+        let summary = summary(&[migrated, failed], 2, Duration::from_secs(60));
 
         assert!(summary.contains("1 of 2 migrated"), "{summary}");
         assert!(summary.contains("overdue: 1"), "{summary}");
         assert!(summary.contains("40.00s"), "{summary}");
         assert!(!summary.contains("600.00s"), "{summary}");
+        assert!(summary.contains("jobs per user: 1..1"), "{summary}");
+        assert!(summary.contains("migration_in_progress: 0"), "{summary}");
     }
 }

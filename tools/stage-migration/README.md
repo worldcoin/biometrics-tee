@@ -32,4 +32,10 @@ cargo run --release -- load --pcp <pcp-dir> --pcrs <pcrs.json> --users 8 --jobs 
 
 `load` prints one JSON line per job on stdout, with its outcome and per-step times. A summary goes to stderr at the end.
 
+By default each user starts its next job as soon as the last one ends. `--rate-per-min` starts jobs at a fixed rate instead and counts the starts that found no idle user. `--duration-secs` stops new starts after that time; with `--jobs` too, whichever comes first wins.
+
+```sh
+cargo run --release -- load --pcp <pcp-dir> --pcrs <pcrs.json> --users 16 --rate-per-min 10 --duration-secs 1800 > soak.jsonl
+```
+
 `load` sets up every user before the timed run. Each user takes one migration slot, since the API holds one active job per `sub`. Each job proves ownership over a fresh challenge. Ctrl-C stops the run and still deletes the users.

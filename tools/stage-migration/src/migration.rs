@@ -47,6 +47,11 @@ impl MigrationError {
         move |source| Self::Client { step, source }
     }
 
+    /// The API refused the job because the `sub` still holds an active one.
+    pub fn is_migration_in_progress(&self) -> bool {
+        matches!(self, Self::Client { source, .. } if source.reason() == codes::MIGRATION_IN_PROGRESS)
+    }
+
     /// A short machine-readable cause, for grouping failures.
     pub fn reason(&self) -> String {
         match self {

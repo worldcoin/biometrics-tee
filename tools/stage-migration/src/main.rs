@@ -46,8 +46,8 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Provisions `--users` stage users, then runs `--jobs` migrations with one worker per user,
-    /// printing each job as a JSON line and a summary at the end.
+    /// Provisions `--users` stage users, then runs migrations on them, one after another per user
+    /// or at `--rate-per-min`, printing each job as a JSON line and a summary at the end.
     Load(load::LoadArgs),
 }
 
