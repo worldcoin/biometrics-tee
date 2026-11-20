@@ -39,15 +39,18 @@ also accept an `info.json` without `id_commitment`. A Nitro-aware
 reader must explicitly handle `attestation/nitro.cose`, require the manifest and
 enrollment record, verify the attestation and enrollment binding, and compare the
 PCP version and associated-data hash with the attested form. Missing or mixed
-Gateway/Nitro evidence must be rejected. The issued credential is attached/imported
-after signup-service completes enrollment, using the existing `credential.json`
-entry. Removing the browser-specific name does not change these reader requirements.
+Gateway/Nitro evidence must be rejected. Removing the browser-specific name does
+not change these reader requirements.
+
+The archive never gains a `credential.json`. The credential signup-service issues
+is stored in the authenticator's credential vault, not in the PCP, so the PCP
+bytes stay fixed after enrollment and can be referenced by content.
 
 Plaintext serialization uses fixed backing buffers whose owned contents are
 zeroized when dropped. The archive is bounded before allocation and encryption.
 Private input types have no Debug implementation; errors contain no payloads.
 The enclave returns the sealed PCP to the user's browser, which owns and stores it
-with the credential signup-service later issues. The sealed ciphertext can be
+unchanged. The sealed ciphertext can be
 relayed/stored by the host without revealing the
 image, embedding or plaintext shares.
 
