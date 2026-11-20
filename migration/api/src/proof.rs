@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+use telemetry_batteries::reexports::metrics::counter;
+use tokio::sync::Semaphore;
+
 use world_id_proof_verification_client::{
     ProofVerificationClient, VerificationError, VerificationRequest,
 };
@@ -25,6 +28,8 @@ pub enum ProofVerificationError {
     VerificationRejected,
     #[error("verification_error")]
     VerificationError,
+    #[error("verification_busy")]
+    Busy,
 }
 
 impl ProofVerificationError {
@@ -37,19 +42,27 @@ impl ProofVerificationError {
             Self::CredentialSubMissing => "credential_sub_missing",
             Self::VerificationRejected => "verification_failed",
             Self::VerificationError => "verification_error",
+            Self::Busy => "verification_busy",
         }
     }
 }
 
 pub struct Verifier {
     max_proof_body_bytes: u64,
+    /// Caps upstream verifications in flight from this pod; excess requests are shed.
+    in_flight: Semaphore,
     client: Arc<dyn ProofVerificationClient>,
 }
 
 impl Verifier {
-    pub fn new(max_proof_body_bytes: u64, client: Arc<dyn ProofVerificationClient>) -> Self {
+    pub fn new(
+        max_proof_body_bytes: u64,
+        max_in_flight: usize,
+        client: Arc<dyn ProofVerificationClient>,
+    ) -> Self {
         Self {
             max_proof_body_bytes,
+            in_flight: Semaphore::new(max_in_flight),
             client,
         }
     }
@@ -81,6 +94,11 @@ impl Verifier {
                 .map_err(|_| ProofVerificationError::Invalid)?,
             credential_sub,
             proof,
+        };
+        // Shed instead of queueing: waiting requests would hold sockets and the shared quota.
+        let Ok(_permit) = self.in_flight.try_acquire() else {
+            counter!("proof.verify.rejected_busy").increment(1);
+            return Err(ProofVerificationError::Busy);
         };
         match self.client.verify(request).await {
             Ok(()) => Ok(()),
@@ -154,7 +172,7 @@ mod tests {
             Arc::new(TestAuth),
         )
         .unwrap();
-        Verifier::new(1 << 20, Arc::new(client))
+        Verifier::new(1 << 20, 16, Arc::new(client))
     }
 
     #[tokio::test]
@@ -218,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_requests_do_not_reach_the_verification_service() {
         let client = Arc::new(RecordingClient(AtomicUsize::new(0)));
-        let verifier = Verifier::new(4, client.clone());
+        let verifier = Verifier::new(4, 16, client.clone());
         for (challenge, sub, proof, expected) in [
             ("", "test-sub".to_owned(), "YQ==", "challenge_id_missing"),
             (CHALLENGE, String::new(), "YQ==", "credential_sub_missing"),
@@ -256,5 +274,50 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.as_str(), "verification_error");
         server.abort();
+    }
+
+    struct BlockingClient(tokio::sync::Notify);
+
+    #[async_trait]
+    impl ProofVerificationClient for BlockingClient {
+        async fn verify(&self, _request: VerificationRequest) -> Result<(), VerificationError> {
+            self.0.notified().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn verifications_beyond_the_limit_are_shed() {
+        let client = Arc::new(BlockingClient(tokio::sync::Notify::new()));
+        let verifier = Arc::new(Verifier::new(1 << 20, 1, client.clone()));
+        let first = tokio::spawn({
+            let verifier = Arc::clone(&verifier);
+            async move {
+                verifier
+                    .verify(
+                        CHALLENGE.to_owned(),
+                        "test-sub".to_owned(),
+                        "YQ==".to_owned(),
+                    )
+                    .await
+            }
+        });
+        while verifier.in_flight.available_permits() > 0 {
+            tokio::task::yield_now().await;
+        }
+        let second = verifier
+            .verify(
+                CHALLENGE.to_owned(),
+                "test-sub".to_owned(),
+                "YQ==".to_owned(),
+            )
+            .await;
+        assert_eq!(
+            second.err().map(ProofVerificationError::as_str),
+            Some("verification_busy")
+        );
+        client.0.notify_one();
+        assert!(first.await.unwrap().is_ok());
+        assert_eq!(verifier.in_flight.available_permits(), 1);
     }
 }

@@ -49,7 +49,8 @@ pub struct Config {
     pub proof_verification_host: String,
     #[arg(long, env = "PROOF_VERIFY_TIMEOUT_SECS", default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..))]
     pub proof_verify_timeout_secs: u64,
-    #[arg(long, env = "PROOF_MAX_CONNS", default_value_t = 4)]
+    /// Proof verifications in flight per pod, and the idle connections kept for them.
+    #[arg(long, env = "PROOF_MAX_CONNS", default_value_t = 16)]
     pub proof_max_conns: usize,
     #[arg(long, env = "PROOF_MAX_PROOF_BODY_BYTES", default_value_t = 1 << 20)]
     pub proof_max_proof_body_bytes: u64,
@@ -103,6 +104,8 @@ pub enum ConfigError {
     InvalidProofVerificationHost,
     #[error("PROOF_JWT_KMS_KEY_ID is required")]
     MissingProofJwtKmsKeyId,
+    #[error("PROOF_MAX_CONNS must be at least 1")]
+    InvalidProofMaxConns,
     #[error("HOST_SERVICE is required")]
     MissingHostService,
     #[error("CAPACITY_POLL_INTERVAL_SECS must be at least 1")]
@@ -161,6 +164,9 @@ impl Config {
         }
         if config.proof_jwt_kms_key_id.trim().is_empty() {
             return Err(ConfigError::MissingProofJwtKmsKeyId);
+        }
+        if config.proof_max_conns == 0 {
+            return Err(ConfigError::InvalidProofMaxConns);
         }
         if config.host_service.trim().is_empty() {
             return Err(ConfigError::MissingHostService);

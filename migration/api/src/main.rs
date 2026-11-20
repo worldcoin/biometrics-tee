@@ -41,6 +41,7 @@ fn verifier(
     )?;
     Ok(proof::Verifier::new(
         config.proof_max_proof_body_bytes,
+        config.proof_max_conns,
         std::sync::Arc::new(client),
     ))
 }
@@ -347,6 +348,7 @@ mod tests {
     fn verifier(accepted: bool) -> Arc<proof::Verifier> {
         Arc::new(proof::Verifier::new(
             1 << 20,
+            16,
             Arc::new(MockVerifier {
                 accepted,
                 seen: Mutex::new(Vec::new()),
@@ -612,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn init_reports_a_verification_service_failure() {
         let state = AppState {
-            verifier: Arc::new(proof::Verifier::new(1 << 20, Arc::new(FailingVerifier))),
+            verifier: Arc::new(proof::Verifier::new(1 << 20, 16, Arc::new(FailingVerifier))),
             ..unavailable_state()
         };
         let response = routes::router(state).oneshot(valid_init()).await.unwrap();
@@ -643,6 +645,7 @@ mod tests {
         let state = AppState {
             verifier: Arc::new(proof::Verifier::new(
                 1 << 20,
+                16,
                 Arc::clone(&mock)
                     as Arc<dyn world_id_proof_verification_client::ProofVerificationClient>,
             )),

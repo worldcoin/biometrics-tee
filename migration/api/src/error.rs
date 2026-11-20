@@ -210,6 +210,18 @@ impl ApiError {
                 true,
             )
             .with_dependency("proof-verification"),
+            proof::ProofVerificationError::Busy => {
+                let mut busy = Self::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    error.as_str(),
+                    "Too many ownership proofs are being verified; retry later",
+                    true,
+                )
+                .with_dependency("proof-verification");
+                // Jittered so shed clients do not retry in step.
+                busy.retry_after = Some(1 + fastrand::u64(..=2));
+                busy
+            }
             _ => Self::new(
                 StatusCode::BAD_REQUEST,
                 error.as_str(),
@@ -292,6 +304,10 @@ mod tests {
             ),
             (
                 proof::ProofVerificationError::VerificationError,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                proof::ProofVerificationError::Busy,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (
