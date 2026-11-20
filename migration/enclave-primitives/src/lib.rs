@@ -15,6 +15,7 @@ mod keys;
 /// Parent vsock ports and the regional endpoint for enclave KMS access.
 pub mod kms;
 mod migrate;
+pub mod padding;
 pub mod pcp_payload;
 
 /// vsock port the enclave serves and the host dials; both sides ship together.
@@ -29,4 +30,5 @@ pub use keys::{GetEncryptionKeyRequest, KeyAttestation};
 pub use migrate::{
     MAX_MIGRATION_DIAGNOSTIC_BYTES, MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES,
     MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES, MigrateError, MigrateRequest, MigrateResponse,
+    PADDED_MIGRATION_DIAGNOSTIC_BYTES,
 };
