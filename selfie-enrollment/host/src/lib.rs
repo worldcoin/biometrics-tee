@@ -1,4 +1,4 @@
-//! Bounded ciphertext relay: one assignment and one encrypted extraction per socket.
+//! Bounded ciphertext relay: one assignment, then extraction or target generation and capture.
 use axum::{
     Router,
     extract::{
@@ -17,6 +17,8 @@ use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     time::{Instant, timeout, timeout_at},
 };
+
+const SESSION_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[async_trait::async_trait]
 pub trait Enclave: Send + Sync {
@@ -61,7 +63,7 @@ impl AppState {
     /// Reject new sessions and await all upgraded sockets, bounded by their session deadline.
     pub async fn drain(&self) -> anyhow::Result<()> {
         self.connections.close();
-        timeout(Duration::from_secs(91), async {
+        timeout(SESSION_TIMEOUT + Duration::from_secs(1), async {
             loop {
                 let finished = self.session_finished.notified();
                 if self.connections.available_permits() == self.max_connections {
@@ -104,7 +106,7 @@ async fn upgrade(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Re
         .max_frame_size(MAX_POSEGUARD_REQUEST_BYTES)
         .on_upgrade(move |mut socket| async move {
             let _permit = permit;
-            let result = timeout(Duration::from_secs(90), serve(&mut socket, &state))
+            let result = timeout(SESSION_TIMEOUT, serve(&mut socket, &state))
                 .await
                 .unwrap_or(Err(ErrorCode::Timeout));
             let close_deadline = Instant::now() + Duration::from_secs(1);
@@ -166,30 +168,44 @@ async fn serve(socket: &mut WebSocket, state: &AppState) -> Result<(), ErrorCode
         }),
     )
     .await?;
-    let Message::Binary(ciphertext) = next(socket, Duration::from_secs(30)).await? else {
-        return Err(ErrorCode::InvalidMessage);
-    };
-    if ciphertext.is_empty() || ciphertext.len() > MAX_POSEGUARD_REQUEST_BYTES {
-        return Err(ErrorCode::InvalidMessage);
+    for exchange in 0..2 {
+        let wait = if exchange == 0 {
+            30
+        } else {
+            POSEGUARD_CHALLENGE_TTL_SECS
+        };
+        let Message::Binary(ciphertext) = next(socket, Duration::from_secs(wait)).await? else {
+            return Err(ErrorCode::InvalidMessage);
+        };
+        if ciphertext.is_empty() || ciphertext.len() > MAX_POSEGUARD_REQUEST_BYTES {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        let response = timeout(
+            Duration::from_secs(35),
+            state.enclave.extract(ExtractRequest {
+                ciphertext: ciphertext.to_vec(),
+            }),
+        )
+        .await
+        .map_err(|_| ErrorCode::Timeout)??;
+        if response.ciphertext.len() > MAX_RESPONSE_BYTES {
+            return Err(ErrorCode::Unavailable);
+        }
+        if exchange == 1 && response.await_capture {
+            return Err(ErrorCode::InvalidMessage);
+        }
+        timeout(
+            Duration::from_secs(5),
+            socket.send(Message::Binary(response.ciphertext.into())),
+        )
+        .await
+        .map_err(|_| ErrorCode::Timeout)?
+        .map_err(|_| ErrorCode::Unavailable)?;
+        if !response.await_capture {
+            return Ok(());
+        }
     }
-    let response = timeout(
-        Duration::from_secs(35),
-        state.enclave.extract(ExtractRequest {
-            ciphertext: ciphertext.to_vec(),
-        }),
-    )
-    .await
-    .map_err(|_| ErrorCode::Timeout)??;
-    if response.ciphertext.len() > MAX_RESPONSE_BYTES {
-        return Err(ErrorCode::Unavailable);
-    }
-    timeout(
-        Duration::from_secs(5),
-        socket.send(Message::Binary(response.ciphertext.into())),
-    )
-    .await
-    .map_err(|_| ErrorCode::Timeout)?
-    .map_err(|_| ErrorCode::Unavailable)
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

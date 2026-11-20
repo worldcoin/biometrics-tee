@@ -1,20 +1,19 @@
-use crate::{Error, MAX_SUB_BYTES, decode};
+use crate::{Error, MAX_SUB_BYTES, decode, decode_padded, encode, encode_padded};
 use selfie_enrollment_api_types::{
-    ENROLLMENT_PROTOCOL_VERSION, MAX_IMAGE_BYTES, MAX_POSEGUARD_REQUEST_BYTES,
+    ENROLLMENT_PROTOCOL_VERSION, MAX_CONTROL_BYTES, MAX_IMAGE_BYTES, MAX_POSEGUARD_REQUEST_BYTES,
     POSEGUARD_CHALLENGE_COUNT,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-/// Caller-supplied target angles in degrees, evaluated by the worker.
+/// The image captured for the issued target at the same position; the enclave supplies the angles.
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub struct PoseGuardCapture {
     #[serde(with = "serde_bytes")]
     pub image: Vec<u8>,
-    pub target_pitch: f32,
-    pub target_yaw: f32,
 }
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -28,12 +27,119 @@ pub struct PoseGuardEnrollmentRequest {
     pub sub: String,
     #[serde(with = "serde_bytes")]
     pub custody_public_key: Vec<u8>,
+    pub challenge_token: [u8; 32],
 }
 
-#[derive(Serialize, Deserialize, Zeroize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, Zeroize)]
 pub enum EnrollmentOperation {
     #[serde(rename = "enroll_with_poseguard")]
     EnrollWithPoseGuard,
+    #[serde(rename = "generate_poseguard_targets")]
+    GeneratePoseGuardTargets,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Zeroize)]
+#[serde(deny_unknown_fields)]
+pub struct PoseGuardTarget {
+    pub target_pitch: f32,
+    pub target_yaw: f32,
+}
+
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratePoseGuardTargetsRequest {
+    pub version: u32,
+    pub operation: EnrollmentOperation,
+    pub nonce: [u8; 32],
+}
+
+impl GeneratePoseGuardTargetsRequest {
+    pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.validate()?;
+        encode(self)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > MAX_CONTROL_BYTES {
+            return Err(Error);
+        }
+        let request: Self = decode(bytes)?;
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.version != ENROLLMENT_PROTOCOL_VERSION
+            || self.operation != EnrollmentOperation::GeneratePoseGuardTargets
+            || self.nonce == [0; 32]
+        {
+            return Err(Error);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+pub struct PoseGuardChallenge {
+    pub challenge_token: [u8; 32],
+    pub targets: [PoseGuardTarget; POSEGUARD_CHALLENGE_COUNT],
+    /// Unix seconds for display; the enclave enforces a monotonic deadline.
+    pub expires_at: u64,
+}
+
+impl PoseGuardChallenge {
+    /// Binds the response to this request and the assigned enclave boot.
+    pub fn attestation_nonce(
+        &self,
+        request: &GeneratePoseGuardTargetsRequest,
+        channel_commitment: &[u8; 32],
+    ) -> Result<[u8; 32], Error> {
+        request.validate()?;
+        self.validate()?;
+        let bytes = encode(&(
+            "selfie-enrollment/poseguard-targets/v1",
+            request,
+            channel_commitment,
+            self,
+        ))?;
+        Ok(Sha256::digest(&bytes).into())
+    }
+
+    fn validate(&self) -> Result<(), Error> {
+        if self.challenge_token == [0; 32] || self.expires_at == 0 {
+            return Err(Error);
+        }
+        for target in &self.targets {
+            if !(-20.0..=20.0).contains(&target.target_pitch)
+                || !(-35.0..=35.0).contains(&target.target_yaw)
+            {
+                return Err(Error);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+pub struct PoseGuardTargetsResult {
+    pub challenge: PoseGuardChallenge,
+    #[serde(with = "serde_bytes")]
+    pub attestation: Vec<u8>,
+}
+
+impl PoseGuardTargetsResult {
+    pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.challenge.validate()?;
+        encode_padded(self, MAX_CONTROL_BYTES)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let result: Self = decode_padded(bytes, MAX_CONTROL_BYTES)?;
+        result.challenge.validate()?;
+        Ok(result)
+    }
 }
 
 impl PoseGuardEnrollmentRequest {
@@ -65,6 +171,8 @@ impl PoseGuardEnrollmentRequest {
 
     pub fn validate(&self) -> Result<(), Error> {
         if self.version != ENROLLMENT_PROTOCOL_VERSION
+            || self.operation != EnrollmentOperation::EnrollWithPoseGuard
+            || self.challenge_token == [0; 32]
             || !self.central_png.starts_with(b"\x89PNG\r\n\x1a\n")
             || self.central_png.len() > MAX_IMAGE_BYTES
             || self.sub.is_empty()
@@ -82,11 +190,7 @@ impl PoseGuardEnrollmentRequest {
 
 impl PoseGuardCapture {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.image.is_empty()
-            || self.image.len() > MAX_IMAGE_BYTES
-            || !(-20.0..=20.0).contains(&self.target_pitch)
-            || !(-35.0..=35.0).contains(&self.target_yaw)
-        {
+        if self.image.is_empty() || self.image.len() > MAX_IMAGE_BYTES {
             return Err(Error);
         }
         Ok(())
@@ -119,6 +223,86 @@ mod tests {
     };
 
     #[test]
+    fn challenge_attestation_binds_targets_freshness_and_enclave_boot() {
+        let mut input = GeneratePoseGuardTargetsRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::GeneratePoseGuardTargets,
+            nonce: [8; 32],
+        };
+        let mut challenge = PoseGuardChallenge {
+            challenge_token: [9; 32],
+            expires_at: 123,
+            targets: [PoseGuardTarget {
+                target_pitch: 15.0,
+                target_yaw: 25.0,
+            }; 3],
+        };
+        let digest = challenge.attestation_nonce(&input, &[1; 32]).unwrap();
+        assert_ne!(
+            digest,
+            challenge.attestation_nonce(&input, &[2; 32]).unwrap()
+        );
+        input.nonce[0] ^= 1;
+        assert_ne!(
+            digest,
+            challenge.attestation_nonce(&input, &[1; 32]).unwrap()
+        );
+        input.nonce[0] ^= 1;
+        challenge.challenge_token[0] ^= 1;
+        assert_ne!(
+            digest,
+            challenge.attestation_nonce(&input, &[1; 32]).unwrap()
+        );
+        challenge.challenge_token[0] ^= 1;
+        challenge.expires_at += 1;
+        assert_ne!(
+            digest,
+            challenge.attestation_nonce(&input, &[1; 32]).unwrap()
+        );
+        challenge.expires_at -= 1;
+        challenge.targets[0].target_pitch += 1.0;
+        assert_ne!(
+            digest,
+            challenge.attestation_nonce(&input, &[1; 32]).unwrap()
+        );
+    }
+
+    #[test]
+    fn target_generation_uses_the_existing_version_and_a_bounded_response() {
+        let mut input = GeneratePoseGuardTargetsRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::GeneratePoseGuardTargets,
+            nonce: [8; 32],
+        };
+        assert!(matches!(
+            Request::decode(&input.encode().unwrap()).unwrap(),
+            Request::GeneratePoseGuardTargets(_)
+        ));
+        input.operation = EnrollmentOperation::EnrollWithPoseGuard;
+        assert!(input.encode().is_err());
+        input.operation = EnrollmentOperation::GeneratePoseGuardTargets;
+        input.nonce = [0; 32];
+        assert!(input.encode().is_err());
+        let mut result = PoseGuardTargetsResult {
+            challenge: PoseGuardChallenge {
+                challenge_token: [9; 32],
+                expires_at: 123,
+                targets: [PoseGuardTarget {
+                    target_pitch: 15.0,
+                    target_yaw: 25.0,
+                }; 3],
+            },
+            attestation: vec![1; 100],
+        };
+        let bytes = result.encode().unwrap();
+        assert_eq!(bytes.len(), MAX_CONTROL_BYTES);
+        assert!(PoseGuardTargetsResult::decode(&bytes).is_ok());
+        assert!(PoseGuardTargetsResult::decode(&bytes[..bytes.len() - 1]).is_err());
+        result.attestation.resize(MAX_CONTROL_BYTES, 1);
+        assert!(result.encode().is_err());
+    }
+
+    #[test]
     fn batch_roundtrips_above_the_legacy_limit_without_relaxing_legacy_requests() {
         let mut request = request();
         for capture in &mut request.captures {
@@ -132,8 +316,6 @@ mod tests {
         assert_eq!(decoded.central_png, request.central_png);
         for (actual, expected) in decoded.captures.iter().zip(&request.captures) {
             assert_eq!(actual.image, expected.image);
-            assert_eq!(actual.target_pitch, expected.target_pitch);
-            assert_eq!(actual.target_yaw, expected.target_yaw);
         }
         let legacy = EnrollmentRequest {
             version: ENROLLMENT_PROTOCOL_VERSION,
@@ -195,17 +377,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_images_targets_counts_and_metadata() {
+    fn rejects_bad_images_counts_and_metadata() {
         for change in [
             (|r: &mut PoseGuardEnrollmentRequest| r.central_png.clear())
                 as fn(&mut PoseGuardEnrollmentRequest),
             |r| r.central_png.resize(MAX_IMAGE_BYTES + 1, 0),
             |r| r.captures[0].image.clear(),
             |r| r.captures[0].image.resize(MAX_IMAGE_BYTES + 1, 0),
-            |r| r.captures[0].target_pitch = f32::NAN,
-            |r| r.captures[0].target_yaw = f32::INFINITY,
-            |r| r.captures[0].target_pitch = 20.1,
-            |r| r.captures[0].target_yaw = -35.1,
             |r| r.sub.clear(),
             |r| r.custody_public_key.clear(),
             |r| r.version = PROTOCOL_VERSION,
@@ -239,11 +417,10 @@ mod tests {
             central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
             captures: std::array::from_fn(|i| PoseGuardCapture {
                 image: vec![i as u8 + 1],
-                target_pitch: 10.0 + i as f32,
-                target_yaw: -20.0 - i as f32,
             }),
             sub: "0x1f".into(),
             custody_public_key: vec![7; 32],
+            challenge_token: [1; 32],
         }
     }
 }

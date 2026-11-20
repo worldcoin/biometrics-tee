@@ -75,3 +75,51 @@ impl EnrollmentClient {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Release;
+    use selfie_enrollment_api_types::MAX_POSEGUARD_REQUEST_BYTES;
+
+    /// The frame limits bound only what the client receives, so a request can use the host's
+    /// full PoseGuard limit while responses stay capped.
+    #[tokio::test]
+    async fn sends_full_size_poseguard_requests_and_bounds_responses() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}/v1/embeddings", listener.local_addr().unwrap());
+        let host = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let limits = WebSocketConfig::default()
+                .max_message_size(Some(MAX_POSEGUARD_REQUEST_BYTES))
+                .max_frame_size(Some(MAX_POSEGUARD_REQUEST_BYTES));
+            let mut socket = tokio_tungstenite::accept_async_with_config(stream, Some(limits))
+                .await
+                .unwrap();
+            let Some(Ok(Message::Binary(request))) = socket.next().await else {
+                panic!("the request must arrive as one binary message");
+            };
+            let oversized = vec![0; MAX_RESPONSE_BYTES + 1];
+            let _ = socket.send(Message::Binary(oversized.into())).await;
+            request.len()
+        });
+        let config = Config {
+            endpoint,
+            releases: vec![Release {
+                pcr0: "1".repeat(96),
+                pcr1: "2".repeat(96),
+                pcr2: "3".repeat(96),
+            }],
+        };
+        let mut transport = NativeTransport::connect(&config).await.unwrap();
+        let request = vec![7; MAX_POSEGUARD_REQUEST_BYTES];
+        transport
+            .send(Frame::Binary(request), Duration::from_secs(10))
+            .await
+            .unwrap();
+        let response = transport.receive(Duration::from_secs(10)).await;
+        drop(transport);
+        assert!(matches!(response, Err(Error::Transport)));
+        assert_eq!(host.await.unwrap(), MAX_POSEGUARD_REQUEST_BYTES);
+    }
+}

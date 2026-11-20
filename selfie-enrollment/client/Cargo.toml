@@ -24,10 +24,11 @@ serde_json.workspace = true
 base64.workspace = true
 hex.workspace = true
 thiserror.workspace = true
-zeroize.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
 url = "2"
 futures-util = { version = "0.3", features = ["sink"] }
 web-time = "1"
+rand.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true
@@ -44,6 +45,11 @@ web-sys = { version = "=0.3.103", features = ["WebSocket", "MessageEvent", "Even
 serde-wasm-bindgen = "0.6"
 futures-channel = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 selfie-enrollment-enclave-types.workspace = true
+ciborium.workspace = true
+coset = "0.4"
+p384 = { version = "0.14", default-features = false, features = ["ecdsa", "sha384"] }
+serde_bytes.workspace = true
