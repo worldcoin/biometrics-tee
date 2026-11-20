@@ -417,9 +417,9 @@ mod tests {
         }
     }
 
-    /// Pins the values; the app and API branch on them, and the job table stores them.
+    /// Pins the status values; the app and API branch on them, and the job table stores them.
     #[test]
-    fn values_are_stable_on_the_wire() {
+    fn statuses_are_stable_on_the_wire() {
         let statuses = [
             (Status::Created, "created"),
             (Status::Migrating, "migrating"),
@@ -434,7 +434,11 @@ mod tests {
                 format!("\"{value}\"")
             );
         }
+    }
 
+    /// Pins the reason values; the app and API branch on them, and the job table stores them.
+    #[test]
+    fn reasons_are_stable_on_the_wire() {
         let reasons = [
             (Reason::HostBusy, "host_busy"),
             (Reason::EnclaveChanged, "enclave_changed"),
