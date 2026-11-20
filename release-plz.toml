@@ -1,0 +1,32 @@
+# Publishes the selfie enrollment client crates to crates.io. Every other workspace crate is
+# deployed as an image and stays unreleased.
+[workspace]
+release = false
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+pr_labels = ["release"]
+
+# The three crates inherit the workspace version. The client owns their shared changelog, tag and
+# GitHub release.
+[[package]]
+name = "selfie-enrollment-client"
+release = true
+publish = true
+changelog_update = true
+changelog_include = ["selfie-enrollment-api-types", "selfie-enrollment-sealed-types"]
+git_tag_enable = true
+git_tag_name = "selfie-enrollment-v{{ version }}"
+git_release_enable = true
+git_release_name = "selfie-enrollment v{{ version }}"
+
+[[package]]
+name = "selfie-enrollment-api-types"
+release = true
+publish = true
+
+[[package]]
+name = "selfie-enrollment-sealed-types"
+release = true
+publish = true
