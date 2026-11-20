@@ -6,6 +6,7 @@
 mod device;
 mod load;
 mod migration;
+mod reference;
 mod report;
 mod user;
 
@@ -90,13 +91,34 @@ struct Setup {
     ag_private_key_pem: String,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run(Cli::parse()).await {
+/// Where orb-tools' ownership-proof helper reads the AG key from; it takes no key argument.
+const AG_KEY_PATH_ENV: &str = "CI_CANONICAL_REQUEST_SIGNING_PRIVATE_KEY_PATH";
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    // SAFETY: no other thread exists yet; the runtime is started below.
+    unsafe { std::env::set_var(AG_KEY_PATH_ENV, &cli.command.stage().ag_private_key) };
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("failed to start the async runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(run(cli)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error:#}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+impl Command {
+    const fn stage(&self) -> &StageArgs {
+        match self {
+            Self::Migrate { stage, .. } => stage,
+            Self::Load(args) => &args.stage,
         }
     }
 }

@@ -26,7 +26,7 @@ use crate::{
 #[derive(Args)]
 pub struct LoadArgs {
     #[command(flatten)]
-    stage: StageArgs,
+    pub(crate) stage: StageArgs,
 
     /// Stage users to provision; also the number of migrations in flight.
     #[arg(long, default_value = "4")]

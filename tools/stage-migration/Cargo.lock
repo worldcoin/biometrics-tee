@@ -4005,14 +4005,18 @@ dependencies = [
  "di-migration-client 0.1.0",
  "di-migration-primitives 0.1.0",
  "fastrand",
+ "flate2",
  "hex",
  "integrity-forge",
+ "k256 0.13.4",
  "oxide",
  "pontifex",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "serde_json",
+ "sha2 0.10.9",
  "signup-flow",
+ "tar",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
@@ -5792,7 +5796,7 @@ dependencies = [
 [[package]]
 name = "integrity-forge"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/orb-tools?rev=c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff#c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff"
+source = "git+https://github.com/worldcoin/orb-tools?rev=b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa#b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa"
 dependencies = [
  "base64 0.22.1",
  "ecdsa 0.16.9",
@@ -6419,7 +6423,7 @@ dependencies = [
 [[package]]
 name = "libsodium-sys"
 version = "0.2.7"
-source = "git+https://github.com/worldcoin/orb-tools?rev=c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff#c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff"
+source = "git+https://github.com/worldcoin/orb-tools?rev=b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa#b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa"
 dependencies = [
  "libsodium-sys-stable",
 ]
@@ -7612,7 +7616,7 @@ dependencies = [
 [[package]]
 name = "orb-tools-pcp"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/orb-tools?rev=c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff#c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff"
+source = "git+https://github.com/worldcoin/orb-tools?rev=b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa#b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa"
 dependencies = [
  "ampc-secret-sharing 0.1.0 (git+https://github.com/worldcoin/ampc-common.git?rev=9c32614407dc19a2de62b79d9ed2945bb4e02f57)",
  "anyhow",
@@ -11204,7 +11208,7 @@ dependencies = [
 [[package]]
 name = "signup-flow"
 version = "0.1.0"
-source = "git+https://github.com/worldcoin/orb-tools?rev=c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff#c21173c7b491ce9c20d0d20cfbe35c66fe9be5ff"
+source = "git+https://github.com/worldcoin/orb-tools?rev=b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa#b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa"
 dependencies = [
  "alloy",
  "anyhow",

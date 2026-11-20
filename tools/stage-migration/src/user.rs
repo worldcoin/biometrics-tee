@@ -1,6 +1,6 @@
 //! A real stage user, enrolled with the reference PCP and holding a staging credential for it.
 
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -9,12 +9,14 @@ use signup_flow::{
     file_system::TestInMemoryDeviceFileSystem,
     make_bundle_with_pcp_package,
     orb_enrollment_harness::OrbEnrollmentHarness,
-    selfcustody::pcp::reference::{extract_iris_share_files, repack_reference_pcp},
     walletkit_utils::{self, OnChainUser, TEE_MIGRATION_CHALLENGE_TYPE},
 };
 use uuid::Uuid;
 
-use crate::device::StageDevice;
+use crate::{
+    device::StageDevice,
+    reference::{extract_iris_share_files, repack_reference_pcp},
+};
 
 /// The files of a decrypted (tier 0) PCP, the template every user's PCP is repacked from.
 pub struct ReferencePcp(BTreeMap<String, Vec<u8>>);
@@ -67,10 +69,7 @@ impl StageUser {
     /// Registers a World ID on stage, enrolls it with a generated PCP, swaps in the reference
     /// PCP and refreshes the enrollment for a credential that covers it.
     pub async fn provision(ag_private_key_pem: &str, reference: &ReferencePcp) -> Result<Self> {
-        let store = walletkit_utils::create_credential_store()?;
-        let wallet = walletkit_utils::init_user_on_chain_with_credentials(store)
-            .await
-            .context("register the stage World ID")?;
+        let wallet = register_world_id().await?;
         let harness = OrbEnrollmentHarness::new_with_file_system(
             wallet.sub.clone(),
             Arc::new(TestInMemoryDeviceFileSystem::new()),
@@ -151,5 +150,31 @@ impl StageUser {
             response.status
         );
         Ok(())
+    }
+}
+
+/// Registration attempts per World ID.
+const REGISTRATION_ATTEMPTS: u32 = 4;
+
+/// Registers a World ID, retrying with backoff: concurrent registrations on stage can race for
+/// the next registry leaf and fail with a leaf index mismatch.
+async fn register_world_id() -> Result<OnChainUser> {
+    let mut attempt = 1;
+    loop {
+        let store = walletkit_utils::create_credential_store()?;
+        match walletkit_utils::init_user_on_chain_with_credentials(store).await {
+            Ok(wallet) => return Ok(wallet),
+            Err(error) if attempt < REGISTRATION_ATTEMPTS => {
+                let backoff = Duration::from_secs(2u64.pow(attempt))
+                    + Duration::from_millis(fastrand::u64(..1000));
+                eprintln!(
+                    "warning: World ID registration attempt {attempt} of {REGISTRATION_ATTEMPTS} failed, retrying in {:.1}s: {error:#}",
+                    backoff.as_secs_f64()
+                );
+                tokio::time::sleep(backoff).await;
+                attempt += 1;
+            }
+            Err(error) => return Err(error.context("register the stage World ID")),
+        }
     }
 }
