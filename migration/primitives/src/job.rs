@@ -419,7 +419,7 @@ mod tests {
 
     /// Pins the values; the app and API branch on them, and the job table stores them.
     #[test]
-    fn values_are_stable_on_the_wire() {
+    fn statuses_are_stable_on_the_wire() {
         let statuses = [
             (Status::Created, "created"),
             (Status::Migrating, "migrating"),
@@ -434,88 +434,12 @@ mod tests {
                 format!("\"{value}\"")
             );
         }
+    }
 
-        let reasons = [
-            (Reason::HostBusy, "host_busy"),
-            (Reason::EnclaveChanged, "enclave_changed"),
-            (Reason::EnclaveError, "enclave_error"),
-            (Reason::InvalidDebugReport, "invalid_debug_report"),
-            (Reason::Transport, "transport"),
-            (Reason::InvalidInput, "invalid_input"),
-            (Reason::InvalidPcp, "invalid_pcp"),
-            (Reason::InvalidSourceIrisData, "invalid_source_iris_data"),
-            (Reason::FailedToBuildPcp, "failed_to_build_pcp"),
-            (Reason::Unknown, "unknown"),
-            (Reason::MigrationTaskCancelled, "migration_task_cancelled"),
-            (
-                Reason::MigrationDiagnosticSealingFailed,
-                "migration_diagnostic_sealing_failed",
-            ),
-            (Reason::InvalidSystemTime, "invalid_system_time"),
-            (
-                Reason::PcpRecipientKeyGenerationFailed,
-                "pcp_recipient_key_generation_failed",
-            ),
-            (
-                Reason::ManifestSignerUnavailable,
-                "manifest_signer_unavailable",
-            ),
-            (
-                Reason::PcpResponseSealingFailed,
-                "pcp_response_sealing_failed",
-            ),
-            (Reason::BiometricPipelineFailed, "biometric_pipeline_failed"),
-            (Reason::BiometricInvalidRequest, "biometric_invalid_request"),
-            (Reason::BiometricInvalidImage, "biometric_invalid_image"),
-            (
-                Reason::BiometricQualityRejected,
-                "biometric_quality_rejected",
-            ),
-            (Reason::BiometricSpoofDetected, "biometric_spoof_detected"),
-            (
-                Reason::IncompleteBiometricPipelineResult,
-                "incomplete_biometric_pipeline_result",
-            ),
-            (
-                Reason::EmbeddingShareGenerationFailed,
-                "embedding_share_generation_failed",
-            ),
-            (Reason::PcpKeyDecryptionFailed, "pcp_key_decryption_failed"),
-            (Reason::AttestationFailed, "attestation_failed"),
-            (
-                Reason::ChannelKeyGenerationFailed,
-                "channel_key_generation_failed",
-            ),
-            (Reason::CredentialSubMismatch, "credential_sub_mismatch"),
-            (
-                Reason::CredentialDeserializationFailed,
-                "credential_deserialization_failed",
-            ),
-            (
-                Reason::CredentialSignatureVerificationFailed,
-                "credential_signature_verification_failed",
-            ),
-            (
-                Reason::CredentialSignatureInvalid,
-                "credential_signature_invalid",
-            ),
-            (
-                Reason::CredentialClaimsMismatch,
-                "credential_claims_mismatch",
-            ),
-            (Reason::CredentialExpired, "credential_expired"),
-            (
-                Reason::CredentialSchemaMismatch,
-                "credential_schema_mismatch",
-            ),
-            (
-                Reason::InvalidDevicePublicKeyEncoding,
-                "invalid_device_public_key_encoding",
-            ),
-            (Reason::S3Error, "s3_error"),
-            (Reason::Timeout, "timeout"),
-        ];
-        for (reason, value) in reasons {
+    /// Pins the values; the app and API branch on them, and the job table stores them.
+    #[test]
+    fn reasons_are_stable_on_the_wire() {
+        for (reason, value) in REASON_WIRE_VALUES {
             assert_eq!(reason.as_str(), value);
             assert_eq!(value.parse::<Reason>(), Ok(reason));
             assert_eq!(
@@ -524,4 +448,86 @@ mod tests {
             );
         }
     }
+
+    /// Sized by `Reason::ALL`, so a reason added there needs its wire value pinned here too.
+    const REASON_WIRE_VALUES: [(Reason, &str); Reason::ALL.len()] = [
+        (Reason::HostBusy, "host_busy"),
+        (Reason::EnclaveChanged, "enclave_changed"),
+        (Reason::EnclaveError, "enclave_error"),
+        (Reason::InvalidDebugReport, "invalid_debug_report"),
+        (Reason::Transport, "transport"),
+        (Reason::InvalidInput, "invalid_input"),
+        (Reason::InvalidPcp, "invalid_pcp"),
+        (Reason::InvalidSourceIrisData, "invalid_source_iris_data"),
+        (Reason::FailedToBuildPcp, "failed_to_build_pcp"),
+        (Reason::Unknown, "unknown"),
+        (Reason::MigrationTaskCancelled, "migration_task_cancelled"),
+        (
+            Reason::MigrationDiagnosticSealingFailed,
+            "migration_diagnostic_sealing_failed",
+        ),
+        (Reason::InvalidSystemTime, "invalid_system_time"),
+        (
+            Reason::PcpRecipientKeyGenerationFailed,
+            "pcp_recipient_key_generation_failed",
+        ),
+        (
+            Reason::ManifestSignerUnavailable,
+            "manifest_signer_unavailable",
+        ),
+        (
+            Reason::PcpResponseSealingFailed,
+            "pcp_response_sealing_failed",
+        ),
+        (Reason::BiometricPipelineFailed, "biometric_pipeline_failed"),
+        (Reason::BiometricInvalidRequest, "biometric_invalid_request"),
+        (Reason::BiometricInvalidImage, "biometric_invalid_image"),
+        (
+            Reason::BiometricQualityRejected,
+            "biometric_quality_rejected",
+        ),
+        (Reason::BiometricSpoofDetected, "biometric_spoof_detected"),
+        (
+            Reason::IncompleteBiometricPipelineResult,
+            "incomplete_biometric_pipeline_result",
+        ),
+        (
+            Reason::EmbeddingShareGenerationFailed,
+            "embedding_share_generation_failed",
+        ),
+        (Reason::PcpKeyDecryptionFailed, "pcp_key_decryption_failed"),
+        (Reason::AttestationFailed, "attestation_failed"),
+        (
+            Reason::ChannelKeyGenerationFailed,
+            "channel_key_generation_failed",
+        ),
+        (Reason::CredentialSubMismatch, "credential_sub_mismatch"),
+        (
+            Reason::CredentialDeserializationFailed,
+            "credential_deserialization_failed",
+        ),
+        (
+            Reason::CredentialSignatureVerificationFailed,
+            "credential_signature_verification_failed",
+        ),
+        (
+            Reason::CredentialSignatureInvalid,
+            "credential_signature_invalid",
+        ),
+        (
+            Reason::CredentialClaimsMismatch,
+            "credential_claims_mismatch",
+        ),
+        (Reason::CredentialExpired, "credential_expired"),
+        (
+            Reason::CredentialSchemaMismatch,
+            "credential_schema_mismatch",
+        ),
+        (
+            Reason::InvalidDevicePublicKeyEncoding,
+            "invalid_device_public_key_encoding",
+        ),
+        (Reason::S3Error, "s3_error"),
+        (Reason::Timeout, "timeout"),
+    ];
 }
