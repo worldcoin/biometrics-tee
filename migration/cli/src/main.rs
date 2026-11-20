@@ -247,7 +247,7 @@ async fn start(
         .migrate(&init.integrity_token, &signer, &init.sub)
         .await
         .map_err(|error| error.to_string())?;
-    eprintln!("enclave {} verified", response.enclave_id.as_str());
+    eprintln!("migration started on enclave {}", response.enclave_id.as_str());
     Ok(opener)
 }
 
