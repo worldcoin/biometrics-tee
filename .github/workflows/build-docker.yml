@@ -143,8 +143,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || steps.version.outputs.is_stable == 'true' }}
-            type=sha
+            type=raw,value=latest,enable=${{ github.event_name != 'release' && (github.ref == 'refs/heads/main' || steps.version.outputs.is_stable == 'true') }}
+            type=sha,enable=${{ github.event_name != 'release' }}
             type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != '' }}
 
       - name: Set up Docker Buildx
@@ -222,7 +222,8 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha
+            type=sha,enable=${{ github.event_name != 'release' }}
+            type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'release' && inputs.version != '' }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -254,3 +255,43 @@ jobs:
           push-to-registry: true
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
+
+      - name: Record the packaged migration EIF
+        if: github.event_name == 'release' && matrix.workload == 'migration'
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+          LAUNCHER_IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          LAUNCHER_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$LAUNCHER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          image="$LAUNCHER_IMAGE@$LAUNCHER_DIGEST"
+          packaged_eif="$(mktemp)"
+          container=""
+          cleanup() {
+            if [[ -n "$container" ]]; then docker rm "$container" >/dev/null; fi
+            rm -f "$packaged_eif"
+          }
+          trap cleanup EXIT
+          docker pull --platform linux/amd64 "$image"
+          container="$(docker create --platform linux/amd64 "$image")"
+          docker cp "$container:/home/enclave.eif" "$packaged_eif"
+          if ! cmp -s target/eif/di-migration-enclave.eif "$packaged_eif"; then
+            echo "::error::The published launcher does not contain the measured EIF."
+            exit 1
+          fi
+          eif_hash="$(sha256sum "$packaged_eif" | cut -d ' ' -f 1)"
+          jq -e --arg release "$RELEASE_TAG" --arg launcher "$LAUNCHER_DIGEST" --arg eif "sha256:$eif_hash" '
+            select(all(.PCR0, .PCR1, .PCR2; test("^[0-9a-f]{96}$") and . != ("0" * 96))) |
+            {approved_builds: [{release: $release, launcher_image_digest: $launcher,
+              eif_digest: $eif, measurements: {PCR0, PCR1, PCR2}}]}
+          ' target/eif/di-migration-pcr.json | tee "$RUNNER_TEMP/approved-pcrs.json"
+
+      - name: Upload the migration release candidate
+        if: github.event_name == 'release' && matrix.workload == 'migration'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: di-migration-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/approved-pcrs.json
+          if-no-files-found: error
+          overwrite: true
