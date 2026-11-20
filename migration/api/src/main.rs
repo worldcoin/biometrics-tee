@@ -2,6 +2,7 @@ mod config;
 mod error;
 mod fleet;
 mod host_client;
+mod pcr_registry;
 mod proof;
 mod routes;
 
@@ -18,6 +19,7 @@ use di_migration_storage::{JobTable, PcpBucket};
 use crate::{
     fleet::{DnsResolver, Fleet},
     host_client::HostClient,
+    pcr_registry::PcrRegistry,
 };
 
 fn verifier(
@@ -50,6 +52,7 @@ fn verifier(
 struct AppState {
     jobs: JobTable,
     bucket: PcpBucket,
+    pcr_registry: Option<PcrRegistry>,
     /// How long presigned upload URLs stay valid.
     presigned_url_ttl: Duration,
     /// How long after init migrate is accepted.
@@ -87,7 +90,11 @@ async fn main() -> anyhow::Result<()> {
     let s3_config = aws_sdk_s3::config::Builder::from(&aws_config)
         .force_path_style(config.s3_force_path_style)
         .build();
-    let bucket = PcpBucket::new(aws_sdk_s3::Client::from_conf(s3_config), config.pcp_bucket);
+    let s3 = aws_sdk_s3::Client::from_conf(s3_config);
+    let bucket = PcpBucket::new(s3.clone(), config.pcp_bucket);
+    let pcr_registry = config
+        .pcr_registry_bucket
+        .map(|bucket| PcrRegistry::new(s3, bucket));
 
     let hosts = HostClient::new().context("failed to build the host client")?;
     let poll_interval = Duration::from_secs(config.capacity_poll_interval_secs);
@@ -103,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         jobs,
         bucket,
+        pcr_registry,
         presigned_url_ttl: config.presigned_url_ttl,
         upload_window: Duration::from_secs(config.upload_window_secs),
         job_deadline: Duration::from_secs(config.job_deadline_secs),
@@ -201,6 +209,7 @@ mod tests {
         http::{Request, StatusCode, header},
         routing::{get, head, post},
     };
+    use base64::{Engine, engine::general_purpose::STANDARD};
     use di_migration_primitives::{
         EnclaveId,
         app_api::DEVICE_KEY_THUMBPRINT,
@@ -210,7 +219,9 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::{AppState, fleet::Fleet, host_client::HostClient, proof, routes};
+    use crate::{
+        AppState, fleet::Fleet, host_client::HostClient, pcr_registry::PcrRegistry, proof, routes,
+    };
 
     const CHALLENGE_ID: &str = "0b7f6c1e-6d3a-4f77-9c0d-2a1b9d5e4c31";
     const AMZ_JSON: &str = "application/x-amz-json-1.0";
@@ -379,6 +390,7 @@ mod tests {
         AppState {
             jobs: job_table("http://127.0.0.1:9"),
             bucket: unavailable_bucket(),
+            pcr_registry: None,
             presigned_url_ttl: Duration::from_secs(300),
             upload_window: Duration::from_secs(420),
             job_deadline: Duration::from_secs(600),
@@ -446,6 +458,7 @@ mod tests {
         assert_eq!(body["enclave_id"], enclave_id().as_str());
         assert_eq!(body["attestation"], "attestation");
         assert_eq!(body["enclave_public_key"], "enclave-key");
+        assert!(body.get("approved_pcr_registry").is_none());
         let upload_url = body["upload_url"].as_str().unwrap();
         assert!(
             upload_url.starts_with("http://127.0.0.1:9/test-bucket/pcp/")
@@ -472,6 +485,72 @@ mod tests {
             "the lock lasts the upload window"
         );
         assert_eq!(body["migrate_by"], active_until);
+    }
+
+    const REGISTRY_JSON: &[u8] = b" { \"approved_builds\": [] }\n";
+    const BUNDLE_JSON: &[u8] = b"{ \"verificationMaterial\": {} }\n";
+    const REGISTRY_REVISION: &str =
+        "dd8c42f37367bb344dc039cc16408807c0b847571d5618fb5256947e56cd952a";
+
+    async fn registry_s3(registry: &'static [u8], bundle: Option<&'static [u8]>) -> PcrRegistry {
+        let pointer = Router::new()
+            .route(
+                "/registry-bucket/current.json",
+                get(|| async { Json(serde_json::json!({"revision": REGISTRY_REVISION})) }),
+            )
+            .route(
+                &format!("/registry-bucket/revisions/{REGISTRY_REVISION}/approved-pcrs.json"),
+                get(move || async move { registry }),
+            )
+            .route(
+                &format!(
+                    "/registry-bucket/revisions/{REGISTRY_REVISION}/approved-pcrs.sigstore.json"
+                ),
+                get(move || async move { bundle.ok_or(StatusCode::NOT_FOUND) }),
+            );
+        PcrRegistry::new(
+            s3_client(serve(pointer).await),
+            "registry-bucket".to_owned(),
+        )
+    }
+
+    #[tokio::test]
+    async fn init_returns_the_exact_registry_and_bundle_from_current() {
+        let state = AppState {
+            pcr_registry: Some(registry_s3(REGISTRY_JSON, Some(BUNDLE_JSON)).await),
+            ..state(vec![host(0, 4).await], dynamodb(Arc::default()).await).await
+        };
+        let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json(response).await;
+        let approval = &body["approved_pcr_registry"];
+        assert_eq!(
+            STANDARD
+                .decode(approval["registry"].as_str().unwrap())
+                .unwrap(),
+            REGISTRY_JSON
+        );
+        assert_eq!(
+            STANDARD
+                .decode(approval["bundle"].as_str().unwrap())
+                .unwrap(),
+            BUNDLE_JSON
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_mismatched_registry_artifact_fails_init_before_any_write() {
+        for (registry, bundle) in [(REGISTRY_JSON, None), (&b"{}"[..], Some(BUNDLE_JSON))] {
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            let state = AppState {
+                pcr_registry: Some(registry_s3(registry, bundle).await),
+                ..state(vec![host(0, 4).await], dynamodb(Arc::clone(&writes)).await).await
+            };
+            let response = routes::router(state).oneshot(valid_init()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(error_code(response).await, "unavailable");
+            assert!(writes.lock().unwrap().is_empty());
+        }
     }
 
     #[tokio::test]
@@ -891,6 +970,10 @@ mod tests {
     }
 
     fn bucket(endpoint: SocketAddr) -> PcpBucket {
+        PcpBucket::new(s3_client(endpoint), "test-bucket".to_owned())
+    }
+
+    fn s3_client(endpoint: SocketAddr) -> aws_sdk_s3::Client {
         let config = aws_sdk_s3::Config::builder()
             .region(aws_sdk_s3::config::Region::new("us-east-1"))
             .behavior_version(aws_config::BehaviorVersion::latest())
@@ -901,10 +984,7 @@ mod tests {
             .force_path_style(true)
             .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
             .build();
-        PcpBucket::new(
-            aws_sdk_s3::Client::from_conf(config),
-            "test-bucket".to_owned(),
-        )
+        aws_sdk_s3::Client::from_conf(config)
     }
 
     /// A host whose `/jobs` answers `status` with error `code`, recording each request.

@@ -19,6 +19,9 @@ pub struct Config {
     pub dynamodb_table_name: String,
     #[arg(long, env = "PCP_BUCKET")]
     pub pcp_bucket: String,
+    /// Private S3 bucket serving the current approved PCR registry.
+    #[arg(long, env = "PCR_REGISTRY_BUCKET")]
+    pub pcr_registry_bucket: Option<String>,
     #[arg(
         long,
         env = "PRESIGNED_URL_TTL_SECS",
@@ -89,6 +92,8 @@ pub enum ConfigError {
     InvalidDynamodbTableName,
     #[error("PCP_BUCKET is required and must be 3-63 lowercase letters, digits, hyphens, or dots")]
     InvalidPcpBucket,
+    #[error("PCR_REGISTRY_BUCKET must be 3-63 lowercase letters, digits, hyphens, or dots")]
+    InvalidPcrRegistryBucket,
     #[error(
         "PRESIGNED_URL_TTL_SECS must be a positive number of seconds, at most {MAX_PRESIGNED_URL_TTL_SECS}"
     )]
@@ -128,15 +133,15 @@ impl Config {
         {
             return Err(ConfigError::InvalidDynamodbTableName);
         }
-        if config.pcp_bucket.trim().is_empty() {
+        if !valid_bucket_name(&config.pcp_bucket) {
             return Err(ConfigError::InvalidPcpBucket);
         }
-        if !(3..=63).contains(&config.pcp_bucket.len())
-            || !config.pcp_bucket.bytes().all(|byte| {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')
-            })
+        if config
+            .pcr_registry_bucket
+            .as_deref()
+            .is_some_and(|bucket| !valid_bucket_name(bucket))
         {
-            return Err(ConfigError::InvalidPcpBucket);
+            return Err(ConfigError::InvalidPcrRegistryBucket);
         }
 
         if !(1..=MAX_PRESIGNED_URL_TTL_SECS).contains(&config.presigned_url_ttl.as_secs()) {
@@ -180,6 +185,13 @@ impl Config {
 
         Ok(config)
     }
+}
+
+fn valid_bucket_name(name: &str) -> bool {
+    (3..=63).contains(&name.len())
+        && name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')
+        })
 }
 
 #[cfg(test)]
