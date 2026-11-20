@@ -40,14 +40,6 @@
     {
       packages.${system} = enclaveBins // enclaveImages;
 
-      # Key identity is part of the measured filesystem, supplied by deployment
-      # configuration. Account-specific values are not stored in this repository.
-      lib.migrationImages =
-        { pcpKmsKeyArn, pcpKmsSigningKeyArn ? null }:
-        import ./nix/enclave-images.nix {
-          inherit system pkgs nitro-util enclaveBins pcpKmsKeyArn pcpKmsSigningKeyArn;
-        };
-
       lib.selfieEnrollmentImages =
         { faceAmpcPublicKeys }:
         assert faceAmpcPublicKeys != null || throw "faceAmpcPublicKeys must contain three public keys";

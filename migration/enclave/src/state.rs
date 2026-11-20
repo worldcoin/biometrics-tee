@@ -1,8 +1,7 @@
 //! Boot-scoped state owned by the enclave.
 
-use std::{env, str::FromStr, sync::Arc};
+use std::sync::Arc;
 
-use ark_babyjubjub::{EdwardsAffine, Fq};
 use di_migration_enclave_primitives::{self as enclave_primitives, MIGRATION_CHANNEL_DOMAIN};
 use pontifex::channel::{ChannelDomain, ChannelEnclave};
 use tokio::task::JoinHandle;
@@ -12,11 +11,6 @@ use crate::{
     attestation::{AttestedKey, Attestor, MAX_CACHED_AGE},
     worker::Worker,
 };
-
-/// Decimal `BabyJubJub` affine X coordinate of the credential issuer pubkey.
-pub const ISSUER_PUBKEY_X_ENV: &str = "ISSUER_PUBKEY_X";
-/// Decimal `BabyJubJub` affine Y coordinate of the credential issuer pubkey.
-pub const ISSUER_PUBKEY_Y_ENV: &str = "ISSUER_PUBKEY_Y";
 
 /// State fixed for the life of one enclave boot.
 pub struct EnclaveState {
@@ -67,24 +61,6 @@ impl EnclaveState {
         })
     }
 
-    /// Loads [`Self::generate`] with the issuer pubkey from [`ISSUER_PUBKEY_X_ENV`] /
-    /// [`ISSUER_PUBKEY_Y_ENV`].
-    ///
-    /// # Errors
-    ///
-    /// When an env var is missing or not a decimal field element, or when key generation /
-    /// attestation fails.
-    pub fn from_env(
-        attestor: Arc<dyn Attestor>,
-        key_wrapper: crate::kms::KeyWrapper,
-        worker: Box<dyn Worker>,
-    ) -> anyhow::Result<Self> {
-        let issuer_pubkey = issuer_pubkey_from_env()?;
-        Self::generate(attestor, issuer_pubkey, key_wrapper, worker).map_err(|error| {
-            anyhow::anyhow!("failed to generate and attest the channel key: {error:?}")
-        })
-    }
-
     /// The boot-scoped channel the app seals PCPs to.
     #[must_use]
     pub const fn channel(&self) -> &ChannelEnclave {
@@ -112,12 +88,12 @@ impl EnclaveState {
         &self.key_wrapper
     }
 
-    /// Installs the manifest signer fixed by the measured image at boot.
+    /// Installs the manifest signer selected at boot.
     pub fn set_manifest_signer(&mut self, signer: crate::kms::ManifestSigner) {
         self.manifest_signer = Some(signer);
     }
 
-    /// KMS signer for output PCP manifests, when enabled in the EIF.
+    /// KMS signer for output PCP manifests.
     #[must_use]
     pub const fn manifest_signer(&self) -> Option<&crate::kms::ManifestSigner> {
         self.manifest_signer.as_ref()
@@ -153,29 +129,6 @@ impl EnclaveState {
     pub fn start_attestation_refresh(&mut self) -> JoinHandle<()> {
         self.attested_channel_key.start_refresh()
     }
-}
-
-/// Reads the issuer `EdDSA` pubkey affine coordinates from the environment.
-///
-/// # Errors
-///
-/// When either env var is missing or not a decimal `Fq` element.
-fn issuer_pubkey_from_env() -> anyhow::Result<EdDSAPublicKey> {
-    let x = env::var(ISSUER_PUBKEY_X_ENV)
-        .map_err(|_| anyhow::anyhow!("{ISSUER_PUBKEY_X_ENV} is not set"))?;
-    let y = env::var(ISSUER_PUBKEY_Y_ENV)
-        .map_err(|_| anyhow::anyhow!("{ISSUER_PUBKEY_Y_ENV} is not set"))?;
-    issuer_pubkey_from_decimals(&x, &y)
-}
-
-fn issuer_pubkey_from_decimals(x: &str, y: &str) -> anyhow::Result<EdDSAPublicKey> {
-    let x = Fq::from_str(x)
-        .map_err(|()| anyhow::anyhow!("{ISSUER_PUBKEY_X_ENV} is not a valid decimal Fq element"))?;
-    let y = Fq::from_str(y)
-        .map_err(|()| anyhow::anyhow!("{ISSUER_PUBKEY_Y_ENV} is not a valid decimal Fq element"))?;
-    Ok(EdDSAPublicKey {
-        pk: EdwardsAffine { x, y },
-    })
 }
 
 #[cfg(test)]
