@@ -82,18 +82,6 @@ let result = session.extract(image).await?;
 
 On WASM, `connect` additionally accepts an optional `AbortSignal`. The browser facade is `extractEmbedding(configJson, imageBytes, abortSignal)`. PoseGuard enrollment is `enrollWithPoseGuard(configJson, sub, custodyPublicKey, capture, abortSignal)`: once the enclave is verified it calls `capture({ targets, expiresAt })`, which resolves to `{ centralPng, captures }` with one `Uint8Array` per target in target order, and both exchanges share one socket. Configuration supplies a complete `wss://…` endpoint, including any proxy path, and `releases: [{ pcr0, pcr1, pcr2 }]`, with lowercase hex SHA-384 measurements. Loopback `ws://` is permitted for protocol tests, with the same mandatory attestation checks.
 
-## Publishing the client crates
-
-`selfie-enrollment-api-types`, `selfie-enrollment-sealed-types` and `selfie-enrollment-client` are published to crates.io by [release-plz](https://release-plz.dev), configured in [`release-plz.toml`](../release-plz.toml). They inherit the workspace version, so a release bumps it for every crate in the workspace.
-
-1. Every push to `main` runs [`release.yml`](../.github/workflows/release.yml), which opens or updates a release PR labeled `release`. The PR bumps the three crates from their Conventional Commits and `cargo-semver-checks`, and updates [`client/CHANGELOG.md`](client/CHANGELOG.md).
-2. Merging the release PR publishes the versions missing from crates.io and creates the `selfie-enrollment-vX.Y.Z` tag and GitHub release.
-3. If publishing fails, rerun `release.yml` from the Actions tab. It publishes only what is missing.
-
-The publish job uses [crates.io trusted publishing](https://crates.io/docs/trusted-publishing) in the `crates-io` environment and holds no crates.io token. Each crate must list repository `worldcoin/biometrics-tee`, workflow `release.yml` and environment `crates-io` as a trusted publisher. A new crate is published by hand once before it can be added.
-
-A published version cannot be replaced. To withdraw a bad one, `cargo yank --version X.Y.Z` each of the three crates, then release a fix.
-
 ## Deployment
 
 `worldcoin/tee-apps` owns paired host/EIF publication and Argo values. Staging uses the independent `selfie-enrollment-v1` node track and the `selfie-enrollment` namespace/service account. Required infrastructure is tracked in worldcoin/infrastructure#50677. Initial acceptance must use trusted build measurements and a pinned real worker on non-debug Nitro; local fake-worker tests do not establish a deployed extraction service or camera liveness.
