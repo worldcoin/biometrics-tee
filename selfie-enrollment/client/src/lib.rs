@@ -5,8 +5,10 @@ use pontifex::{
     attestation::{PcrConfig, VerifiedAttestation, Verifier},
 };
 use selfie_enrollment_api_types::*;
+pub use selfie_enrollment_sealed_types::PoseGuardCapture;
 use selfie_enrollment_sealed_types::{
-    EmbeddingRequest, EmbeddingResult, EnrollmentRequest, EnrollmentResult,
+    EmbeddingRequest, EmbeddingResult, EnrollmentOperation, EnrollmentRequest, EnrollmentResult,
+    PoseGuardEnrollmentRequest,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -160,7 +162,7 @@ impl VerifiedAssignment {
             .consumer
             .seal_to_enclave(plaintext)
             .map_err(|_| Error::Authentication)?;
-        if sealed.len() > MAX_REQUEST_BYTES {
+        if sealed.len() > MAX_POSEGUARD_REQUEST_BYTES {
             return Err(Error::Protocol);
         }
         Ok((sealed, PendingResult { opener }))
@@ -262,6 +264,30 @@ impl<T: Transport> EnrollmentSession<T> {
         let (request, pending) = self
             .assignment
             .seal_enrollment(image, sub, custody_public_key)?;
+        let response = self.round_trip(request).await?;
+        pending.open_enrollment(&response)
+    }
+
+    /// Evaluates the central image and three caller-supplied pose captures before enrollment.
+    pub async fn enroll_with_poseguard(
+        self,
+        central_png: Vec<u8>,
+        captures: [PoseGuardCapture; POSEGUARD_CHALLENGE_COUNT],
+        sub: String,
+        custody_public_key: [u8; 32],
+    ) -> Result<EnrollmentResult, Error> {
+        let input = PoseGuardEnrollmentRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::EnrollWithPoseGuard,
+            central_png,
+            captures,
+            sub,
+            custody_public_key: custody_public_key.to_vec(),
+        };
+        let (request, pending) = self
+            .assignment
+            .seal_plaintext(&input.encode().map_err(|_| Error::Protocol)?)?;
+        drop(input);
         let response = self.round_trip(request).await?;
         pending.open_enrollment(&response)
     }

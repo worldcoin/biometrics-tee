@@ -9,11 +9,12 @@ pub mod rng;
 #[cfg(target_os = "linux")]
 pub mod runtime;
 use attestation::{AttestedKey, Attestor, MAX_CACHED_AGE};
+use biometric_engines_protocol::face::{FaceImage, face_image::Source};
 use engine::Engine;
 use pontifex::{ChannelDomain, ChannelEnclave};
-use selfie_enrollment_api_types::{CHANNEL_DOMAIN, MAX_REQUEST_BYTES};
+use selfie_enrollment_api_types::{CHANNEL_DOMAIN, MAX_POSEGUARD_REQUEST_BYTES};
 use selfie_enrollment_enclave_types::{Error, ExtractRequest, ExtractResponse, KeyAttestation};
-use selfie_enrollment_sealed_types::{EmbeddingResult, Failure, Request};
+use selfie_enrollment_sealed_types::{EmbeddingResult, EnrollmentResult, Failure, Request};
 use std::sync::Arc;
 
 /// No worker replacement or key rotation occurs inside an enclave boot.
@@ -42,7 +43,7 @@ impl State {
             enrollment: None,
         })
     }
-    /// Enables sealed enrollment requests; without it they fail as `Unavailable`.
+    /// Enables sealed PoseGuard enrollment; without it those requests fail as `Unavailable`.
     #[must_use]
     pub fn with_enrollment(mut self, producer: enrollment::Producer) -> Self {
         self.enrollment = Some(producer);
@@ -66,7 +67,7 @@ impl State {
         self: &Arc<Self>,
         request: ExtractRequest,
     ) -> Result<ExtractResponse, Error> {
-        if request.ciphertext.len() > MAX_REQUEST_BYTES {
+        if request.ciphertext.len() > MAX_POSEGUARD_REQUEST_BYTES {
             return Err(Error::InvalidMessage);
         }
         let permit = self
@@ -87,12 +88,25 @@ impl State {
                     reason: Failure::InvalidRequest,
                 }
                 .encode(),
-                Ok(Request::Embedding(input)) => match state.engine.extract(&input.image)? {
-                    Ok(embedding) => EmbeddingResult::Success { embedding },
-                    Err(reason) => EmbeddingResult::Failed { reason },
+                Ok(Request::Embedding(mut input)) => {
+                    let mut image = FaceImage {
+                        source: Some(Source::VanillaSelfie(std::mem::take(&mut input.image))),
+                    };
+                    let result = state.engine.extract(&image);
+                    engine::erase_image(&mut image);
+                    match result? {
+                        Ok(embedding) => EmbeddingResult::Success { embedding },
+                        Err(reason) => EmbeddingResult::Failed { reason },
+                    }
+                    .encode()
+                }
+                Ok(Request::Enrollment(_)) => EnrollmentResult::Failed {
+                    reason: Failure::InvalidRequest,
                 }
                 .encode(),
-                Ok(Request::Enrollment(input)) => state.enroll_sealed(&input)?.encode(),
+                Ok(Request::PoseGuardEnrollment(input)) => {
+                    state.enroll_poseguard_sealed(&input)?.encode()
+                }
             }
             .map_err(|_| Error::Unavailable)?;
             let ciphertext = sealer.seal(&encoded).map_err(|_| Error::Unavailable)?;
@@ -115,7 +129,8 @@ mod tests {
         AttestationFailed, CaptureAttestor, NONCE_BYTES, USER_DATA_BYTES,
     };
     use selfie_enrollment_sealed_types::{
-        ENROLLMENT_FIELDS, EmbeddingRequest, EnrollmentRequest, EnrollmentResult, FaceEmbedding,
+        ENROLLMENT_FIELDS, EmbeddingRequest, EnrollmentOperation, EnrollmentRequest, FaceEmbedding,
+        PoseGuardCapture, PoseGuardEnrollmentRequest,
     };
     struct TestAttestor;
     impl Attestor for TestAttestor {
@@ -125,7 +140,8 @@ mod tests {
     }
     struct FakeEngine;
     impl Engine for FakeEngine {
-        fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
+        fn extract(&self, image: &FaceImage) -> Result<Result<FaceEmbedding, Failure>, Error> {
+            assert!(matches!(image.source, Some(Source::VanillaSelfie(_))));
             Ok(Ok(FaceEmbedding {
                 embedding: "AA==".into(),
                 embedding_type: "test".into(),
@@ -153,11 +169,12 @@ mod tests {
         forbid: bool,
     }
     impl Engine for EnrollEngine {
-        fn extract(&self, _: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
+        fn extract(&self, image: &FaceImage) -> Result<Result<FaceEmbedding, Failure>, Error> {
             assert!(
                 !self.forbid,
                 "invalid enrollment requests must not reach extraction"
             );
+            assert!(matches!(image.source, Some(Source::PoseGuard(_))));
             let mut vector = (512_u64).to_le_bytes().to_vec();
             vector.resize(8 + 512 * 4, 0);
             Ok(Ok(FaceEmbedding {
@@ -250,25 +267,55 @@ mod tests {
         sub: &str,
         custody: &SecretKey,
     ) -> Result<EnrollmentResult, Error> {
+        let request = PoseGuardEnrollmentRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            operation: EnrollmentOperation::EnrollWithPoseGuard,
+            central_png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+            captures: std::array::from_fn(|i| PoseGuardCapture {
+                image: vec![i as u8 + 1],
+                target_pitch: 10.0,
+                target_yaw: -20.0,
+            }),
+            sub: sub.into(),
+            custody_public_key: custody.public_key().as_bytes().to_vec(),
+        };
+        sealed_enrollment_request(state, &request.encode().unwrap()).await
+    }
+    async fn sealed_enrollment_request(
+        state: &Arc<State>,
+        request: &[u8],
+    ) -> Result<EnrollmentResult, Error> {
         let assignment = state.assignment().await.unwrap();
         let consumer = ChannelConsumer::from_unverified_public_key(
             ChannelDomain::new(CHANNEL_DOMAIN),
             &assignment.public_key,
         )
         .unwrap();
-        let request = EnrollmentRequest {
-            version: ENROLLMENT_PROTOCOL_VERSION,
-            image: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
-            sub: sub.into(),
-            custody_public_key: custody.public_key().as_bytes().to_vec(),
-        };
-        let (sealed, opener) = consumer
-            .seal_to_enclave(&request.encode().unwrap())
-            .unwrap();
+        let (sealed, opener) = consumer.seal_to_enclave(request).unwrap();
         let response = state.extract(ExtractRequest { ciphertext: sealed }).await?;
         assert!(response.ciphertext.len() <= selfie_enrollment_api_types::MAX_RESPONSE_BYTES);
         let opened = opener.open_from_enclave(&response.ciphertext).unwrap();
         Ok(EnrollmentResult::decode(&opened).unwrap())
+    }
+    #[tokio::test]
+    async fn legacy_enrollment_is_rejected_even_with_a_configured_producer() {
+        let custody = SecretKey::generate(&mut OsRng);
+        let request = EnrollmentRequest {
+            version: ENROLLMENT_PROTOCOL_VERSION,
+            image: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+            sub: "0x1f".into(),
+            custody_public_key: custody.public_key().as_bytes().to_vec(),
+        };
+        for state in [enrolling_state(true), state()] {
+            assert!(matches!(
+                sealed_enrollment_request(&state, &request.encode().unwrap())
+                    .await
+                    .unwrap(),
+                EnrollmentResult::Failed {
+                    reason: Failure::InvalidRequest
+                }
+            ));
+        }
     }
     #[tokio::test]
     async fn sealed_enrollment_returns_the_bundle_and_a_user_owned_pcp() {

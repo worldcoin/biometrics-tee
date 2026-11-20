@@ -80,7 +80,7 @@ async fn one_assignment_and_extraction_per_socket_with_bounded_capacity() {
         })
     );
     socket
-        .send(Message::Binary(vec![1, 2, 3].into()))
+        .send(Message::Binary(vec![1; MAX_REQUEST_BYTES + 1].into()))
         .await
         .unwrap();
     assert!(matches!(

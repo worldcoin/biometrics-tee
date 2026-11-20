@@ -20,7 +20,9 @@ async function main() {
     for(const [name,engine] of [['chromium',chromium],['webkit',webkit]]) {
       const browser=await engine.launch({headless:true, ...(name==='chromium'?{channel:'chromium'}:{})});
       try {
-        for(const mode of ['untrusted','abort-assignment','already-aborted','oversized','flood','invalid-policy']) {
+        for(const operation of ['extractEmbedding','enroll','enrollWithPoseGuard'])
+        for(const mode of ['untrusted','abort-assignment','already-aborted','oversized','flood','invalid-policy',
+          ...(operation==='enrollWithPoseGuard'?['missing-capture','extra-capture']:[])]) {
           const page=await browser.newPage();
           try {
             await page.addInitScript(({mode})=>{
@@ -43,7 +45,7 @@ async function main() {
               };
             },{mode});
             await page.goto(`http://127.0.0.1:${server.address().port}/`);
-            const result=await page.evaluate(async ({config,mode})=>{
+            const result=await page.evaluate(async ({config,mode,operation})=>{
               const module=await import('/selfie_enrollment_client.js');await module.default();
               const controller=new AbortController();
               if(mode==='already-aborted')controller.abort();
@@ -51,16 +53,24 @@ async function main() {
               const started=performance.now();
               let error;
               if(mode==='abort-assignment')setTimeout(()=>controller.abort(),30);
-              try{await module.extractEmbedding(JSON.stringify(config),new Uint8Array([1,2,3]),controller.signal)}catch(e){error=String(e)}
+              const image=new Uint8Array([137,80,78,71,13,10,26,10,1]);
+              const key=new Uint8Array(32).fill(7);
+              const captures=Array.from({length:mode==='missing-capture'?2:mode==='extra-capture'?4:3},()=>({
+                image:new Uint8Array([1,2,3]),target_pitch:10,target_yaw:-20}));
+              try{
+                if(operation==='extractEmbedding')await module.extractEmbedding(JSON.stringify(config),image,controller.signal);
+                else if(operation==='enroll')await module.enroll(JSON.stringify(config),image,'0x1f',key,controller.signal);
+                else await module.enrollWithPoseGuard(JSON.stringify(config),image,captures,'0x1f',key,controller.signal);
+              }catch(e){error=String(e)}
               return {...window.transport,error,elapsed:performance.now()-started};
-            },{config,mode});
-            assert.ok(result.error,`${name}/${mode} must fail`);
-            assert.equal(result.sent.includes('image'),false,`${name}/${mode} must withhold image`);
-            if(['already-aborted','invalid-policy'].includes(mode))assert.equal(result.created,0);
+            },{config,mode,operation});
+            assert.ok(result.error,`${name}/${operation}/${mode} must fail`);
+            assert.equal(result.sent.includes('image'),false,`${name}/${operation}/${mode} must withhold image`);
+            if(['already-aborted','invalid-policy','missing-capture','extra-capture'].includes(mode))assert.equal(result.created,0);
             else assert.ok(result.closed>0,`${name}/${mode} socket cleanup`);
             if(mode==='untrusted')assert.match(result.error,/attestation rejected/);
             if(mode==='abort-assignment'){assert.deepEqual(result.sent,['assignment_request']);assert.ok(result.elapsed<1000,`cancellation took ${result.elapsed}ms`)}
-            console.log(`PASS ${name}: ${mode}`);
+            console.log(`PASS ${name}/${operation}: ${mode}`);
           } finally {await page.close()}
         }
       } finally {await browser.close()}

@@ -227,3 +227,39 @@ pub async fn extract_embedding(
     .await;
     operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
 }
+
+#[cfg(feature = "js-export")]
+#[wasm_bindgen(js_name=enrollWithPoseGuard)]
+pub async fn enroll_with_poseguard(
+    config_json: String,
+    central_png: Vec<u8>,
+    captures: JsValue,
+    sub: String,
+    custody_public_key: Vec<u8>,
+    signal: Option<AbortSignal>,
+) -> Result<JsValue, JsValue> {
+    let mut central_png = zeroize::Zeroizing::new(central_png);
+    let operation = async {
+        let config: Config = serde_json::from_str(&config_json).map_err(|_| Error::Config)?;
+        let captures = captures
+            .dyn_into::<js_sys::Array>()
+            .map_err(|_| Error::Protocol)?;
+        if captures.length() as usize != selfie_enrollment_api_types::POSEGUARD_CHALLENGE_COUNT {
+            return Err(Error::Protocol);
+        }
+        let captures =
+            serde_wasm_bindgen::from_value(captures.into()).map_err(|_| Error::Protocol)?;
+        let key = custody_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Config)?;
+        let client = EnrollmentClient::new(config)?;
+        let session = client.connect(signal).await?;
+        let result = session
+            .enroll_with_poseguard(std::mem::take(&mut *central_png), captures, sub, key)
+            .await?;
+        serde_wasm_bindgen::to_value(&result).map_err(|_| Error::Protocol)
+    }
+    .await;
+    operation.map_err(|e: Error| JsValue::from_str(&e.to_string()))
+}

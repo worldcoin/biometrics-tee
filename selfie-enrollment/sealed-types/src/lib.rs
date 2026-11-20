@@ -1,11 +1,15 @@
 //! Plaintext types used only by the client and enclave. Sensitive buffers are redacted and erased.
 use selfie_enrollment_api_types::{
-    ENROLLMENT_PROTOCOL_VERSION, MAX_ENCRYPTED_PCP_BYTES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES,
-    PADDED_ENROLLMENT_RESULT_BYTES, PROTOCOL_VERSION,
+    ENROLLMENT_PROTOCOL_VERSION, MAX_ENCRYPTED_PCP_BYTES, MAX_IMAGE_BYTES,
+    MAX_POSEGUARD_REQUEST_BYTES, MAX_REQUEST_BYTES, PADDED_ENROLLMENT_RESULT_BYTES,
+    PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::Cursor;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+mod poseguard;
+pub use poseguard::{EnrollmentOperation, PoseGuardCapture, PoseGuardEnrollmentRequest};
 
 pub const PADDED_RESULT_BYTES: usize = 64 * 1024;
 
@@ -57,6 +61,20 @@ pub enum Failure {
     QualityRejected,
     ExtractionFailed,
     InvalidRequest,
+    Challenge {
+        index: u32,
+        reason: ChallengeFailure,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeFailure {
+    InvalidImage,
+    QualityRejected,
+    ExtractionFailed,
+    PoseMismatch,
+    IdentityMismatch,
 }
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -157,24 +175,31 @@ impl EnrollmentRequest {
     }
 }
 
-/// A request on the sealed channel, selected by its `version`.
+/// A request on the sealed channel, selected by its version and optional operation.
 pub enum Request {
     Embedding(EmbeddingRequest),
     Enrollment(EnrollmentRequest),
+    PoseGuardEnrollment(PoseGuardEnrollmentRequest),
 }
 impl Request {
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() > MAX_REQUEST_BYTES {
+        if bytes.len() > MAX_POSEGUARD_REQUEST_BYTES {
             return Err(Error);
         }
         #[derive(Deserialize)]
-        struct Version {
+        struct Header {
             version: u32,
+            operation: Option<EnrollmentOperation>,
         }
-        let Version { version } = decode(bytes)?;
-        match version {
-            PROTOCOL_VERSION => EmbeddingRequest::decode(bytes).map(Self::Embedding),
-            ENROLLMENT_PROTOCOL_VERSION => EnrollmentRequest::decode(bytes).map(Self::Enrollment),
+        let Header { version, operation } = decode(bytes)?;
+        match (version, operation) {
+            (PROTOCOL_VERSION, None) => EmbeddingRequest::decode(bytes).map(Self::Embedding),
+            (ENROLLMENT_PROTOCOL_VERSION, None) => {
+                EnrollmentRequest::decode(bytes).map(Self::Enrollment)
+            }
+            (ENROLLMENT_PROTOCOL_VERSION, Some(EnrollmentOperation::EnrollWithPoseGuard)) => {
+                PoseGuardEnrollmentRequest::decode(bytes).map(Self::PoseGuardEnrollment)
+            }
             _ => Err(Error),
         }
     }
