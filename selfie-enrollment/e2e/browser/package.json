@@ -1,1 +1,1 @@
-{"private":true,"scripts":{"test":"node test.cjs"},"devDependencies":{"playwright":"1.62.1"}}
+{"private":true,"license":"MIT","scripts":{"test":"node test.cjs"},"devDependencies":{"playwright":"1.62.1"}}
