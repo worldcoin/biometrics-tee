@@ -39,6 +39,7 @@ pub struct InitMigrationResponse {
     pub approved_pcr_registry: Option<ApprovedPcrRegistry>,
 }
 
+/// Signed PCR registry and Sigstore bundle from a single registry revision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovedPcrRegistry {
     /// Exact bytes of approved-pcrs.json, standard padded base64.
