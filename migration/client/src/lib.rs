@@ -2,6 +2,9 @@
 
 pub mod sealing;
 
+mod registry;
+pub use registry::RegistryVerificationError;
+
 pub use orb_pcp_defs::v1::Migration;
 
 use std::{sync::Arc, time::Duration};
