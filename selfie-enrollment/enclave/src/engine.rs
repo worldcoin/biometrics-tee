@@ -1,11 +1,16 @@
-//! Typed adapter over the shared byte-oriented sandbox. Only VanillaSelfie extraction is exposed.
-use biometric_engines_protocol::{self as protocol, failure::Kind, response::Outcome};
+//! Typed embedding adapter over the shared byte-oriented sandbox.
+use biometric_engines_protocol::{
+    self as protocol,
+    face::{FaceImage, face_image::Source},
+    failure::Kind,
+    response::Outcome,
+};
 use selfie_enrollment_enclave_types::Error;
-use selfie_enrollment_sealed_types::{FaceEmbedding, Failure};
+use selfie_enrollment_sealed_types::{ChallengeFailure, FaceEmbedding, Failure};
 use zeroize::Zeroize;
 /// Serializes its own requests; health checks must not wait for an in-flight one.
 pub trait Engine: Send + Sync {
-    fn extract(&self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error>;
+    fn extract(&self, image: &FaceImage) -> Result<Result<FaceEmbedding, Failure>, Error>;
     fn check_health(&self) -> Result<(), Error>;
 }
 
@@ -47,7 +52,34 @@ pub fn decode_result(
                 if let Some(report) = failure.debug_report.as_mut() {
                     report.zeroize();
                 }
-                use protocol::face::FailureCode;
+                use protocol::face::{FailureCode, ValidationReason};
+                if let Some(index) = failure.pose_guard_challenge_index {
+                    let reason = match FailureCode::try_from(failure.code)
+                        .map_err(|_| Error::Unavailable)?
+                    {
+                        FailureCode::InvalidImage => ChallengeFailure::InvalidImage,
+                        FailureCode::TemplateFailed => ChallengeFailure::ExtractionFailed,
+                        FailureCode::ValidationFailed => match failure
+                            .validation_failure
+                            .as_ref()
+                            .map(|details| details.reason)
+                        {
+                            Some(reason)
+                                if reason == ValidationReason::PoseGuardTargetMismatch as i32 =>
+                            {
+                                ChallengeFailure::PoseMismatch
+                            }
+                            Some(reason)
+                                if reason == ValidationReason::PoseGuardIdentityMismatch as i32 =>
+                            {
+                                ChallengeFailure::IdentityMismatch
+                            }
+                            _ => ChallengeFailure::QualityRejected,
+                        },
+                        _ => return Err(Error::Unavailable),
+                    };
+                    return Ok(Err(Failure::Challenge { index, reason }));
+                }
                 let reason =
                     match FailureCode::try_from(failure.code).map_err(|_| Error::Unavailable)? {
                         FailureCode::InvalidImage => Failure::InvalidImage,
@@ -81,15 +113,8 @@ impl SandboxEngine {
 }
 #[cfg(target_os = "linux")]
 impl Engine for SandboxEngine {
-    fn extract(&self, image: &[u8]) -> Result<Result<FaceEmbedding, Failure>, Error> {
-        use protocol::{
-            face::{EmbeddingRequest, FaceImage, face_image::Source},
-            request::Operation,
-        };
+    fn extract(&self, image: &FaceImage) -> Result<Result<FaceEmbedding, Failure>, Error> {
         use std::sync::atomic::Ordering;
-        if image.is_empty() || image.len() > selfie_enrollment_api_types::MAX_IMAGE_BYTES {
-            return Ok(Err(Failure::InvalidRequest));
-        }
         // A poisoned lock means a request panicked mid-exchange; the worker state is unknown.
         let mut worker = self
             .worker
@@ -101,22 +126,10 @@ impl Engine for SandboxEngine {
             .filter(|_| id != 0)
             .unwrap_or_else(|| worker.fail());
         self.next_id.store(next_id, Ordering::Relaxed);
-        let mut request = protocol::Request::new(
-            id,
-            Operation::Embedding(EmbeddingRequest {
-                image: Some(FaceImage {
-                    source: Some(Source::VanillaSelfie(image.to_vec())),
-                }),
-            }),
-        );
-        let encoded = zeroize::Zeroizing::new(protocol::protobuf::encode_request(&request));
-        if let Some(Operation::Embedding(ref mut r)) = request.operation
-            && let Some(FaceImage {
-                source: Some(Source::VanillaSelfie(ref mut bytes)),
-            }) = r.image
-        {
-            bytes.zeroize();
-        }
+        let encoded = match encode_request(id, image) {
+            Ok(encoded) => encoded,
+            Err(reason) => return Ok(Err(reason)),
+        };
         let response = match worker.exchange(&encoded) {
             Ok(response) => zeroize::Zeroizing::new(response),
             // Nothing was sent, so the worker stays trusted and the request alone fails.
@@ -138,9 +151,107 @@ impl Engine for SandboxEngine {
         Ok(())
     }
 }
+#[cfg(any(target_os = "linux", test))]
+fn encode_request(id: u64, image: &FaceImage) -> Result<zeroize::Zeroizing<Vec<u8>>, Failure> {
+    use protocol::{face::EmbeddingRequest, request::Operation};
+    use selfie_enrollment_api_types::{MAX_IMAGE_BYTES, POSEGUARD_CHALLENGE_COUNT};
+    let valid_image = |bytes: &[u8]| !bytes.is_empty() && bytes.len() <= MAX_IMAGE_BYTES;
+    let valid = match image.source.as_ref() {
+        Some(Source::VanillaSelfie(bytes)) => valid_image(bytes),
+        Some(Source::PoseGuard(capture)) => {
+            valid_image(&capture.central_image)
+                && capture.challenges.len() == POSEGUARD_CHALLENGE_COUNT
+                && capture.challenges.iter().all(|c| {
+                    valid_image(&c.image)
+                        && (-20.0..=20.0).contains(&c.target_pitch)
+                        && (-35.0..=35.0).contains(&c.target_yaw)
+                })
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(Failure::InvalidRequest);
+    }
+    let mut request = protocol::Request::new(
+        id,
+        Operation::Embedding(EmbeddingRequest {
+            image: Some(image.clone()),
+        }),
+    );
+    let encoded = zeroize::Zeroizing::new(protocol::protobuf::encode_request(&request));
+    if let Some(Operation::Embedding(request)) = &mut request.operation
+        && let Some(image) = &mut request.image
+    {
+        erase_image(image);
+    }
+    Ok(encoded)
+}
+
+pub(crate) fn erase_image(image: &mut FaceImage) {
+    match image.source.as_mut() {
+        Some(Source::VanillaSelfie(bytes)) => bytes.zeroize(),
+        Some(Source::PoseGuard(capture)) => {
+            capture.central_image.zeroize();
+            for challenge in &mut capture.challenges {
+                challenge.image.zeroize();
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn batch_uses_one_embedding_request_and_reports_the_failing_capture() {
+        use protocol::{
+            face::{
+                Failure as WorkerFailure, ImageRole, PoseGuard, PoseGuardCapture, ValidationReason,
+                ValidationTarget,
+            },
+            request::Operation,
+        };
+        let image = FaceImage {
+            source: Some(Source::PoseGuard(PoseGuard {
+                central_image: vec![1],
+                challenges: (0..3)
+                    .map(|i| PoseGuardCapture {
+                        image: vec![i + 2],
+                        target_pitch: 10.0,
+                        target_yaw: -20.0,
+                    })
+                    .collect(),
+            })),
+        };
+        let request =
+            protocol::protobuf::decode_request(&encode_request(1, &image).unwrap()).unwrap();
+        let Some(Operation::Embedding(request)) = request.operation else {
+            panic!("expected embedding")
+        };
+        assert_eq!(request.image.as_ref(), Some(&image));
+        for (reason, expected) in [
+            (
+                ValidationReason::PoseGuardTargetMismatch,
+                ChallengeFailure::PoseMismatch,
+            ),
+            (
+                ValidationReason::PoseGuardIdentityMismatch,
+                ChallengeFailure::IdentityMismatch,
+            ),
+        ] {
+            let failure = WorkerFailure::validation(reason, ValidationTarget::PoseGuardChallenge)
+                .at_image(ImageRole::EmbeddingInput)
+                .at_pose_guard_challenge(2);
+            let encoded = protocol::protobuf::encode_response(&protocol::Response::new(
+                1,
+                Outcome::Failure(failure.into()),
+            ));
+            assert!(
+                matches!(decode_result(&encoded, 1), Ok(Err(Failure::Challenge { index: 2, reason })) if reason == expected)
+            );
+        }
+    }
     #[test]
     fn worker_response_must_match_id_and_operation() {
         let result = protocol::face::EmbeddingResult {

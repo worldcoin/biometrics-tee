@@ -5,7 +5,7 @@ use selfie_enrollment_host::{AppState, Enclave};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -15,6 +15,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 struct FakeEnclave {
     assignments: AtomicUsize,
     extractions: AtomicUsize,
+    continue_once: AtomicBool,
 }
 #[async_trait::async_trait]
 impl Enclave for FakeEnclave {
@@ -32,6 +33,7 @@ impl Enclave for FakeEnclave {
         self.extractions.fetch_add(1, Ordering::SeqCst);
         Ok(ExtractResponse {
             ciphertext: vec![4],
+            await_capture: self.continue_once.swap(false, Ordering::SeqCst),
         })
     }
 }
@@ -80,7 +82,7 @@ async fn one_assignment_and_extraction_per_socket_with_bounded_capacity() {
         })
     );
     socket
-        .send(Message::Binary(vec![1, 2, 3].into()))
+        .send(Message::Binary(vec![1; MAX_REQUEST_BYTES + 1].into()))
         .await
         .unwrap();
     assert!(matches!(
@@ -99,6 +101,108 @@ async fn one_assignment_and_extraction_per_socket_with_bounded_capacity() {
     })
     .await
     .unwrap();
+    assert_eq!(enclave.assignments.load(Ordering::SeqCst), 1);
+    assert_eq!(enclave.extractions.load(Ordering::SeqCst), 1);
+    task.abort();
+}
+
+#[tokio::test]
+async fn targets_and_capture_share_one_assignment_and_release_the_socket() {
+    let (url, state, enclave, task) = server().await;
+    enclave.continue_once.store(true, Ordering::SeqCst);
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    socket
+        .send(Message::Text(r#"{"type":"assignment_request"}"#.into()))
+        .await
+        .unwrap();
+    assert_eq!(next(&mut socket).await["type"], "assignment");
+    for exchange in 1..=2 {
+        socket
+            .send(Message::Binary(vec![exchange].into()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+        assert_eq!(enclave.assignments.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            enclave.extractions.load(Ordering::SeqCst),
+            exchange as usize
+        );
+        if exchange == 1 {
+            assert_eq!(state.connections.available_permits(), 0);
+            assert!(connect_async(&url).await.is_err());
+        }
+    }
+    assert!(matches!(
+        socket.next().await.unwrap().unwrap(),
+        Message::Close(_)
+    ));
+    task.abort();
+}
+
+#[tokio::test]
+async fn pending_capture_rejects_reassignment_and_third_exchange() {
+    for reassign in [true, false] {
+        let (url, _, enclave, task) = server().await;
+        enclave.continue_once.store(true, Ordering::SeqCst);
+        let (mut socket, _) = connect_async(&url).await.unwrap();
+        socket
+            .send(Message::Text(r#"{"type":"assignment_request"}"#.into()))
+            .await
+            .unwrap();
+        next(&mut socket).await;
+        socket.send(Message::Binary(vec![1].into())).await.unwrap();
+        assert!(matches!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Binary(_)
+        ));
+        enclave.continue_once.store(true, Ordering::SeqCst);
+        socket
+            .send(if reassign {
+                Message::Text(r#"{"type":"assignment_request"}"#.into())
+            } else {
+                Message::Binary(vec![2].into())
+            })
+            .await
+            .unwrap();
+        let error: ErrorEnvelope = serde_json::from_value(next(&mut socket).await).unwrap();
+        assert_eq!(error.error.code, ErrorCode::InvalidMessage);
+        assert_eq!(enclave.assignments.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            enclave.extractions.load(Ordering::SeqCst),
+            if reassign { 1 } else { 2 }
+        );
+        assert!(matches!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn cancelling_during_capture_releases_capacity_without_enrollment() {
+    let (url, state, enclave, task) = server().await;
+    enclave.continue_once.store(true, Ordering::SeqCst);
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    socket
+        .send(Message::Text(r#"{"type":"assignment_request"}"#.into()))
+        .await
+        .unwrap();
+    next(&mut socket).await;
+    socket.send(Message::Binary(vec![1].into())).await.unwrap();
+    assert!(matches!(
+        socket.next().await.unwrap().unwrap(),
+        Message::Binary(_)
+    ));
+    socket.close(None).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), state.drain())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.connections.available_permits(), 1);
     assert_eq!(enclave.assignments.load(Ordering::SeqCst), 1);
     assert_eq!(enclave.extractions.load(Ordering::SeqCst), 1);
     task.abort();
