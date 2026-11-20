@@ -1,0 +1,47 @@
+[package]
+name = "di-migration-stage"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT"
+publish = false
+description = "Runs DI migrations against stage for real provisioned stage users, and load tests the migration service."
+
+# Not a member of the root workspace; see `exclude` there.
+[workspace]
+
+[[bin]]
+name = "di-migration-stage"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+attested-request = "=0.1.1"
+base64 = "0.22"
+clap = { version = "4.6", features = ["derive", "env"] }
+crypto_box = "0.9"
+di-migration-client = { path = "../../migration/client" }
+di-migration-primitives = { path = "../../migration/primitives" }
+fastrand = "2"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+# orb-tools main; bump together with `Cargo.lock`, which is seeded from orb-tools' own lockfile.
+integrity-forge = { git = "https://github.com/worldcoin/orb-tools", rev = "b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa" }
+# Must match the rev signup-flow pins, so both see the same oxide types.
+oxide = { git = "https://github.com/worldcoin/oxide", rev = "55e6ae7dbb2115bc2e00c7a4be042017678567a1", features = ["testing"] }
+pontifex = { version = "3.1.0", default-features = false, features = ["attestation"] }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+sha2 = "0.10"
+signup-flow = { git = "https://github.com/worldcoin/orb-tools", rev = "b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa", features = ["walletkit"] }
+tar = "0.4"
+thiserror = "2"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time", "fs", "signal", "sync"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+
+# Same patch as orb-tools' workspace: one native libsodium for alkali and sodiumoxide.
+[patch.crates-io]
+libsodium-sys = { git = "https://github.com/worldcoin/orb-tools", rev = "b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa" }
