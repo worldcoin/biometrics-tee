@@ -2,6 +2,12 @@
 
 WIP
 
+### Stage release
+
+1. Publish a GitHub release with a version tag such as `v0.1.0` pointing to a commit on `main`. **Build DI migration release** publishes the images to GHCR and records the PCRs of the EIF in the published launcher.
+2. When the build succeeds, run **Publish DI migration to stage** from `main` with that tag. Review the complete proposed registry and its SHA-256 in the run summary before approving publication.
+3. After approval, the workflow signs with the stage KMS key, records the signature in Rekor, and switches the S3 pointer after writing both files. Deploy the approved launcher by its recorded digest with debug mode off.
+
 The API uses the [shared proof verification client](https://github.com/worldcoin/world-id-proof-verification/tree/main/client),
 pinned to tag `v1.0.0` in `Cargo.toml`, for verification and cached KMS-signed service JWTs.
 The verification service must support its request body: UUID `challenge_id`,
