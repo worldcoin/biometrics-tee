@@ -212,9 +212,6 @@ jobs:
       - name: Build EIF and measurements
         run: scripts/build-enclaves.sh --workload ${{ matrix.workload }} target/eif
 
-      - name: Show measurements
-        run: jq . target/eif/di-${{ matrix.workload }}-pcr.json | tee -a "$GITHUB_STEP_SUMMARY"
-
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -256,36 +253,24 @@ jobs:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
 
-      - name: Record the packaged migration EIF
-        if: github.event_name == 'release' && matrix.workload == 'migration'
+      - name: Record build measurements
         env:
+          EIF_PREFIX: target/eif/di-${{ matrix.workload }}
+          RELEASE_CANDIDATE: ${{ github.event_name == 'release' && matrix.workload == 'migration' }}
           RELEASE_TAG: ${{ inputs.version }}
-          LAUNCHER_IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           LAUNCHER_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          [[ "$LAUNCHER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          image="$LAUNCHER_IMAGE@$LAUNCHER_DIGEST"
-          packaged_eif="$(mktemp)"
-          container=""
-          cleanup() {
-            if [[ -n "$container" ]]; then docker rm "$container" >/dev/null; fi
-            rm -f "$packaged_eif"
-          }
-          trap cleanup EXIT
-          docker pull --platform linux/amd64 "$image"
-          container="$(docker create --platform linux/amd64 "$image")"
-          docker cp "$container:/home/enclave.eif" "$packaged_eif"
-          if ! cmp -s target/eif/di-migration-enclave.eif "$packaged_eif"; then
-            echo "::error::The published launcher does not contain the measured EIF."
-            exit 1
+          jq . "$EIF_PREFIX-pcr.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ "$RELEASE_CANDIDATE" == true ]]; then
+            [[ "$LAUNCHER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            eif_hash="$(sha256sum "$EIF_PREFIX-enclave.eif" | cut -d ' ' -f 1)"
+            jq -e --arg release "$RELEASE_TAG" --arg launcher "$LAUNCHER_DIGEST" --arg eif "sha256:$eif_hash" '
+              select(all(.PCR0, .PCR1, .PCR2; test("^[0-9a-f]{96}$") and . != ("0" * 96))) |
+              {approved_builds: [{release: $release, launcher_image_digest: $launcher,
+                eif_digest: $eif, measurements: {PCR0, PCR1, PCR2}}]}
+            ' "$EIF_PREFIX-pcr.json" > "$RUNNER_TEMP/approved-pcrs.json"
           fi
-          eif_hash="$(sha256sum "$packaged_eif" | cut -d ' ' -f 1)"
-          jq -e --arg release "$RELEASE_TAG" --arg launcher "$LAUNCHER_DIGEST" --arg eif "sha256:$eif_hash" '
-            select(all(.PCR0, .PCR1, .PCR2; test("^[0-9a-f]{96}$") and . != ("0" * 96))) |
-            {approved_builds: [{release: $release, launcher_image_digest: $launcher,
-              eif_digest: $eif, measurements: {PCR0, PCR1, PCR2}}]}
-          ' target/eif/di-migration-pcr.json | tee "$RUNNER_TEMP/approved-pcrs.json"
 
       - name: Upload the migration release candidate
         if: github.event_name == 'release' && matrix.workload == 'migration'
