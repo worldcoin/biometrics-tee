@@ -253,7 +253,9 @@ jobs:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
 
-      - name: Record build measurements
+      # Record the EIF digest, PCRs, and pushed launcher digest.
+      # Create the approved-pcrs file that is going to be reviewed and signed from the release workflows
+      - name: Create the candidate approved-pcrs file
         env:
           EIF_PREFIX: target/eif/di-${{ matrix.workload }}
           RELEASE_CANDIDATE: ${{ github.event_name == 'release' && matrix.workload == 'migration' }}
