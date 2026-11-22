@@ -22,7 +22,6 @@ ETAG = re.compile(r'"[0-9a-f]+(?:-[0-9]+)?"')
 KEY_ARN = re.compile(r"arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]{36}")
 STAGE_KEY_SHA256 = "1788c6e062a29f6fa4d95f203b07bc4c810a36255ca70be4c090feeaff93bff6"
 REKOR_LOG_ID = "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
-TRUSTED_ROOT = Path(__file__).with_name("pcr_registry_rekor_root.json")
 
 
 def prepare(store, release, candidate, output):
@@ -132,8 +131,7 @@ def sign_registry(arn, registry, bundle, directory):
     )
     run(
         "cosign", "sign-blob", "--yes", "--key", f"awskms:///{arn}",
-        "--signing-config", config, "--trusted-root", TRUSTED_ROOT,
-        "--bundle", bundle, registry,
+        "--signing-config", config, "--bundle", bundle, registry,
     )
 
 
@@ -152,10 +150,7 @@ def verify_bundle(registry, bundle, public_key):
         or "messageSignature" not in material
     ):
         raise ValueError("bundle must include a Rekor v1 inclusion proof and checkpoint")
-    run(
-        "cosign", "verify-blob", "--key", public_key,
-        "--trusted-root", TRUSTED_ROOT, "--bundle", bundle, registry,
-    )
+    run("cosign", "verify-blob", "--key", public_key, "--bundle", bundle, registry)
 
 
 class RegistryStore:
