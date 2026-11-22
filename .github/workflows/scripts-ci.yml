@@ -1,0 +1,28 @@
+name: Scripts CI
+
+on:
+  pull_request:
+    paths:
+      - 'migration/scripts/**'
+      - '.github/workflows/scripts-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'migration/scripts/**'
+      - '.github/workflows/scripts-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pcr-registry-tests:
+    name: PCR registry tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test PCR registry publication
+        run: python3 -m unittest discover -s migration/scripts
