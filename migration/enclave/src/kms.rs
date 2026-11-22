@@ -70,7 +70,7 @@ pub struct KeyWrapper {
 }
 
 impl KeyWrapper {
-    /// A wrapper for the measured key ARN that reaches KMS through the parent.
+    /// A wrapper for the configured key ARN that reaches KMS through the parent.
     ///
     /// TLS terminates in the enclave; the parent relays bytes on [`TLS_PORT`] and serves its
     /// temporary credentials on [`CREDENTIALS_PORT`], which the SDK renews before expiry.
@@ -251,7 +251,7 @@ pub struct ManifestSigner {
 }
 
 impl ManifestSigner {
-    /// Configures the parent-routed KMS client for a measured signing-key ARN.
+    /// Configures the parent-routed KMS client for a configured signing-key ARN.
     ///
     /// The ARN's region fixes the endpoint; a caller cannot supply a separate host or region.
     ///

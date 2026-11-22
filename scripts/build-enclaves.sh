@@ -8,9 +8,8 @@ set -euo pipefail
 #
 # Needs x86_64-linux. Nitro hardware is only needed to run.
 #
-# Usage: STAGING_PCP_KMS_KEY_ARN=<arn> STAGING_PCP_KMS_SIGNING_KEY_ARN=<arn> \\
-#        scripts/build-enclaves.sh [--workload <name>] [--pcp-kms-key-arn <arn>]
-#        [--pcp-kms-signing-key-arn <arn>] [--face-ampc-public-keys-file <file>] [output-dir]
+# Usage: scripts/build-enclaves.sh [--workload <name>]
+#        [--face-ampc-public-keys-file <file>] [output-dir]
 #        (workload defaults to dev, output-dir to target/eif)
 #
 # Outputs in <output-dir>:
@@ -23,49 +22,24 @@ WORKLOADS=("migration" "dev" "selfie-enrollment")
 
 usage() {
   printf '%s\n' \
-    "Usage: scripts/build-enclaves.sh [--workload <name>] [--pcp-kms-key-arn <arn>]" \
-    "                                 [--pcp-kms-signing-key-arn <arn>]" \
+    "Usage: scripts/build-enclaves.sh [--workload <name>]" \
     "                                 [--face-ampc-public-keys-file <file>] [output-dir]" \
     "" \
     "Build a workload's enclave EIF and emit its PCR measurements." \
     "" \
     "Options:" \
     "  --workload <name>  Which enclave to build: ${WORKLOADS[*]} (default dev)." \
-    "  --pcp-kms-key-arn <arn>  Bake a full wrapping key/alias ARN into the migration EIF (overrides STAGING_PCP_KMS_KEY_ARN)." \
-    "  --pcp-kms-signing-key-arn <arn>  Bake a full manifest-signing key/alias ARN into the migration EIF (overrides STAGING_PCP_KMS_SIGNING_KEY_ARN)." \
     "  --face-ampc-public-keys-file <file>  Bake a JSON array of three base64 public keys in party order into the selfie-enrollment EIF." \
     "  -h, --help         Show this help."
 }
 
-# dev is the default because it is the workload that actually gets deployed; migration is
-# still a skeleton.
 workload="dev"
 out_dir="target/eif"
 output_dir_provided=false
-# Deployment automation supplies these as protected environment variables. Keep command-line
-# flags as explicit overrides for local builds, but never require ARNs in repository config.
-pcp_kms_key_arn="${STAGING_PCP_KMS_KEY_ARN:-}"
-pcp_kms_signing_key_arn="${STAGING_PCP_KMS_SIGNING_KEY_ARN:-}"
 face_ampc_public_keys_file=""
 
 while (( $# > 0 )); do
   case "$1" in
-    --pcp-kms-key-arn)
-      if (( $# < 2 )) || [[ -z "$2" ]]; then
-        echo "[ERROR] --pcp-kms-key-arn needs a full key/alias ARN." >&2
-        exit 2
-      fi
-      pcp_kms_key_arn="$2"
-      shift
-      ;;
-    --pcp-kms-signing-key-arn)
-      if (( $# < 2 )) || [[ -z "$2" ]]; then
-        echo "[ERROR] --pcp-kms-signing-key-arn needs a full key/alias ARN." >&2
-        exit 2
-      fi
-      pcp_kms_signing_key_arn="$2"
-      shift
-      ;;
     --face-ampc-public-keys-file)
       if (( $# < 2 )) || [[ -z "$2" ]]; then
         echo "[ERROR] --face-ampc-public-keys-file needs a JSON file." >&2
@@ -107,11 +81,6 @@ if [[ ! " ${WORKLOADS[*]} " == *" $workload "* ]]; then
   exit 2
 fi
 
-if [[ ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) && "$workload" != "migration" && "$workload" != "dev" ]]; then
-  echo "[ERROR] PCP KMS key options require --workload migration or dev." >&2
-  exit 2
-fi
-
 if [[ -n "$face_ampc_public_keys_file" ]]; then
   if [[ "$workload" != "selfie-enrollment" ]]; then
     echo "[ERROR] --face-ampc-public-keys-file requires --workload selfie-enrollment." >&2
@@ -135,25 +104,7 @@ cd "$repo_root"
 
 build_output() {
   local format="$1"
-  if [[ "$workload" == "migration" && ( -n "$pcp_kms_key_arn" || -n "$pcp_kms_signing_key_arn" ) ]]; then
-    # Terraform validates the ARNs. Pass them as data, never interpolated Nix source;
-    # the image embeds their identities in the measured environment.
-    PCP_BUILD_ROOT="$repo_root" PCP_BUILD_KEY_ARN="$pcp_kms_key_arn" PCP_BUILD_SIGNING_KEY_ARN="$pcp_kms_signing_key_arn" PCP_BUILD_FORMAT="$format" \
-      nix build --impure --no-update-lock-file --no-link --print-out-paths --expr '
-        let
-          # GitHub Actions checks out a shallow repository. This tells Nix that the local
-          # git+file source is intentionally shallow, so it does not require revCount.
-          flake = builtins.getFlake ("git+file://" + builtins.getEnv "PCP_BUILD_ROOT" + "?shallow=1");
-          optionalArn = name:
-            let value = builtins.getEnv name;
-            in if value == "" then null else value;
-          images = flake.lib.migrationImages {
-            pcpKmsKeyArn = optionalArn "PCP_BUILD_KEY_ARN";
-            pcpKmsSigningKeyArn = optionalArn "PCP_BUILD_SIGNING_KEY_ARN";
-          };
-        in builtins.getAttr ("di-migration-" + builtins.getEnv "PCP_BUILD_FORMAT") images
-      '
-  elif [[ "$workload" == "selfie-enrollment" && -n "$face_ampc_public_keys_file" ]]; then
+  if [[ "$workload" == "selfie-enrollment" && -n "$face_ampc_public_keys_file" ]]; then
     FACE_AMPC_BUILD_ROOT="$repo_root" FACE_AMPC_BUILD_PUBLIC_KEYS="$face_ampc_public_keys" FACE_AMPC_BUILD_FORMAT="$format" \
       nix build --impure --no-update-lock-file --no-link --print-out-paths --expr '
         let
