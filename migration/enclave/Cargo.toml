@@ -13,15 +13,15 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-ark-babyjubjub = { version = "0.6", package = "taceo-ark-babyjubjub" }
-alkali = { version = "0.3", features = ["use-pkg-config"] }
+ark-babyjubjub.workspace = true
+alkali.workspace = true
 # Without the SDK's default HTTPS client: requests go through `pontifex::kms`.
-aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio"] }
-aws-types = "1"
+aws-sdk-kms.workspace = true
+aws-types.workspace = true
 base64.workspace = true
 bytes.workspace = true
-di-migration-pcp = { path = "../pcp" }
-di-migration-shares = { path = "../shares" }
+di-migration-pcp.workspace = true
+di-migration-shares.workspace = true
 di-migration-enclave-primitives.workspace = true
 di-worker-protocol.workspace = true
 flate2.workspace = true
@@ -46,10 +46,10 @@ zeroize.workspace = true
 tabernaculum.workspace = true
 
 [dev-dependencies]
-aws-sdk-kms.workspace = true
-aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
-aws-smithy-http-client = { version = "1", features = ["default-client"] }
-aws-smithy-types = "1"
-http = "1"
+aws-sdk-kms = { workspace = true, features = ["default-https-client"] }
+aws-smithy-runtime-api = { workspace = true, features = ["client", "http-1x"] }
+aws-smithy-http-client = { workspace = true, features = ["default-client"] }
+aws-smithy-types.workspace = true
+http.workspace = true
 orb-pcp-defs.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

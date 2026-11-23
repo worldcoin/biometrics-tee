@@ -13,14 +13,14 @@ serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
 base64.workspace = true
-crypto_box = "0.9.1"
-embedding-shares = { path = "../shares" }
-poseidon2 = { package = "taceo-poseidon2", version = "0.3", default-features = false, features = ["bn254", "t16"] }
+crypto_box.workspace = true
+embedding-shares.workspace = true
+poseidon2 = { workspace = true, features = ["bn254", "t16"] }
 rand.workspace = true
 selfie-enrollment-api-types.workspace = true
 selfie-enrollment-sealed-types.workspace = true
 sha2.workspace = true
-sha3 = { version = "0.10", default-features = false }
+sha3.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 world-id-primitives.workspace = true

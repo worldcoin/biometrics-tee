@@ -1,5 +1,4 @@
-//! The vsock contract between the dev host and its enclave. Shares nothing with the
-//! `migration` workload: a shared type would rotate its enclave's PCR0.
+//! The vsock contract between the dev host and its enclave.
 
 #![deny(
     clippy::all,
