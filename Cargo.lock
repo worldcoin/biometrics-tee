@@ -162,22 +162,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ampc-secret-sharing"
-version = "0.1.0"
-source = "git+https://github.com/worldcoin/ampc-common?rev=f27c39547b75b6ab7b87dd64c513cc70b003b83a#f27c39547b75b6ab7b87dd64c513cc70b003b83a"
-dependencies = [
- "aes-prng",
- "base64 0.22.1",
- "bytemuck",
- "eyre",
- "itertools 0.13.0",
- "num-traits",
- "rand 0.8.8",
- "rand_distr",
- "serde",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2288,7 +2272,7 @@ dependencies = [
 
 [[package]]
 name = "di-dev-api-primitives"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2296,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "di-dev-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "clap",
@@ -2309,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "di-dev-enclave"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "di-dev-enclave-primitives",
@@ -2323,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "di-dev-enclave-primitives"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "pontifex",
@@ -2333,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "di-dev-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2354,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "di-migration-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "attested-request",
  "axum",
@@ -2375,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "di-migration-enclave"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alkali",
  "anyhow",
@@ -2408,13 +2392,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "world-id-primitives",
  "zeroize",
 ]
 
 [[package]]
 name = "di-migration-enclave-primitives"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "ciborium",
@@ -2426,7 +2411,7 @@ dependencies = [
 
 [[package]]
 name = "di-migration-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2455,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "di-migration-pcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alkali",
  "async-trait",
@@ -2476,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "di-migration-primitives"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2486,16 +2471,16 @@ dependencies = [
 
 [[package]]
 name = "di-migration-shares"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "ampc-secret-sharing 0.1.0 (git+https://github.com/worldcoin/ampc-common?rev=3dfb4aacd8152329d03c4fe71dd81ee05589f360)",
+ "ampc-secret-sharing",
  "rand 0.8.8",
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "di-migration-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aws-config",
  "aws-sdk-dynamodb",
@@ -2512,7 +2497,7 @@ dependencies = [
 
 [[package]]
 name = "di-migration-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "metrics-exporter-statsd",
@@ -2521,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "di-worker-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2713,9 +2698,9 @@ dependencies = [
 
 [[package]]
 name = "embedding-shares"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "ampc-secret-sharing 0.1.0 (git+https://github.com/worldcoin/ampc-common?rev=f27c39547b75b6ab7b87dd64c513cc70b003b83a)",
+ "ampc-secret-sharing",
  "base64 0.22.1",
  "bincode",
  "crypto_box",
@@ -2916,9 +2901,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -4043,7 +4028,7 @@ dependencies = [
 
 [[package]]
 name = "migration-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4075,7 +4060,7 @@ dependencies = [
 
 [[package]]
 name = "migration-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "attested-request",
  "clap",
@@ -5639,7 +5624,7 @@ dependencies = [
 
 [[package]]
 name = "selfie-enrollment-api-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5648,7 +5633,7 @@ dependencies = [
 
 [[package]]
 name = "selfie-enrollment-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "ciborium",
@@ -5684,7 +5669,7 @@ dependencies = [
 
 [[package]]
 name = "selfie-enrollment-e2e"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5700,7 +5685,7 @@ dependencies = [
 
 [[package]]
 name = "selfie-enrollment-enclave"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5725,7 +5710,7 @@ dependencies = [
 
 [[package]]
 name = "selfie-enrollment-enclave-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pontifex",
  "selfie-enrollment-api-types",
@@ -5735,7 +5720,7 @@ dependencies = [
 
 [[package]]
 name = "selfie-enrollment-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5756,7 +5741,7 @@ dependencies = [
 
 [[package]]
 name = "selfie-enrollment-identity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "crypto_box",
@@ -5780,7 +5765,7 @@ dependencies = [
 
 [[package]]
 name = "selfie-enrollment-sealed-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "selfie-enrollment-api-types",
@@ -6441,7 +6426,7 @@ dependencies = [
 [[package]]
 name = "tabernaculum"
 version = "0.3.0"
-source = "git+https://github.com/worldcoin/tabernaculum?tag=v0.3.0#bc034128a60e798ef8602d6aafe517aaae0f5173"
+source = "git+https://github.com/worldcoin/tabernaculum?tag=v0.4.0#66ede1c016e016eb4ba8126575c7f91385159a34"
 dependencies = [
  "libc",
  "minijail",
@@ -6453,7 +6438,7 @@ dependencies = [
 [[package]]
 name = "tabernaculum-bundle"
 version = "0.3.0"
-source = "git+https://github.com/worldcoin/tabernaculum?tag=v0.3.0#bc034128a60e798ef8602d6aafe517aaae0f5173"
+source = "git+https://github.com/worldcoin/tabernaculum?tag=v0.4.0#66ede1c016e016eb4ba8126575c7f91385159a34"
 dependencies = [
  "hex",
  "libc",
@@ -7144,9 +7129,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

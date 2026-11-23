@@ -27,6 +27,8 @@ pub mod rng;
 pub mod routes;
 /// Pontifex server setup and lifecycle.
 pub mod server;
+/// Deployment configuration received during enclave bootstrap.
+pub mod startup_config;
 /// Boot-scoped enclave state.
 pub mod state;
 #[cfg(test)]

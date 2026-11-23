@@ -14,7 +14,7 @@ test-util = []
 [dependencies]
 base64.workspace = true
 di-migration-enclave-primitives.workspace = true
-attested-request = "0.1.1"
+attested-request.workspace = true
 di-migration-primitives.workspace = true
 hex.workspace = true
 orb-pcp-defs.workspace = true
@@ -28,5 +28,5 @@ tokio.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-attested-request = { version = "0.1.1", features = ["test-util"] }
+attested-request = { workspace = true, features = ["test-util"] }
 axum.workspace = true

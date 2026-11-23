@@ -11,6 +11,7 @@ use di_migration_enclave::{
     attestation::{self, NsmAttestor},
     kms::{KeyWrapper, ManifestSigner},
     rng, server,
+    startup_config::StartupConfig,
     state::EnclaveState,
     worker::SandboxWorker,
 };
@@ -46,6 +47,12 @@ pub(super) fn run() -> anyhow::Result<()> {
     let boot = enclave::accept(&BootstrapConfig::default(), Path::new(enclave::STAGING_DIR))
         .context("worker bundle provisioning failed")?;
     let runtime = boot.runtime();
+    let config = StartupConfig::from_value(
+        runtime
+            .application_config
+            .clone()
+            .context("migration startup configuration is missing")?,
+    )?;
     tracing::info!(worker_sha384 = %runtime.sha384, "worker executable provisioned");
     let pipeline_version = runtime.sha384.clone();
     let output = worker_output().context("failed to read the boot measurements")?;
@@ -80,7 +87,11 @@ pub(super) fn run() -> anyhow::Result<()> {
         .enable_all()
         .build()
         .context("failed to start enclave executor")?
-        .block_on(serve(boot, SandboxWorker::new(worker, pipeline_version)))
+        .block_on(serve(
+            boot,
+            SandboxWorker::new(worker, pipeline_version),
+            config,
+        ))
 }
 
 /// Worker output can carry biometric diagnostics, so only a debug enclave exposes it.
@@ -107,33 +118,30 @@ fn worker_failed(error: ConnectionError) -> ! {
 
 /// Boots the attested state, acknowledges the bundle once everything is up, then serves.
 // Err exits non-zero so the provisioner restarts the enclave rather than idling without a server.
-async fn serve(boot: Bootstrap, worker: SandboxWorker) -> anyhow::Result<()> {
+async fn serve(
+    boot: Bootstrap,
+    worker: SandboxWorker,
+    config: StartupConfig,
+) -> anyhow::Result<()> {
     attestation::connect()
         .await
         .context("Nitro Secure Module is unavailable")?;
-    let key_arn = std::env::var("PCP_KMS_KEY_ARN")
-        .context("PCP_KMS_KEY_ARN is not configured in the measured environment")?;
-    let key_wrapper =
-        KeyWrapper::from_parent(key_arn).context("invalid measured KMS configuration")?;
-    let mut state = EnclaveState::from_env(Arc::new(NsmAttestor), key_wrapper, Box::new(worker))
-        .context("failed to boot enclave state")?;
+    let key_wrapper = KeyWrapper::from_parent(config.pcp_kms_key_arn)
+        .context("invalid PCP wrapping KMS configuration")?;
+    let mut state = EnclaveState::generate(
+        Arc::new(NsmAttestor),
+        config.issuer_pubkey,
+        key_wrapper,
+        Box::new(worker),
+    )
+    .map_err(|error| anyhow!("failed to boot enclave state: {error:?}"))?;
     tracing::info!("PCP key wrapping configured");
-    match std::env::var("PCP_KMS_SIGNING_KEY_ARN") {
-        Ok(arn) => {
-            state.set_manifest_signer(
-                ManifestSigner::from_parent(arn)
-                    .await
-                    .context("failed to configure manifest-signing KMS key")?,
-            );
-            tracing::info!("PCP manifest signing configured");
-        }
-        Err(std::env::VarError::NotPresent) => {
-            tracing::info!("PCP manifest signing is not configured")
-        }
-        Err(std::env::VarError::NotUnicode(_)) => {
-            bail!("invalid manifest-signing KMS configuration")
-        }
-    }
+    state.set_manifest_signer(
+        ManifestSigner::from_parent(config.pcp_kms_signing_key_arn)
+            .await
+            .context("failed to configure manifest-signing KMS key")?,
+    );
+    tracing::info!("PCP manifest signing configured");
     let refresh = state.start_attestation_refresh();
 
     let document = SecureModule::global()
