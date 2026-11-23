@@ -21,6 +21,7 @@ PCR = re.compile(r"[0-9a-f]{96}")
 ETAG = re.compile(r'"[0-9a-f]+(?:-[0-9]+)?"')
 KEY_ARN = re.compile(r"arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]{36}")
 STAGE_KEY_SHA256 = "1788c6e062a29f6fa4d95f203b07bc4c810a36255ca70be4c090feeaff93bff6"
+REKOR_URL = "https://rekor.sigstore.dev"
 REKOR_LOG_ID = "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
 
 
@@ -130,7 +131,7 @@ def sign_registry(arn, registry, bundle, directory):
     config = directory / "signing-config.json"
     run(
         "cosign", "signing-config", "create",
-        "--rekor", "url=https://rekor.sigstore.dev,api-version=1,start-time=2021-01-12T11:53:27Z,operator=sigstore.dev",
+        "--rekor", f"url={REKOR_URL},api-version=1,start-time=2021-01-12T11:53:27Z,operator=sigstore.dev",
         "--rekor-config", "ANY", "--out", config,
     )
     run(
