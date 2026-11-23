@@ -12,11 +12,17 @@ use pontifex::{
 };
 use zeroize::Zeroizing;
 
+use crate::{RegistryVerificationError, registry::verified_pcr_configs};
+
 /// The oldest attestation document the enclave still serves while its refresh keeps failing.
 const MAX_ATTESTATION_AGE: Duration = Duration::from_hours(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SealingError {
+    #[error("the init response is missing the approved PCR registry")]
+    MissingApprovedRegistry,
+    #[error(transparent)]
+    Registry(#[from] RegistryVerificationError),
     #[error("the init response's {field} is not valid base64")]
     InvalidBase64 { field: &'static str },
     #[error("the enclave's attestation was not verified: {0}")]
@@ -37,22 +43,38 @@ pub enum SealingError {
 
 /// Checks enclave attestations against the PCRs of the enclave builds the app trusts.
 #[derive(Clone)]
-pub struct EnclaveVerifier(Arc<Verifier>);
+pub struct EnclaveVerifier(EnclaveTrust);
+
+#[derive(Clone)]
+enum EnclaveTrust {
+    Pinned(Arc<Verifier>),
+    ApprovedRegistry(Arc<str>),
+}
 
 impl EnclaveVerifier {
     /// Trusts an enclave whose PCRs match one of `trusted`.
     #[must_use]
     pub fn new(trusted: Vec<PcrConfig>) -> Self {
-        Self(Arc::new(Verifier::new(trusted, MAX_ATTESTATION_AGE)))
+        Self(EnclaveTrust::Pinned(Arc::new(Verifier::new(
+            trusted,
+            MAX_ATTESTATION_AGE,
+        ))))
+    }
+
+    /// Uses the signed registry in each init response to determine the trusted PCRs.
+    /// The registry must verify with the supplied trusted public key and prove Rekor inclusion.
+    #[must_use]
+    pub fn with_approval_key(approval_key_pem: &str) -> Self {
+        Self(EnclaveTrust::ApprovedRegistry(Arc::from(approval_key_pem)))
     }
 
     /// Trusts any genuine Nitro enclave, whatever it runs; for debug-mode enclaves, whose PCRs
     /// are zero.
     #[must_use]
     pub fn dangerously_skip_measurements() -> Self {
-        Self(Arc::new(
+        Self(EnclaveTrust::Pinned(Arc::new(
             Verifier::new(Vec::new(), MAX_ATTESTATION_AGE).dangerously_skip_measurements(),
-        ))
+        )))
     }
 
     /// The channel to the enclave boot `init` names, once its attestation verifies and commits
@@ -65,11 +87,34 @@ impl EnclaveVerifier {
         &self,
         init: &InitMigrationResponse,
     ) -> Result<EnclaveChannel, SealingError> {
+        let verifier = match &self.0 {
+            EnclaveTrust::Pinned(verifier) => Arc::clone(verifier),
+            EnclaveTrust::ApprovedRegistry(approval_key) => {
+                let signed = init
+                    .approved_pcr_registry
+                    .as_ref()
+                    .ok_or(SealingError::MissingApprovedRegistry)?;
+                let registry = STANDARD.decode(&signed.registry).map_err(|source| {
+                    RegistryVerificationError::InvalidBase64 {
+                        field: "registry",
+                        source,
+                    }
+                })?;
+                let bundle = STANDARD.decode(&signed.bundle).map_err(|source| {
+                    RegistryVerificationError::InvalidBase64 {
+                        field: "bundle",
+                        source,
+                    }
+                })?;
+                let configs = verified_pcr_configs(&registry, &bundle, approval_key)?;
+                Arc::new(Verifier::new(configs, MAX_ATTESTATION_AGE))
+            }
+        };
         let document = decode(&init.attestation, "attestation")?;
         let public_key = decode(&init.enclave_public_key, "enclave_public_key")?;
         let (consumer, _) = ChannelConsumer::from_attestation(
             ChannelDomain::new(MIGRATION_CHANNEL_DOMAIN),
-            &self.0,
+            &verifier,
             &document,
             &public_key,
         )
