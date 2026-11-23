@@ -40,55 +40,89 @@ repository = "https://github.com/worldcoin/biometrics-tee"
 publish = false
 
 [workspace.dependencies]
+alkali = { version = "0.3", features = ["use-pkg-config"] }
+ampc-secret-sharing = { git = "https://github.com/worldcoin/ampc-common", rev = "3dfb4aacd8152329d03c4fe71dd81ee05589f360" }
 anyhow = "1.0"
+ark-babyjubjub = { package = "taceo-ark-babyjubjub", version = "0.6" }
 async-trait = "0.1"
-base64 = "0.22"
+attested-request = "0.1.1"
 aws-config = "1"
 aws-sdk-dynamodb = { version = "1", default-features = false, features = [
     "default-https-client",
     "rt-tokio",
 ] }
-aws-sdk-kms = { version = "1", default-features = false, features = [
-    "default-https-client",
-    "rt-tokio",
-] }
+aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = [
     "default-https-client",
     "rt-tokio",
 ] }
+aws-smithy-http-client = "1"
+aws-smithy-runtime-api = "1"
+aws-smithy-types = "1"
+aws-types = "1"
 axum = "0.8"
+base64 = "0.22"
+bincode = "1.3.3"
+biometric-engines-protocol = "0.2.0"
 bytes = { version = "1", features = ["serde"] }
 ciborium = "0.2"
 clap = { version = "4.6", features = ["derive", "env"] }
+coset = "0.4"
+crypto_box = "0.9.1"
+curve25519-dalek = { version = "4", default-features = false }
 di-dev-api-primitives = { path = "dev/api-primitives" }
 di-dev-enclave-primitives = { path = "dev/enclave-primitives" }
+di-migration-client = { path = "migration/client" }
 di-migration-enclave-primitives = { path = "migration/enclave-primitives" }
+di-migration-pcp = { path = "migration/pcp" }
 di-migration-primitives = { path = "migration/primitives" }
+di-migration-shares = { path = "migration/shares" }
 di-migration-storage = { path = "migration/storage" }
 di-migration-telemetry = { path = "migration/telemetry" }
 di-worker-protocol = { path = "worker-protocol" }
+embedding-shares = { path = "selfie-enrollment/shares" }
+fastrand = "2"
 flate2 = "1.1"
+futures-channel = "0.3"
+futures-util = "0.3"
+getrandom = "0.2"
+gloo-timers = "0.3"
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
+http = "1"
 http-body-util = "0.1"
-mime = "0.3"
+js-sys = "=0.3.103"
 metrics-exporter-statsd = "0.9"
+mime = "0.3"
 # Shared PCP builder, protobuf definitions and signup IDs use one revision.
 orb-pcp = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
 orb-pcp-defs = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
 orb-wld-data-id = { git = "https://github.com/worldcoin/orb-software", rev = "0ce13deec60ff7cbc4dc2ceca6c8b037c23f209f" }
-di-migration-client = { path = "migration/client" }
+p384 = { version = "0.14", default-features = false }
 pontifex = { version = "3.1.0", default-features = false }
-world-id-proof-verification-client = { git = "https://github.com/worldcoin/world-id-proof-verification", tag = "v1.0.0" }
-fastrand = "2"
+poseidon2 = { package = "taceo-poseidon2", version = "0.3", default-features = false }
+prost = "0.14.3"
+prost-build = "0.14.3"
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
     "json",
     "rustls-tls",
 ] }
+rmp-serde = "1.3"
+rustls = { version = "0.23", default-features = false }
+selfie-enrollment-api-types = { version = "0.2.0", path = "selfie-enrollment/api-types" }
+selfie-enrollment-client = { version = "0.2.0", path = "selfie-enrollment/client" }
+selfie-enrollment-enclave = { path = "selfie-enrollment/enclave" }
+selfie-enrollment-enclave-types = { path = "selfie-enrollment/enclave-types" }
+selfie-enrollment-host = { path = "selfie-enrollment/host" }
+selfie-enrollment-identity = { path = "selfie-enrollment/identity" }
+selfie-enrollment-sealed-types = { version = "0.2.0", path = "selfie-enrollment/sealed-types" }
 serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
 serde_bytes = "0.11"
 serde_json = "1.0"
 sha2 = { version = "0.10", default-features = false }
+sha3 = { version = "0.10", default-features = false }
 tabernaculum = { git = "https://github.com/worldcoin/tabernaculum", tag = "v0.4.0" }
 tar = "0.4"
 telemetry-batteries = { version = "0.4.1", default-features = false }
@@ -102,23 +136,19 @@ tokio = { version = "1.48", features = [
     "sync",
     "time",
 ] }
+tokio-tungstenite = { version = "0.29", default-features = false }
 tokio-vsock = "0.7.2"
-# Migration only verifies credentials; protocol proof support pulls in unused compression code.
-world-id-primitives = { version = "0.15.0", default-features = false }
-zeroize = "1"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-selfie-enrollment-api-types = { version = "0.2.0", path = "selfie-enrollment/api-types" }
-selfie-enrollment-sealed-types = { version = "0.2.0", path = "selfie-enrollment/sealed-types" }
-selfie-enrollment-enclave-types = { path = "selfie-enrollment/enclave-types" }
-
-selfie-enrollment-enclave = { path = "selfie-enrollment/enclave" }
-biometric-engines-protocol = "0.2.0"
-rand = "0.8"
-
-selfie-enrollment-client = { version = "0.2.0", path = "selfie-enrollment/client" }
-
-selfie-enrollment-host = { path = "selfie-enrollment/host" }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "=0.4.76"
+web-sys = "=0.3.103"
+web-time = "1"
+webpki-roots = "1.0.10"
+# Migration only verifies credentials; protocol proof support pulls in unused compression code.
+world-id-primitives = { version = "0.15.0", default-features = false }
+world-id-proof-verification-client = { git = "https://github.com/worldcoin/world-id-proof-verification", tag = "v1.0.0" }
+zeroize = "1"

@@ -1,7 +1,5 @@
 //! The migration's domain types, the app-facing API and the host's internal API contract,
 //! shared by the Migration API, its client and the host. Plain data only: no AWS, no Pontifex.
-//!
-//! The enclave must not depend on this crate: any change here would otherwise rotate its PCR0.
 
 #![deny(
     clippy::all,
