@@ -11,7 +11,7 @@ anyhow.workspace = true
 aws-config.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 aws-sdk-dynamodb.workspace = true
-aws-sdk-kms.workspace = true
+aws-sdk-kms = { workspace = true, features = ["default-https-client"] }
 aws-sdk-s3.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -29,7 +29,7 @@ di-migration-storage.workspace = true
 di-migration-telemetry.workspace = true
 
 [dev-dependencies]
-attested-request = { version = "0.1.1", features = ["test-util"] }
+attested-request = { workspace = true, features = ["test-util"] }
 http-body-util.workspace = true
 di-migration-client = { workspace = true, features = ["test-util"] }
 serde_json.workspace = true
