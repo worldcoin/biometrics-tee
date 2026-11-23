@@ -25,6 +25,7 @@ REKOR_LOG_ID = "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
 
 
 def prepare(store, release, candidate, output):
+    """Write the proposed registry with the candidate and return its revision."""
     builds = parse_registry(candidate.read_bytes())
     if len(builds) != 1 or builds[0]["release"] != release:
         raise ValueError("candidate must contain one build for the selected release")
@@ -46,6 +47,7 @@ def prepare(store, release, candidate, output):
 
 
 def publish(store, kms_key_arn, input_dir, expected_revision):
+    """Sign and publish the reviewed registry as the current S3 revision."""
     review = load_json((input_dir / "review.json").read_bytes(), MAX_POINTER_BYTES)
     if set(review) != {"revision", "previous"}:
         raise ValueError("invalid PCR registry review metadata")
@@ -96,6 +98,7 @@ def publish(store, kms_key_arn, input_dir, expected_revision):
 
 
 def validate_published_pair(store, revision, public_key, directory):
+    """Verify the stored registry and bundle for a published revision."""
     registry = directory / REGISTRY
     registry.write_bytes(store.registry(revision))
     bundle = directory / BUNDLE
@@ -104,6 +107,7 @@ def validate_published_pair(store, revision, public_key, directory):
 
 
 def approval_public_key(arn, directory):
+    """Fetch and validate the stage KMS public key, then write it as PEM."""
     if not KEY_ARN.fullmatch(arn):
         raise ValueError("a concrete KMS signing key ARN is required")
     result = aws("kms", "get-public-key", "--key-id", arn)
