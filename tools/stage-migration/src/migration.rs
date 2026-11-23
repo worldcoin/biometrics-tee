@@ -111,7 +111,7 @@ impl Stage {
         report
             .time(Phase::Migrate, async {
                 self.client
-                    .migrate(user.device.integrity_token(), &user.device, &user.sub)
+                    .migrate(&user.device.integrity_token(), &user.device, &user.sub)
                     .await
                     .map(|_| ())
                     .map_err(MigrationError::client("migrate"))
@@ -130,7 +130,7 @@ impl Stage {
             .time(Phase::Acknowledge, async {
                 self.client
                     .acknowledge(
-                        user.device.integrity_token(),
+                        &user.device.integrity_token(),
                         &user.device,
                         &user.sub,
                         &migrated.job_id,
@@ -155,7 +155,7 @@ impl Stage {
             let result = self
                 .client
                 .init_migration(
-                    user.device.integrity_token(),
+                    &user.device.integrity_token(),
                     &user.device,
                     &user.sub,
                     &proof.proof,
@@ -201,7 +201,7 @@ impl Stage {
         loop {
             let status = self
                 .client
-                .migration_status(user.device.integrity_token(), &user.device, &user.sub)
+                .migration_status(&user.device.integrity_token(), &user.device, &user.sub)
                 .await
                 .map_err(MigrationError::client("status"))?;
             match status.status {

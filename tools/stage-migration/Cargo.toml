@@ -25,11 +25,13 @@ di-migration-primitives = { path = "../../migration/primitives" }
 fastrand = "2"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hex = "0.4"
+jsonwebtoken = "9"
 k256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
 # orb-tools main; bump together with `Cargo.lock`, which is seeded from orb-tools' own lockfile.
 integrity-forge = { git = "https://github.com/worldcoin/orb-tools", rev = "b415d7ebc09dc04eda8d7935ef8e2fb52ae128aa" }
 # Must match the rev signup-flow pins, so both see the same oxide types.
 oxide = { git = "https://github.com/worldcoin/oxide", rev = "55e6ae7dbb2115bc2e00c7a4be042017678567a1", features = ["testing"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
 pontifex = { version = "3.1.0", default-features = false, features = ["attestation"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
