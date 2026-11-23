@@ -12,7 +12,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: di-migration-pcr-release-stage-${{ github.ref }}
+  group: pcp-migration-pcr-release-stage-${{ github.ref }}
   cancel-in-progress: false
 
 env:
