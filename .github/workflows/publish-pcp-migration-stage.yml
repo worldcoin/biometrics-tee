@@ -61,7 +61,7 @@ jobs:
           runs=$(gh api --method GET --paginate "$repo_api/actions/workflows/build-pcp-migration-release.yml/runs" \
             -f event=release -f head_sha="$source_sha" -f status=success -f per_page=100 \
             --jq '.workflow_runs[].id')
-          artifact_name="di-migration-candidate-$RELEASE_TAG"
+          artifact_name="pcp-migration-candidate-$RELEASE_TAG"
           for run in $runs; do
             artifact_id=$(gh api --method GET "$repo_api/actions/runs/$run/artifacts" \
               -f name="$artifact_name" --jq '.artifacts[] | select(.expired == false) | .id')
