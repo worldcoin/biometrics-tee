@@ -1,4 +1,4 @@
-"""Prepare and publish the stage DI migration PCR registry."""
+"""Prepare and publish the stage PCP migration PCR registry."""
 
 import argparse
 import base64

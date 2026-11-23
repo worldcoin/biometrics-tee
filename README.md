@@ -89,8 +89,8 @@ encryption and cannot be opened with the response key.
 
 ### Stage release
 
-1. Publish a GitHub release with a version tag such as `v0.1.0` pointing to a commit on `main`. **Build DI migration release** publishes the images to GHCR and records the launcher digest, EIF digest, and PCRs from the build.
-2. When the build succeeds, run **Publish DI migration to stage** from `main` with that tag. Review the complete proposed registry and its SHA-256 in the run summary before approving publication.
+1. Publish a GitHub release with a version tag such as `v0.1.0` pointing to a commit on `main`. **Build PCP migration release** publishes the images to GHCR and records the launcher digest, EIF digest, and PCRs from the build.
+2. When the build succeeds, run **Publish PCP migration to stage** from `main` with that tag. Review the complete proposed registry and its SHA-256 in the run summary before approving publication.
 3. After approval, the workflow signs with the stage KMS key, records the signature in Rekor, and switches the S3 pointer after writing both files. Deploy the approved launcher by its recorded digest with debug mode off.
 
 ## Sandboxed workers

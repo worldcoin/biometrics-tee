@@ -1,4 +1,4 @@
-name: Build DI migration release
+name: Build PCP migration release
 
 on:
   release:

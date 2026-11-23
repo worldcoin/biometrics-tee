@@ -1,4 +1,4 @@
-name: Publish DI migration to stage
+name: Publish PCP migration to stage
 run-name: Publish ${{ inputs.release }} to stage
 
 on:
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ || ${#RELEASE_TAG} -gt 128 ]]; then
-            echo '::error::Expected a versioned DI migration release tag.'
+            echo '::error::Expected a versioned PCP migration release tag.'
             exit 1
           fi
           gh release view "$RELEASE_TAG" --json tagName,isDraft |
@@ -58,7 +58,7 @@ jobs:
           fi
 
           repo_api="repos/$GITHUB_REPOSITORY"
-          runs=$(gh api --method GET --paginate "$repo_api/actions/workflows/build-di-migration-release.yml/runs" \
+          runs=$(gh api --method GET --paginate "$repo_api/actions/workflows/build-pcp-migration-release.yml/runs" \
             -f event=release -f head_sha="$source_sha" -f status=success -f per_page=100 \
             --jq '.workflow_runs[].id')
           artifact_name="di-migration-candidate-$RELEASE_TAG"
