@@ -1,0 +1,132 @@
+name: Prepare PCP migration registry
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        type: string
+        required: true
+      target_environment:
+        type: string
+        required: true
+      registry_bucket:
+        type: string
+        required: true
+      aws_account_id:
+        type: string
+        required: true
+      reader_role_arn:
+        type: string
+        required: true
+    outputs:
+      revision:
+        value: ${{ jobs.prepare.outputs.revision }}
+      review_id:
+        value: ${{ jobs.prepare.outputs.review_id }}
+      review_url:
+        value: ${{ jobs.prepare.outputs.review_url }}
+
+permissions: {}
+
+env:
+  REGISTRY_BUCKET: ${{ inputs.registry_bucket }}
+
+jobs:
+  prepare:
+    name: Prepare registry for review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    outputs:
+      revision: ${{ steps.registry.outputs.revision }}
+      review_id: ${{ steps.review.outputs.artifact-id }}
+      review_url: ${{ steps.review.outputs.artifact-url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve successful build for release
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ || ${#RELEASE_TAG} -gt 128 ]]; then
+            echo '::error::Expected a versioned PCP migration release tag.'
+            exit 1
+          fi
+          gh release view "$RELEASE_TAG" --json tagName,isDraft |
+            jq -e --arg tag "$RELEASE_TAG" '.tagName == $tag and (.isDraft | not)' >/dev/null
+          source_sha=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
+          if ! git rev-list --first-parent "$GITHUB_SHA" | grep -Fx "$source_sha" >/dev/null; then
+            echo '::error::The release tag must point to a commit on main.'
+            exit 1
+          fi
+
+          repo_api="repos/$GITHUB_REPOSITORY"
+          runs=$(gh api --method GET --paginate "$repo_api/actions/workflows/build-pcp-migration-release.yml/runs" \
+            -f event=release -f head_sha="$source_sha" -f status=success -f per_page=100 \
+            --jq '.workflow_runs[].id')
+          artifact_name="pcp-migration-candidate-$RELEASE_TAG"
+          for run in $runs; do
+            artifact_id=$(gh api --method GET "$repo_api/actions/runs/$run/artifacts" \
+              -f name="$artifact_name" --jq '.artifacts[] | select(.expired == false) | .id')
+            if [[ "$artifact_id" =~ ^[0-9]+$ ]]; then
+              printf 'run_id=%s\nartifact_id=%s\nsource_sha=%s\n' "$run" "$artifact_id" "$source_sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo '::error::No successful release build with a retained PCR candidate for this tag.'
+          exit 1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.candidate.outputs.artifact_id }}
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.candidate.outputs.run_id }}
+          path: ${{ runner.temp }}/candidate
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: eu-central-1
+          allowed-account-ids: ${{ inputs.aws_account_id }}
+          role-to-assume: ${{ inputs.reader_role_arn }}
+
+      - name: Prepare exact registry bytes
+        id: registry
+        env:
+          RELEASE_TAG: ${{ inputs.release }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          BUILD_RUN_ID: ${{ steps.candidate.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          review_dir="$RUNNER_TEMP/review"
+          revision=$(python3 migration/scripts/pcr_registry.py prepare --bucket "$REGISTRY_BUCKET" \
+            --release "$RELEASE_TAG" --candidate "$RUNNER_TEMP/candidate/approved-pcrs.json" --output "$review_dir")
+          [[ "$revision" =~ ^[0-9a-f]{64}$ ]]
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          {
+            printf '### %s registry proposed for `%s`\n\n' "${TARGET_ENVIRONMENT^}" "$RELEASE_TAG"
+            printf 'Source commit `%s` · [Release build](%s/%s/actions/runs/%s)\n\n' \
+              "$SOURCE_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$BUILD_RUN_ID"
+            printf 'Registry SHA-256 `%s`\n\n' "$revision"
+            printf '```json\n'
+            cat "$review_dir/approved-pcrs.json"
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload registry for review
+        id: review
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.target_environment }}-pcr-registry-review-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/review/
+          if-no-files-found: error
+          retention-days: 30

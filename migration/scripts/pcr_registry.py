@@ -1,4 +1,4 @@
-"""Prepare and publish the stage PCP migration PCR registry."""
+"""Prepare and publish a PCP migration PCR registry."""
 
 import argparse
 import base64
@@ -20,7 +20,6 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 PCR = re.compile(r"[0-9a-f]{96}")
 ETAG = re.compile(r'"[0-9a-f]+(?:-[0-9]+)?"')
 KEY_ARN = re.compile(r"arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]{36}")
-STAGE_KEY_SHA256 = "1788c6e062a29f6fa4d95f203b07bc4c810a36255ca70be4c090feeaff93bff6"
 REKOR_URL = "https://rekor.sigstore.dev"
 REKOR_LOG_ID = "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
 
@@ -47,7 +46,7 @@ def prepare(store, release, candidate, output):
     return revision
 
 
-def publish(store, kms_key_arn, input_dir, expected_revision):
+def publish(store, kms_key_arn, expected_key_sha256, input_dir, expected_revision):
     """Sign and publish the reviewed registry as the current S3 revision."""
     review = load_json((input_dir / "review.json").read_bytes(), MAX_POINTER_BYTES)
     if set(review) != {"revision", "previous"}:
@@ -68,7 +67,7 @@ def publish(store, kms_key_arn, input_dir, expected_revision):
 
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
-        key = approval_public_key(kms_key_arn, directory)
+        key = approval_public_key(kms_key_arn, expected_key_sha256, directory)
         if current is not None:
             validate_published_pair(store, current["revision"], key, directory)
         if already_current:
@@ -107,10 +106,12 @@ def validate_published_pair(store, revision, public_key, directory):
     verify_bundle(registry, bundle, public_key)
 
 
-def approval_public_key(arn, directory):
-    """Fetch and validate the stage KMS public key, then write it as PEM."""
+def approval_public_key(arn, expected_sha256, directory):
+    """Fetch and validate the KMS public key, then write it as PEM."""
     if not KEY_ARN.fullmatch(arn):
         raise ValueError("a concrete KMS signing key ARN is required")
+    if not matches(SHA256, expected_sha256):
+        raise ValueError("expected KMS public key fingerprint must be a lowercase SHA-256 digest")
     result = aws("kms", "get-public-key", "--key-id", arn)
     der = base64.b64decode(result["PublicKey"], validate=True)
     if (
@@ -118,9 +119,9 @@ def approval_public_key(arn, directory):
         or result["KeySpec"] != "ECC_NIST_P256"
         or result["KeyUsage"] != "SIGN_VERIFY"
         or result["SigningAlgorithms"] != ["ECDSA_SHA_256"]
-        or sha256(der) != STAGE_KEY_SHA256
+        or sha256(der) != expected_sha256
     ):
-        raise ValueError("KMS key does not match the stage PCR approval key")
+        raise ValueError("KMS key does not match the expected PCR approval key")
     public_key = directory / "approval.pem"
     lines = textwrap.fill(base64.b64encode(der).decode("ascii"), 64)
     public_key.write_text(f"-----BEGIN PUBLIC KEY-----\n{lines}\n-----END PUBLIC KEY-----\n")
@@ -300,6 +301,7 @@ def main():
     publish_args = commands.add_parser("publish")
     publish_args.add_argument("--bucket", required=True)
     publish_args.add_argument("--kms-key-arn", required=True)
+    publish_args.add_argument("--expected-key-sha256", required=True)
     publish_args.add_argument("--input", type=Path, required=True)
     publish_args.add_argument("--expected-revision", required=True)
     args = parser.parse_args()
@@ -308,7 +310,7 @@ def main():
         if args.command == "prepare":
             print(prepare(store, args.release, args.candidate, args.output))
         else:
-            print(publish(store, args.kms_key_arn, args.input, args.expected_revision))
+            print(publish(store, args.kms_key_arn, args.expected_key_sha256, args.input, args.expected_revision))
     except subprocess.CalledProcessError as error:
         parser.exit(1, f"{error.cmd[0]} failed: {error.stderr.strip()}\n")
     except (ValueError, OSError, KeyError, TypeError, AttributeError) as error:

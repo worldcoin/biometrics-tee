@@ -1,5 +1,7 @@
 /migration/ @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
 /.github/CODEOWNERS @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
+/.github/workflows/prepare-pcp-migration-registry.yml @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
+/.github/workflows/publish-pcp-migration-prod.yml @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
 /.github/workflows/publish-pcp-migration-stage.yml @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
 /.github/workflows/build-pcp-migration-release.yml @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
 /.github/workflows/build-docker.yml @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
