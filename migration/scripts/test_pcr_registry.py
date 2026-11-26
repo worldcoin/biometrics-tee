@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 import tempfile
@@ -76,7 +77,7 @@ class PublicationTests(unittest.TestCase):
         return registry.prepare(self.store, release, self.candidate, self.review)
 
     def publish(self, revision):
-        return registry.publish(self.store, "stage-key", self.review, revision)
+        return registry.publish(self.store, "approval-key", "a" * 64, self.review, revision)
 
     def test_first_and_second_revisions_keep_matches_and_move_pointer_last(self):
         first = self.prepare("v0.1.0", "1")
@@ -158,6 +159,26 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, error):
                 registry.prepare(self.store, release, self.candidate, self.review)
         self.assertFalse(self.review.exists())
+
+
+class ApprovalKeyTests(unittest.TestCase):
+    def test_requires_the_configured_public_key_fingerprint(self):
+        arn = "arn:aws:kms:eu-central-1:123456789012:key/01234567-89ab-cdef-0123-456789abcdef"
+        der = b"mock KMS public key"
+        result = {
+            "KeyId": arn,
+            "KeySpec": "ECC_NIST_P256",
+            "KeyUsage": "SIGN_VERIFY",
+            "SigningAlgorithms": ["ECDSA_SHA_256"],
+            "PublicKey": base64.b64encode(der).decode("ascii"),
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch.object(registry, "aws", return_value=result):
+            directory = Path(tmp)
+            with self.assertRaisesRegex(ValueError, "expected PCR approval key"):
+                registry.approval_public_key(arn, "0" * 64, directory)
+            self.assertEqual(list(directory.iterdir()), [])
+            key = registry.approval_public_key(arn, registry.sha256(der), directory)
+            self.assertEqual(base64.b64decode(key.read_text().splitlines()[1]), der)
 
 
 if __name__ == "__main__":
