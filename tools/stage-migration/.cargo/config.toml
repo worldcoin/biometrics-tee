@@ -1,0 +1,15 @@
+# Copied from orb-tools: its oxide/face-engine dependencies need these at build time.
+
+[env]
+# Required by oxide's face-engine dependency during its ignition build step.
+IGNITION_BUCKET_URL = { value = "https://wld-ml-face-engine-public.worldcoin.org" }
+IGNITION_CACHE_PATH = { value = "cache" }
+IGNITION_DIRECTORY_PATH = { value = "assets/dependencies" }
+
+# Ignition downloads OpenCV and sets OPENCV_{LINK,INCLUDE}_PATHS, but not the
+# library names. Without OPENCV_LINK_LIBS, opencv-rust falls through to system
+# pkg-config and fails when OpenCV isn't installed. Disable those probes so we
+# only use the bundled static archives. Linux CI appends dl,pthread,rt via
+# GITHUB_ENV (see .github/actions/rust-setup).
+OPENCV_LINK_LIBS = { value = "static=libopencv_imgcodecs.a,static=libopencv_imgproc.a,static=libopencv_core.a,static=liblibjpeg-turbo.a,static=liblibpng.a,static=libzlib.a" }
+OPENCV_DISABLE_PROBES = { value = "pkg_config,cmake,vcpkg_cmake,vcpkg" }
