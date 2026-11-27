@@ -33,7 +33,7 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 rust-version = "1.98.1"
-version = "0.2.0"
+version = "0.2.1"
 license = "MIT"
 homepage = "https://github.com/worldcoin/biometrics-tee"
 repository = "https://github.com/worldcoin/biometrics-tee"
@@ -110,13 +110,13 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 rmp-serde = "1.3"
 rustls = { version = "0.23", default-features = false }
-selfie-enrollment-api-types = { version = "0.2.0", path = "selfie-enrollment/api-types" }
-selfie-enrollment-client = { version = "0.2.0", path = "selfie-enrollment/client" }
+selfie-enrollment-api-types = { version = "0.2.1", path = "selfie-enrollment/api-types" }
+selfie-enrollment-client = { version = "0.2.1", path = "selfie-enrollment/client" }
 selfie-enrollment-enclave = { path = "selfie-enrollment/enclave" }
 selfie-enrollment-enclave-types = { path = "selfie-enrollment/enclave-types" }
 selfie-enrollment-host = { path = "selfie-enrollment/host" }
 selfie-enrollment-identity = { path = "selfie-enrollment/identity" }
-selfie-enrollment-sealed-types = { version = "0.2.0", path = "selfie-enrollment/sealed-types" }
+selfie-enrollment-sealed-types = { version = "0.2.1", path = "selfie-enrollment/sealed-types" }
 serde = { version = "1.0", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 serde_bytes = "0.11"
