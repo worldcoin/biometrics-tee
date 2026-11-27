@@ -70,6 +70,7 @@ impl ClientError {
                 SealingError::Encode => "payload_encoding_failed",
                 SealingError::Seal(_) => "sealing_failed",
                 SealingError::Open(_) => "unsealing_failed",
+                SealingError::InvalidPadding => "invalid_response_padding",
                 SealingError::InvalidDevicePublicKey => "invalid_device_public_key",
                 SealingError::ResponseOpenerError(_) => "invalid_response_secret",
             },

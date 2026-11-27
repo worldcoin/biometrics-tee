@@ -210,7 +210,18 @@ fn build_and_seal_pcp(
     })?;
 
     report.stage = Stage::SealPcp;
-    sealer.seal(&package.tier0).map_err(|error| {
+    // Padded so worker-chosen strings inside the PCP cannot set its host-visible size.
+    let padded = Zeroizing::new(
+        enclave_primitives::padding::pad_to_bucket(
+            &package.tier0,
+            enclave_primitives::padding::PCP_PADDING_BUCKET_BYTES,
+        )
+        .ok_or_else(|| {
+            tracing::error!("migrated PCP is too large to pad");
+            enclave_primitives::Error::PcpResponseSealingFailed
+        })?,
+    );
+    sealer.seal(&padded).map_err(|error| {
         tracing::error!(?error, "failed to seal the migrated PCP");
         enclave_primitives::Error::PcpResponseSealingFailed
     })
@@ -236,11 +247,19 @@ fn seal_debug_report(
         );
         return Err(enclave_primitives::Error::MigrationDiagnosticSealingFailed);
     }
-    let blob = sealer.seal(report.as_bytes()).map_err(|error| {
+    // Every report has the same sealed size, so worker diagnostics cannot signal through it.
+    let padded = Zeroizing::new(
+        enclave_primitives::padding::pad_to(
+            report.as_bytes(),
+            enclave_primitives::PADDED_MIGRATION_DIAGNOSTIC_BYTES,
+        )
+        .ok_or(enclave_primitives::Error::MigrationDiagnosticSealingFailed)?,
+    );
+    drop(report);
+    let blob = sealer.seal(&padded).map_err(|error| {
         tracing::error!(?error, "failed to seal migration diagnostic");
         enclave_primitives::Error::MigrationDiagnosticSealingFailed
     })?;
-    drop(report);
     Ok(blob)
 }
 
@@ -750,6 +769,14 @@ mod tests {
     }
 
     /// Seals `plaintext` to `state`'s key as the app does.
+    /// The padded plaintext an enclave response unseals to, with its padding removed.
+    fn opened(opener: ResponseOpener, blob: &[u8]) -> Vec<u8> {
+        let padded = opener.open_from_enclave(blob).unwrap();
+        enclave_primitives::padding::unpad(&padded)
+            .unwrap()
+            .to_vec()
+    }
+
     fn sealed(
         state: &EnclaveState,
         plaintext: &[u8],
@@ -961,9 +988,7 @@ mod tests {
         let signup_id: SignupId = request.signup_id.parse().unwrap();
         let failure = handler(state, request).await.unwrap_err();
         assert_eq!(failure.error, enclave_primitives::Error::InvalidPcp);
-        let report = opener
-            .open_from_enclave(&failure.debug_report.unwrap())
-            .unwrap();
+        let report = opened(opener, &failure.debug_report.unwrap());
         let report: serde_json::Value = serde_json::from_slice(&report).unwrap();
         assert_eq!(report["signup_id"], serde_json::json!(signup_id));
         assert!(report["src_signup_id"].is_null());
@@ -1021,9 +1046,7 @@ mod tests {
             failure.error,
             enclave_primitives::Error::CredentialSignatureInvalid
         );
-        let plaintext = opener
-            .open_from_enclave(&failure.debug_report.unwrap())
-            .unwrap();
+        let plaintext = opened(opener, &failure.debug_report.unwrap());
         let report: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
         assert!(report["signup_id"].is_object());
         assert!(report["src_signup_id"].is_null());
@@ -1113,9 +1136,7 @@ mod tests {
 
         let failure = handler(Arc::clone(&state), unknown).await.unwrap_err();
         assert_eq!(failure.error, enclave_primitives::Error::InvalidInput);
-        let plaintext = opener
-            .open_from_enclave(&failure.debug_report.unwrap())
-            .unwrap();
+        let plaintext = opened(opener, &failure.debug_report.unwrap());
         let report: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
         assert_eq!(
             report["pipeline_errors"]["migration_error"]["stage"],
@@ -1184,12 +1205,12 @@ mod tests {
             let result = seal_debug_report(Zeroizing::new(report.to_owned()), sealer);
             assert_eq!(result.is_ok(), expected);
             if let Ok(blob) = result {
+                // Every sealed report has the same size, whatever its content.
                 assert_eq!(
                     blob.len(),
-                    report.len() + enclave_primitives::MIGRATION_DIAGNOSTIC_OVERHEAD_BYTES
+                    enclave_primitives::MAX_SEALED_MIGRATION_DIAGNOSTIC_BYTES
                 );
-                let plaintext = opener.open_from_enclave(&blob).unwrap();
-                assert_eq!(plaintext.as_slice(), report.as_bytes());
+                assert_eq!(opened(opener, &blob).as_slice(), report.as_bytes());
             }
         }
     }

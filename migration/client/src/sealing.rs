@@ -4,7 +4,7 @@
 use std::{sync::Arc, time::Duration};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use di_migration_enclave_primitives::{MIGRATION_CHANNEL_DOMAIN, pcp_payload};
+use di_migration_enclave_primitives::{MIGRATION_CHANNEL_DOMAIN, padding, pcp_payload};
 use di_migration_primitives::{EnclaveId, app_api::InitMigrationResponse};
 use pontifex::{
     PcrConfig, Verifier,
@@ -35,6 +35,8 @@ pub enum SealingError {
     Seal(#[source] ChannelError),
     #[error("failed to unseal the migration response: {0}")]
     Open(#[source] ChannelError),
+    #[error("the unsealed migration response is not correctly padded")]
+    InvalidPadding,
     #[error("the device public key must be a standard-Base64, 32-byte Curve25519 key")]
     InvalidDevicePublicKey,
     #[error("failed to create the response opener from secret bytes: {0}")]
@@ -177,13 +179,16 @@ impl EnclaveChannel {
 pub struct MigrationResponseOpener(ResponseOpener);
 
 impl MigrationResponseOpener {
-    /// The PCP or debug report inside the downloaded `blob`.
+    /// The PCP or debug report inside the downloaded `blob`, with its length padding removed.
     ///
     /// # Errors
     ///
-    /// [`SealingError::Open`] when `blob` was not sealed to this request.
+    /// [`SealingError::Open`] when `blob` was not sealed to this request, and
+    /// [`SealingError::InvalidPadding`] when the unsealed plaintext is not padded.
     pub fn open(self, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, SealingError> {
-        self.0.open_from_enclave(blob).map_err(SealingError::Open)
+        let padded = self.0.open_from_enclave(blob).map_err(SealingError::Open)?;
+        let payload = padding::unpad(&padded).ok_or(SealingError::InvalidPadding)?;
+        Ok(Zeroizing::new(payload.to_vec()))
     }
 
     /// Consumes the opener and exports its response secret; keep it private and restore
@@ -214,7 +219,9 @@ fn decode(value: &str, field: &'static str) -> Result<Vec<u8>, SealingError> {
 #[cfg(test)]
 mod tests {
     use base64::{Engine, engine::general_purpose::STANDARD};
-    use di_migration_enclave_primitives::{MIGRATION_CHANNEL_DOMAIN, pcp_payload};
+    use di_migration_enclave_primitives::{
+        MIGRATION_CHANNEL_DOMAIN, PADDED_MIGRATION_DIAGNOSTIC_BYTES, padding, pcp_payload,
+    };
     use di_migration_primitives::{EnclaveId, app_api::InitMigrationResponse};
     use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
 
@@ -241,7 +248,8 @@ mod tests {
     fn migrate(enclave: &ChannelEnclave, blob: &[u8]) -> Vec<u8> {
         let (plaintext, sealer) = enclave.open(blob).expect("sealed to this enclave");
         let pcp = pcp_payload::decode(&plaintext).expect("a PCP payload");
-        sealer.seal(&pcp.pcp).expect("should seal")
+        let padded = padding::pad_to_bucket(&pcp.pcp, padding::PCP_PADDING_BUCKET_BYTES).unwrap();
+        sealer.seal(&padded).expect("should seal")
     }
 
     #[test]
@@ -266,7 +274,9 @@ mod tests {
         // Unsealing the request again recovers the same response key for the optional report.
         let (_, report_sealer) = enclave.open(&blob).unwrap();
         let report = br#"{"stage":"completed"}"#;
-        let report_blob = report_sealer.seal(report).unwrap();
+        let report_blob = report_sealer
+            .seal(&padding::pad_to(report, PADDED_MIGRATION_DIAGNOSTIC_BYTES).unwrap())
+            .unwrap();
         let plaintext = MigrationResponseOpener::from_secret_bytes(secret)
             .unwrap()
             .open(&report_blob)
@@ -378,5 +388,23 @@ mod tests {
             matches!(error, SealingError::EnclaveIdMismatch { .. }),
             "{error}"
         );
+    }
+
+    #[test]
+    fn an_unpadded_response_is_rejected() {
+        let enclave = ChannelEnclave::generate(domain()).expect("should generate");
+        let channel = EnclaveChannel(
+            ChannelConsumer::from_unverified_public_key(domain(), &enclave.public_key())
+                .expect("valid key"),
+        );
+        let (blob, opener) = channel
+            .seal(b"old pcp", "self-custody", &STANDARD.encode([7; 32]))
+            .expect("should seal");
+        let (_, sealer) = enclave.open(&blob).unwrap();
+        let unpadded = sealer.seal(b"old pcp").unwrap();
+        assert!(matches!(
+            opener.open(&unpadded),
+            Err(SealingError::InvalidPadding)
+        ));
     }
 }
