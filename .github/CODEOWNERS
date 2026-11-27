@@ -1,3 +1,4 @@
+* @worldcoin/protocol-contributors @worldcoin/proof-of-personhood @ShevchenkoRostyslav
 /migration/ @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
 /.github/CODEOWNERS @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
 /.github/workflows/prepare-pcp-migration-registry.yml @leonanos8 @ShevchenkoRostyslav @kilianglas @gryaele
